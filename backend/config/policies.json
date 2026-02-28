@@ -1,0 +1,43 @@
+{
+  "allowed_domains": [],
+  "blocked_domains": [],
+  "high_risk_keywords": [
+    "delete",
+    "remove",
+    "merge",
+    "transfer",
+    "confirm",
+    "purchase",
+    "buy",
+    "pay"
+  ],
+  "medium_risk_keywords": [
+    "submit",
+    "post",
+    "send",
+    "update",
+    "edit"
+  ],
+  "financial_domains": [
+    "bank",
+    "paypal",
+    "stripe",
+    "venmo",
+    "square",
+    "chase",
+    "wells fargo"
+  ],
+  "requires_step_up": [
+    "high"
+  ],
+  "domain_trust_profiles": {
+    "github.com": {
+      "risk_multiplier": 0.5,
+      "allowed_actions": ["click", "form_submit", "navigation"]
+    },
+    "slack.com": {
+      "risk_multiplier": 0.7,
+      "allowed_actions": ["click", "form_submit", "navigation"]
+    }
+  }
+}

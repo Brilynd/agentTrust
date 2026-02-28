@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentTrust - Step-Up Authentication</title>
+  <link rel="stylesheet" href="stepup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="modal">
+      <header>
+        <h1>🛡 High-Risk Action Detected</h1>
+      </header>
+      
+      <main>
+        <div class="action-details">
+          <h2>Action Details</h2>
+          <div class="detail-item">
+            <label>Type:</label>
+            <span id="actionType">-</span>
+          </div>
+          <div class="detail-item">
+            <label>Domain:</label>
+            <span id="actionDomain">-</span>
+          </div>
+          <div class="detail-item">
+            <label>Risk Level:</label>
+            <span id="riskLevel" class="risk-high">High</span>
+          </div>
+        </div>
+        
+        <div class="reason-section">
+          <label for="reason">Reason for this action:</label>
+          <textarea id="reason" placeholder="Explain why this action is necessary..."></textarea>
+        </div>
+        
+        <div class="warning">
+          <strong>⚠️ Warning:</strong> This action requires elevated privileges. 
+          A temporary token will be issued for 30-60 seconds.
+        </div>
+      </main>
+      
+      <footer>
+        <button id="approve" class="btn btn-approve">Approve & Continue</button>
+        <button id="deny" class="btn btn-deny">Deny</button>
+      </footer>
+    </div>
+  </div>
+  
+  <script src="stepup.js"></script>
+</body>
+</html>

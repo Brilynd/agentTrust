@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentTrust</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🛡 AgentTrust</h1>
+      <div class="status" id="status">
+        <span class="status-indicator" id="statusIndicator"></span>
+        <span id="statusText">Initializing...</span>
+      </div>
+    </header>
+    
+    <main>
+      <section class="agent-info" id="agentInfo">
+        <h2>Agent Identity</h2>
+        <div class="info-item">
+          <label>Agent ID:</label>
+          <span id="agentId">-</span>
+        </div>
+        <div class="info-item">
+          <label>Scopes:</label>
+          <span id="agentScopes">-</span>
+        </div>
+      </section>
+      
+      <section class="stats">
+        <h2>Session Stats</h2>
+        <div class="stat-grid">
+          <div class="stat-item">
+            <div class="stat-value" id="actionsCount">0</div>
+            <div class="stat-label">Actions Captured</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value" id="highRiskCount">0</div>
+            <div class="stat-label">High Risk</div>
+          </div>
+        </div>
+      </section>
+      
+      <section class="actions">
+        <button id="viewAudit" class="btn btn-primary">View Audit Log</button>
+        <button id="settings" class="btn btn-secondary">Settings</button>
+      </section>
+    </main>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
