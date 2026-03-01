@@ -8,13 +8,28 @@ AgentTrust provides enterprise-grade governance for AI agents operating in web b
 
 ## 🎯 Project Vision
 
-AgentTrust transforms browser automation from a security risk into a governed, auditable system. It provides:
+**AgentTrust solves the "trust deficit" that prevents AI agents from being deployed in production.**
 
-- **Identity-Bound Execution**: Every action is tied to an authenticated agent identity via Auth0
-- **Policy-as-Code**: JSON-based policies for risk classification and enforcement
+### The Problem
+AI agents can reason and make decisions, but they can't safely interact with real web services (GitHub, Slack, banking) because there's no way to govern what they do.
+
+### Our Solution
+AgentTrust provides the **governance layer** that makes AI agent browser automation safe for production:
+- **Identity**: Each agent has authenticated identity (Auth0)
+- **Policy**: Fine-grained control over what agents can do
+- **Risk Management**: Automatic detection of high-risk actions
+- **Audit**: Complete, tamper-evident log of all actions
+
+**Result**: Agents can safely interact with real services instead of staying in sandboxes.
+
+### Key Features
+- **Agent Identity**: Each AI agent has authenticated identity via Auth0
+- **Pre-Execution Validation**: Agents must check with AgentTrust before acting
+- **Policy-as-Code**: JSON-based policies control what agents can do, where, and when
+- **Risk Classification**: Automatic detection of high-risk agent actions
 - **Just-In-Time Privilege**: Short-lived elevated tokens for high-risk actions
-- **Cryptographic Audit Trail**: Tamper-evident action chains with cryptographic hashing
-- **Enterprise Audit Dashboard**: Comprehensive logging and replay capabilities
+- **Cryptographic Audit Trail**: Tamper-evident logging of all agent actions
+- **Agent Monitoring**: Complete visibility into agent behavior
 
 ---
 
@@ -97,6 +112,20 @@ AgentTrust transforms browser automation from a security risk into a governed, a
    cd backend
    npm start
    ```
+
+### 🧪 Testing Setup
+
+**For complete testing setup instructions, see [Testing Setup Guide](./docs/testing-setup.md)**
+
+Quick test:
+```bash
+# Get Auth0 token
+cd backend
+node test/get-token.js
+
+# Test API (with token)
+./test/test-api.sh <your-token>
+```
 
 ---
 
@@ -239,11 +268,7 @@ View:
 
 ## 🧩 Development Roadmap
 
-**Hackathon Timeline**: March 2 – April 6, 2026 (5 weeks)
-
-See [Timeline Documentation](./docs/timeline.md) for detailed day-by-day breakdown.
-
-### Week 1 – Foundation: Identity + Action Capture (March 2-8)
+### Week 1 – Foundation: Identity + Action Capture
 - [x] Project setup and folder structure
 - [ ] Auth0 agent registration and M2M setup
 - [x] Chrome extension manifest and basic structure
@@ -251,7 +276,7 @@ See [Timeline Documentation](./docs/timeline.md) for detailed day-by-day breakdo
 - [x] Backend JWT validation
 - [ ] Basic audit logging
 
-### Week 2 – Policy Engine + Risk Classification (March 9-15)
+### Week 2 – Policy Engine + Risk Classification
 - [ ] Risk classification engine
 - [ ] Policy JSON schema and API
 - [ ] Domain trust profiles
@@ -259,21 +284,21 @@ See [Timeline Documentation](./docs/timeline.md) for detailed day-by-day breakdo
 - [ ] Form field analysis
 - [ ] Financial domain detection
 
-### Week 3 – Step-Up + Short-Lived Delegated Authority (March 16-22)
+### Week 3 – Step-Up + Short-Lived Delegated Authority
 - [ ] Step-up authentication UI
 - [ ] Auth0 token exchange flow
 - [ ] Short-lived token issuance (30-60 seconds)
 - [ ] User approval workflow
 - [ ] Token expiration handling
 
-### Week 4 – Cryptographic Audit & Advanced Features (March 23-29)
+### Week 4 – Cryptographic Audit & Advanced Features
 - [ ] Cryptographic action chain (SHA256)
 - [ ] Audit dashboard API endpoints
 - [ ] Agent behavioral baseline
 - [ ] Reason capture for actions
 - [ ] Chain integrity verification
 
-### Week 5 – Polish, Demo Prep & Submission (March 30 - April 6)
+### Week 5 – Polish, Demo Prep & Submission
 - [ ] Feature completion and bug fixes
 - [ ] Complete documentation
 - [ ] Demo video and presentation
@@ -463,13 +488,60 @@ This project demonstrates:
 
 ---
 
-## 📚 Additional Resources
+## 🤖 Agent Integration
 
-- [Hackathon Alignment](./docs/hackathon-alignment.md) - **Detailed mapping to hackathon requirements**
-- [Development Timeline](./docs/timeline.md) - Detailed 5-week hackathon schedule (March 2 - April 6, 2026)
-- [Security Documentation](./docs/security.md) - **Complete security guide and best practices**
+**AgentTrust monitors AI agents, not human users.**
+
+Agents integrate by calling AgentTrust API **before** performing browser actions. AgentTrust validates, logs, and controls what agents can do.
+
+### Quick Start for Agents
+
+1. **Set up Agent Identity in Auth0** (one per agent)
+2. **Integrate AgentTrust client** into your agent code
+3. **Call AgentTrust before browser actions**
+4. **Handle policy responses** (allowed/denied/step-up)
+
+**Example**:
+```python
+from integrations.chatgpt.agenttrust_client import AgentTrustClient
+
+# Initialize for your agent
+agenttrust = AgentTrustClient()
+
+# Before performing browser action:
+result = agenttrust.execute_action(
+    action_type="click",
+    url="https://github.com/user/repo",
+    target={"tagName": "BUTTON", "id": "submit-btn"}
+)
+
+# Check result
+if result["status"] == "allowed":
+    # Proceed with action
+    perform_click(...)
+elif result["status"] == "step_up_required":
+    # Request user approval
+    request_approval(...)
+else:
+    # Action denied
+    raise Exception("Action not allowed")
+```
+
+See [Agent Integration Guide](./docs/agent-integration.md) for complete setup instructions.
+
+---
+
+## 📚 Documentation
+
+### Essential Guides
+- [Agent Integration Guide](./docs/agent-integration.md) - **How agents integrate with AgentTrust**
+- [Testing Setup Guide](./docs/testing-setup.md) - **Complete testing setup instructions**
+- [ChatGPT Integration Guide](./docs/chatgpt-integration.md) - **Integrate with ChatGPT's browser**
+
+### Technical Documentation
 - [Architecture Documentation](./docs/architecture.md) - System architecture and design
 - [API Documentation](./docs/api.md) - Complete API reference
+- [Security Documentation](./docs/security.md) - **Complete security guide and best practices**
 - [Policy Configuration Guide](./docs/policies.md) - Policy setup and configuration
 
 ---

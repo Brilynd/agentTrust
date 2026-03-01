@@ -1,0 +1,343 @@
+"""
+AgentTrust Client for ChatGPT Integration
+Provides a Python client for ChatGPT to interact with AgentTrust API
+"""
+
+import requests
+import json
+from datetime import datetime
+from typing import Dict, Optional, Any
+import os
+
+
+class AgentTrustClient:
+    """Client for interacting with AgentTrust API from ChatGPT"""
+    
+    def __init__(
+        self,
+        api_url: str = None,
+        auth0_domain: str = None,
+        auth0_client_id: str = None,
+        auth0_client_secret: str = None,
+        auth0_audience: str = None
+    ):
+        """
+        Initialize AgentTrust client
+        
+        Args:
+            api_url: AgentTrust API URL (default: from env or http://localhost:3000/api)
+            auth0_domain: Auth0 domain
+            auth0_client_id: Auth0 client ID
+            auth0_client_secret: Auth0 client secret
+            auth0_audience: Auth0 API audience
+        """
+        self.api_url = api_url or os.getenv('AGENTTRUST_API_URL', 'http://localhost:3000/api')
+        self.auth0_domain = auth0_domain or os.getenv('AUTH0_DOMAIN')
+        self.auth0_client_id = auth0_client_id or os.getenv('AUTH0_CLIENT_ID')
+        self.auth0_client_secret = auth0_client_secret or os.getenv('AUTH0_CLIENT_SECRET')
+        self.auth0_audience = auth0_audience or os.getenv('AUTH0_AUDIENCE')
+        
+        self._token = None
+        self._token_expiry = None
+        
+        if not all([self.auth0_domain, self.auth0_client_id, 
+                   self.auth0_client_secret, self.auth0_audience]):
+            raise ValueError("Auth0 credentials must be provided or set in environment")
+    
+    def _get_token(self) -> str:
+        """Get Auth0 access token (with caching)"""
+        # Check if token is still valid
+        if self._token and self._token_expiry and datetime.now() < self._token_expiry:
+            return self._token
+        
+        # Request new token
+        response = requests.post(
+            f"https://{self.auth0_domain}/oauth/token",
+            json={
+                "client_id": self.auth0_client_id,
+                "client_secret": self.auth0_client_secret,
+                "audience": self.auth0_audience,
+                "grant_type": "client_credentials"
+            }
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to get Auth0 token: {response.text}")
+        
+        data = response.json()
+        self._token = data["access_token"]
+        
+        # Set expiry (with 5 minute buffer)
+        expires_in = data.get("expires_in", 3600)
+        from datetime import timedelta
+        self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
+        
+        return self._token
+    
+    def execute_action(
+        self,
+        action_type: str,
+        url: str,
+        target: Optional[Dict] = None,
+        form_data: Optional[Dict] = None,
+        domain: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute a browser action through AgentTrust
+        
+        Args:
+            action_type: 'click', 'form_submit', or 'navigation'
+            url: Full URL of the page
+            target: Target element info (for clicks)
+            form_data: Form data (for form submissions)
+            domain: Domain (auto-extracted from URL if not provided)
+        
+        Returns:
+            Dict with status, action_id, risk_level, etc.
+        """
+        if action_type not in ['click', 'form_submit', 'navigation']:
+            raise ValueError(f"Invalid action_type: {action_type}")
+        
+        # Extract domain from URL if not provided
+        if not domain:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+        
+        # Build action data
+        action_data = {
+            "type": action_type,
+            "url": url,
+            "domain": domain,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        if target:
+            action_data["target"] = target
+        
+        if form_data:
+            action_data["form"] = {"fields": form_data}
+        
+        # Make request
+        token = self._get_token()
+        response = requests.post(
+            f"{self.api_url}/actions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            json=action_data
+        )
+        
+        result = response.json()
+        
+        if response.status_code == 201:
+            return {
+                "status": "allowed",
+                "action_id": result.get("action", {}).get("id"),
+                "risk_level": result.get("action", {}).get("riskLevel"),
+                "message": "Action allowed and logged"
+            }
+        elif response.status_code == 403:
+            if result.get("requiresStepUp"):
+                return {
+                    "status": "step_up_required",
+                    "message": "High-risk action requires user approval",
+                    "risk_level": result.get("riskLevel"),
+                    "error": result.get("error")
+                }
+            else:
+                return {
+                    "status": "denied",
+                    "message": result.get("error", "Action denied by policy"),
+                    "reason": result.get("reason")
+                }
+        elif response.status_code == 401:
+            return {
+                "status": "unauthorized",
+                "message": "Authentication failed",
+                "error": result.get("error")
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result.get("error", "Unknown error"),
+                "status_code": response.status_code
+            }
+    
+    def request_step_up(
+        self,
+        action_data: Dict,
+        reason: str
+    ) -> Dict[str, Any]:
+        """
+        Request step-up token for high-risk action
+        
+        Args:
+            action_data: Original action data
+            reason: User-provided reason for step-up
+        
+        Returns:
+            Dict with step-up token and expiration
+        """
+        token = self._get_token()
+        response = requests.post(
+            f"{self.api_url}/auth/stepup",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "action": action_data,
+                "reason": reason
+            }
+        )
+        
+        result = response.json()
+        
+        if response.status_code == 200:
+            return {
+                "success": True,
+                "token": result.get("token"),
+                "expires_in": result.get("expiresIn"),
+                "scopes": result.get("scopes")
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Step-up failed")
+            }
+    
+    def get_audit_log(
+        self,
+        agent_id: Optional[str] = None,
+        domain: Optional[str] = None,
+        risk_level: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Get audit log
+        
+        Args:
+            agent_id: Filter by agent ID
+            domain: Filter by domain
+            risk_level: Filter by risk level (low, medium, high)
+            start_date: Start date (ISO 8601)
+            end_date: End date (ISO 8601)
+            limit: Maximum results
+        
+        Returns:
+            Dict with actions array
+        """
+        token = self._get_token()
+        params = {"limit": limit}
+        
+        if agent_id:
+            params["agentId"] = agent_id
+        if domain:
+            params["domain"] = domain
+        if risk_level:
+            params["riskLevel"] = risk_level
+        if start_date:
+            params["startDate"] = start_date
+        if end_date:
+            params["endDate"] = end_date
+        
+        response = requests.get(
+            f"{self.api_url}/actions",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params
+        )
+        
+        return response.json()
+    
+    def validate_token(self, token: str) -> Dict[str, Any]:
+        """
+        Validate a JWT token
+        
+        Args:
+            token: JWT token to validate
+        
+        Returns:
+            Validation result
+        """
+        response = requests.post(
+            f"{self.api_url}/auth/validate",
+            headers={"Content-Type": "application/json"},
+            json={"token": token}
+        )
+        
+        return response.json()
+
+
+# OpenAI Function definition for ChatGPT
+AGENTTRUST_FUNCTION_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "agenttrust_browser_action",
+        "description": "Execute a browser action (click, form submit, navigation) through AgentTrust's policy-enforced system. Returns whether action is allowed, denied, or requires step-up authentication. Always use this function before performing any browser automation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "enum": ["click", "form_submit", "navigation"],
+                    "description": "Type of browser action to perform"
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Full URL of the page where the action occurs"
+                },
+                "target": {
+                    "type": "object",
+                    "description": "Target element information (required for click actions)",
+                    "properties": {
+                        "tagName": {"type": "string", "description": "HTML tag name"},
+                        "id": {"type": "string", "description": "Element ID"},
+                        "className": {"type": "string", "description": "CSS class name"},
+                        "text": {"type": "string", "description": "Element text content"}
+                    }
+                },
+                "form_data": {
+                    "type": "object",
+                    "description": "Form data fields (required for form_submit actions)"
+                }
+            },
+            "required": ["action_type", "url"]
+        }
+    }
+}
+
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize client
+    client = AgentTrustClient()
+    
+    # Example: Click action
+    result = client.execute_action(
+        action_type="click",
+        url="https://github.com/user/repo",
+        target={
+            "tagName": "BUTTON",
+            "id": "submit-btn",
+            "text": "Submit"
+        }
+    )
+    
+    print(f"Action status: {result['status']}")
+    if result['status'] == 'allowed':
+        print(f"Action ID: {result['action_id']}")
+        print(f"Risk Level: {result['risk_level']}")
+    elif result['status'] == 'step_up_required':
+        print("Step-up authentication required")
+        # Request step-up
+        step_up_result = client.request_step_up(
+            action_data={"type": "click", "url": "https://github.com/user/repo"},
+            reason="User requested repository deletion after archiving"
+        )
+        if step_up_result['success']:
+            print("Step-up token obtained")
+    else:
+        print(f"Action denied: {result['message']}")
