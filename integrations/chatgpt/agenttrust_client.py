@@ -9,6 +9,15 @@ from datetime import datetime
 from typing import Dict, Optional, Any
 import os
 
+# Load .env file if python-dotenv is available
+try:
+    from dotenv import load_dotenv
+    # Load .env from the same directory as this script
+    load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+except ImportError:
+    # python-dotenv not installed, will use system environment variables only
+    pass
+
 
 class AgentTrustClient:
     """Client for interacting with AgentTrust API from ChatGPT"""
@@ -276,7 +285,7 @@ AGENTTRUST_FUNCTION_DEFINITION = {
     "type": "function",
     "function": {
         "name": "agenttrust_browser_action",
-        "description": "Execute a browser action (click, form submit, navigation) through AgentTrust's policy-enforced system. Returns whether action is allowed, denied, or requires step-up authentication. Always use this function before performing any browser automation.",
+        "description": "MANDATORY: Execute a browser action (click, form submit, navigation) through AgentTrust's policy-enforced system. This is the ONLY way to perform browser actions - AgentTrust validation is enforced 100% of the time. Returns whether action is allowed, denied, or requires step-up authentication. You MUST call this function before performing ANY browser automation - there is no alternative or bypass.",
         "parameters": {
             "type": "object",
             "properties": {

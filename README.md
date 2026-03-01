@@ -534,9 +534,11 @@ See [Agent Integration Guide](./docs/agent-integration.md) for complete setup in
 ## 📚 Documentation
 
 ### Essential Guides
+- [Real Agent Integration Guide](./docs/real-agent-integration.md) - **Integrate with real AI agents (ChatGPT, AutoGPT, LangChain)**
+- [Test Scenario Guide](./docs/test-scenario-guide.md) - **Test AgentTrust with real AI agents**
 - [Agent Integration Guide](./docs/agent-integration.md) - **How agents integrate with AgentTrust**
 - [Testing Setup Guide](./docs/testing-setup.md) - **Complete testing setup instructions**
-- [ChatGPT Integration Guide](./docs/chatgpt-integration.md) - **Integrate with ChatGPT's browser**
+- [ChatGPT Integration Guide](./docs/chatgpt-integration.md) - **ChatGPT-specific integration**
 
 ### Technical Documentation
 - [Architecture Documentation](./docs/architecture.md) - System architecture and design

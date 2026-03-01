@@ -64,7 +64,7 @@ function validateInput(req, res, next) {
     // Basic SQL injection pattern detection
     const sqlPatterns = [
       /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE)\b)/i,
-      /('|(\\')|(;)|(--)|(\/\*)|(\*\/)|(\+)|(\%)/i
+      /('|\\'|;|--|\/\*|\*\/|\+|\%)/i
     ];
     
     // Basic XSS pattern detection
