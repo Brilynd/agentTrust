@@ -7,47 +7,130 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>🛡 AgentTrust</h1>
-      <div class="status" id="status">
-        <span class="status-indicator" id="statusIndicator"></span>
-        <span id="statusText">Initializing...</span>
-      </div>
-    </header>
-    
-    <main>
-      <section class="agent-info" id="agentInfo">
-        <h2>Agent Identity</h2>
-        <div class="info-item">
-          <label>Agent ID:</label>
-          <span id="agentId">-</span>
-        </div>
-        <div class="info-item">
-          <label>Scopes:</label>
-          <span id="agentScopes">-</span>
-        </div>
-      </section>
+  <!-- Login Screen -->
+  <div id="loginScreen" class="screen">
+    <div class="container">
+      <header>
+        <h1>🛡 AgentTrust</h1>
+        <p class="subtitle">Login to view actions</p>
+      </header>
       
-      <section class="stats">
-        <h2>Session Stats</h2>
-        <div class="stat-grid">
-          <div class="stat-item">
-            <div class="stat-value" id="actionsCount">0</div>
-            <div class="stat-label">Actions Captured</div>
+      <main>
+        <form id="loginForm">
+          <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" required placeholder="admin@agenttrust.local">
           </div>
-          <div class="stat-item">
-            <div class="stat-value" id="highRiskCount">0</div>
-            <div class="stat-label">High Risk</div>
+          
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" required placeholder="Enter password">
           </div>
+          
+          <div id="loginError" class="error-message" style="display: none;"></div>
+          
+          <button type="submit" class="btn btn-primary" id="loginBtn">Login</button>
+          
+          <p class="register-link">
+            Don't have an account? <a href="#" id="showRegister">Register</a>
+          </p>
+        </form>
+        
+        <form id="registerForm" style="display: none;">
+          <div class="form-group">
+            <label for="regName">Name</label>
+            <input type="text" id="regName" placeholder="Your name">
+          </div>
+          
+          <div class="form-group">
+            <label for="regEmail">Email</label>
+            <input type="email" id="regEmail" required placeholder="your@email.com">
+          </div>
+          
+          <div class="form-group">
+            <label for="regPassword">Password</label>
+            <input type="password" id="regPassword" required placeholder="Min 6 characters">
+          </div>
+          
+          <div id="registerError" class="error-message" style="display: none;"></div>
+          
+          <button type="submit" class="btn btn-primary" id="registerBtn">Register</button>
+          
+          <p class="register-link">
+            Already have an account? <a href="#" id="showLogin">Login</a>
+          </p>
+        </form>
+      </main>
+    </div>
+  </div>
+  
+  <!-- Main Screen (after login) -->
+  <div id="mainScreen" class="screen" style="display: none;">
+    <div class="container">
+      <header>
+        <h1>🛡 AgentTrust</h1>
+        <div class="user-info">
+          <span id="userEmail"></span>
+          <button id="logoutBtn" class="btn-link">Logout</button>
         </div>
-      </section>
+      </header>
       
-      <section class="actions">
-        <button id="viewAudit" class="btn btn-primary">View Audit Log</button>
-        <button id="settings" class="btn btn-secondary">Settings</button>
-      </section>
-    </main>
+      <main>
+        <section class="stats">
+          <h2>Action Statistics</h2>
+          <div class="stat-grid">
+            <div class="stat-item">
+              <div class="stat-value" id="totalActions">0</div>
+              <div class="stat-label">Total Actions</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="highRiskCount">0</div>
+              <div class="stat-label">High Risk</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="blockedCount">0</div>
+              <div class="stat-label">Blocked</div>
+            </div>
+          </div>
+        </section>
+        
+        <section class="filters">
+          <h2>Filters</h2>
+          <div class="filter-group">
+            <select id="viewMode">
+              <option value="sessions">By Session</option>
+              <option value="actions">All Actions</option>
+            </select>
+            
+            <select id="riskFilter">
+              <option value="">All Risk Levels</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+            
+            <select id="typeFilter">
+              <option value="">All Types</option>
+              <option value="click">Click</option>
+              <option value="form_submit">Form Submit</option>
+              <option value="navigation">Navigation</option>
+            </select>
+            
+            <input type="text" id="domainFilter" placeholder="Filter by domain">
+            
+            <button id="applyFilters" class="btn btn-secondary">Apply</button>
+            <button id="refreshActions" class="btn btn-primary">Refresh</button>
+          </div>
+        </section>
+        
+        <section class="actions-list">
+          <h2 id="listTitle">Recent Sessions</h2>
+          <div id="actionsContainer" class="actions-container">
+            <div class="loading">Loading...</div>
+          </div>
+        </section>
+      </main>
+    </div>
   </div>
   
   <script src="popup.js"></script>

@@ -37,7 +37,8 @@ async function logAction(actionData) {
     formData,
     scopes,
     stepUpRequired,
-    reason
+    reason,
+    status // 'allowed', 'denied', or 'step_up_required'
   } = actionData;
   
   // Get previous hash for this agent
@@ -63,7 +64,8 @@ async function logAction(actionData) {
     formData,
     scopes,
     stepUpRequired,
-    reason
+    reason,
+    status: status || 'allowed' // Default to 'allowed' if not specified
   };
   
   // Store in database

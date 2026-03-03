@@ -7,6 +7,7 @@ class Action {
   constructor(data) {
     this.id = data.id;
     this.agentId = data.agent_id || data.agentId;
+    this.sessionId = data.session_id || data.sessionId;
     this.type = data.type;
     this.timestamp = data.timestamp;
     this.domain = data.domain;
@@ -19,6 +20,8 @@ class Action {
     this.scopes = data.scopes;
     this.stepUpRequired = data.step_up_required || data.stepUpRequired;
     this.reason = data.reason;
+    this.status = data.status || 'allowed'; // 'allowed', 'denied', or 'step_up_required'
+    this.screenshot = data.screenshot;
     this.createdAt = data.created_at;
   }
   
@@ -26,6 +29,7 @@ class Action {
     const {
       id,
       agentId,
+      sessionId,
       type,
       timestamp,
       domain,
@@ -37,21 +41,24 @@ class Action {
       formData,
       scopes,
       stepUpRequired,
-      reason
+      reason,
+      status,
+      screenshot
     } = data;
     
     const query = `
       INSERT INTO actions (
-        id, agent_id, type, timestamp, domain, url, risk_level,
+        id, agent_id, session_id, type, timestamp, domain, url, risk_level,
         hash, previous_hash, target, form_data, scopes,
-        step_up_required, reason
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        step_up_required, reason, status, screenshot
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
     `;
     
     const values = [
       id,
       agentId,
+      sessionId || null,
       type,
       timestamp,
       domain,
@@ -63,7 +70,9 @@ class Action {
       formData ? JSON.stringify(formData) : null,
       scopes || [],
       stepUpRequired || false,
-      reason || null
+      reason || null,
+      status || 'allowed',
+      screenshot || null
     ];
     
     try {
@@ -139,6 +148,12 @@ class Action {
       paramIndex++;
     }
     
+    if (filters.sessionId) {
+      query += ` AND session_id = $${paramIndex}`;
+      values.push(filters.sessionId);
+      paramIndex++;
+    }
+    
     if (filters.domain) {
       query += ` AND domain = $${paramIndex}`;
       values.push(filters.domain);
@@ -174,6 +189,10 @@ class Action {
     
     const result = await pool.query(query, values);
     return result.rows.map(row => new Action(row));
+  }
+  
+  static async findBySession(sessionId) {
+    return await Action.findAll({ sessionId });
   }
 }
 

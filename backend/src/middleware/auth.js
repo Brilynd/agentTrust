@@ -153,8 +153,63 @@ async function optionalAuth(req, res, next) {
   }
 }
 
+/**
+ * Middleware to authenticate users (not agents) using JWT
+ * For browser extension login
+ */
+function authenticateUser(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authorization required',
+        code: 'MISSING_AUTH'
+      });
+    }
+    
+    const token = authHeader.substring(7).trim();
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Token required',
+        code: 'MISSING_TOKEN'
+      });
+    }
+    
+    // Verify JWT token (user token, not Auth0 token)
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-this');
+    
+    // Attach user info to request
+    req.user = {
+      userId: decoded.userId,
+      email: decoded.email
+    };
+    
+    next();
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired token',
+        code: 'INVALID_TOKEN'
+      });
+    }
+    
+    console.error('User auth middleware error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Authentication error'
+    });
+  }
+}
+
 module.exports = { 
   validateAction, 
   requireScope,
-  optionalAuth 
+  optionalAuth,
+  authenticateUser
 };

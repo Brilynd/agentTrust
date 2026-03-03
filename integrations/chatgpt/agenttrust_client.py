@@ -89,7 +89,8 @@ class AgentTrustClient:
         url: str,
         target: Optional[Dict] = None,
         form_data: Optional[Dict] = None,
-        domain: Optional[str] = None
+        domain: Optional[str] = None,
+        screenshot: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Execute a browser action through AgentTrust
@@ -125,6 +126,9 @@ class AgentTrustClient:
         
         if form_data:
             action_data["form"] = {"fields": form_data}
+        
+        if screenshot:
+            action_data["screenshot"] = screenshot
         
         # Make request
         token = self._get_token()
@@ -215,6 +219,29 @@ class AgentTrustClient:
                 "success": False,
                 "error": result.get("error", "Step-up failed")
             }
+    
+    def _update_action_screenshot(self, action_id: str, screenshot: str) -> None:
+        """
+        Update an action with a screenshot (internal method)
+        
+        Args:
+            action_id: ID of the action to update
+            screenshot: Base64 encoded screenshot
+        """
+        try:
+            token = self._get_token()
+            response = requests.patch(
+                f"{self.api_url}/actions/{action_id}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json={"screenshot": screenshot}
+            )
+            if response.status_code != 200:
+                print(f"⚠️  Failed to update action with screenshot: {response.status_code}")
+        except Exception as e:
+            print(f"⚠️  Error updating screenshot: {e}")
     
     def get_audit_log(
         self,

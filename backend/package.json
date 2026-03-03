@@ -9,8 +9,11 @@
     "test": "jest",
     "test-connection": "node test-connection.js",
     "create-db": "node scripts/create-database.js",
+    "create-users": "node scripts/create-users-table.js",
+    "add-status-column": "node scripts/add-status-column.js",
+    "add-session-screenshot": "node scripts/add-session-screenshot-columns.js",
     "migrate": "node migrations/migrate.js",
-    "setup-db": "npm run create-db && npm run migrate"
+    "setup-db": "npm run create-db && npm run create-users && npm run add-status-column && npm run add-session-screenshot"
   },
   "keywords": [
     "agent",
@@ -34,7 +37,8 @@
     "axios": "^1.6.2",
     "morgan": "^1.10.0",
     "express-mongo-sanitize": "^2.2.0",
-    "hpp": "^0.2.3"
+    "hpp": "^0.2.3",
+    "bcrypt": "^5.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",

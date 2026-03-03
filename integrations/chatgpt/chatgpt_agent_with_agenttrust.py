@@ -43,24 +43,295 @@ except ImportError:
     print("   Install with: pip install selenium")
 
 
+class InterceptedWebDriver:
+    """
+    Wrapper around Selenium WebDriver that intercepts ALL actions.
+    
+    This ensures that NO browser action can occur without AgentTrust validation.
+    Even if code tries to call driver methods directly, they are intercepted.
+    """
+    
+    def __init__(self, driver, agenttrust_validator):
+        """
+        Initialize intercepted driver
+        
+        Args:
+            driver: The actual Selenium WebDriver instance
+            agenttrust_validator: Function that validates actions (raises PermissionError if denied)
+        """
+        self._driver = driver
+        self._validate = agenttrust_validator
+        self._current_url = driver.current_url if driver else None
+    
+    def _intercept_action(self, action_type: str, url: str, **kwargs):
+        """
+        Intercept any browser action - MANDATORY validation
+        
+        This is called before ANY action is executed.
+        """
+        # Validate with AgentTrust
+        validation_result = self._validate(action_type, url, **kwargs)
+        
+        if validation_result.get("status") == "denied":
+            raise PermissionError(f"❌ AgentTrust DENIED: {validation_result.get('message')}")
+        
+        if validation_result.get("status") == "step_up_required":
+            raise PermissionError(
+                f"⚠️ AgentTrust STEP-UP REQUIRED: {validation_result.get('message')}"
+            )
+        
+        # Only proceed if allowed
+        if validation_result.get("status") != "allowed":
+            raise ValueError(f"AgentTrust validation failed: {validation_result.get('status')}")
+        
+        return validation_result
+    
+    # Intercept navigation
+    def get(self, url: str):
+        """Intercept navigation - requires AgentTrust validation"""
+        self._intercept_action("navigation", url)
+        result = self._driver.get(url)
+        self._current_url = self._driver.current_url
+        return result
+    
+    # Intercept clicks via find_element
+    def find_element(self, by, value):
+        """Intercept element finding - wrap returned element to intercept clicks"""
+        element = self._driver.find_element(by, value)
+        return InterceptedWebElement(element, self._validate, self._current_url)
+    
+    def find_elements(self, by, value):
+        """Intercept element finding - wrap returned elements"""
+        elements = self._driver.find_elements(by, value)
+        return [InterceptedWebElement(el, self._validate, self._current_url) for el in elements]
+    
+    # Intercept back/forward
+    def back(self):
+        """Intercept back navigation - requires AgentTrust validation"""
+        self._intercept_action("navigation", self._current_url or "")
+        result = self._driver.back()
+        self._current_url = self._driver.current_url
+        return result
+    
+    def forward(self):
+        """Intercept forward navigation - requires AgentTrust validation"""
+        self._intercept_action("navigation", self._current_url or "")
+        result = self._driver.forward()
+        self._current_url = self._driver.current_url
+        return result
+    
+    # Delegate read-only operations directly (no interception needed)
+    @property
+    def current_url(self):
+        return self._driver.current_url
+    
+    @property
+    def title(self):
+        return self._driver.title
+    
+    @property
+    def page_source(self):
+        return self._driver.page_source
+    
+    def execute_script(self, script, *args):
+        """Intercept script execution - validate if it's an action"""
+        # Check if script contains action keywords
+        action_keywords = ['click', 'submit', 'navigate', 'location.href', 'window.open']
+        if any(keyword in script.lower() for keyword in action_keywords):
+            self._intercept_action("navigation", self._current_url or "")
+        return self._driver.execute_script(script, *args)
+    
+    def get_screenshot_as_base64(self):
+        return self._driver.get_screenshot_as_base64()
+    
+    def save_screenshot(self, filename):
+        return self._driver.save_screenshot(filename)
+    
+    def quit(self):
+        return self._driver.quit()
+    
+    def close(self):
+        return self._driver.close()
+    
+    # Delegate all other attributes to the underlying driver
+    def __getattr__(self, name):
+        attr = getattr(self._driver, name)
+        return attr
+
+
+class InterceptedWebElement:
+    """
+    Wrapper around Selenium WebElement that intercepts clicks and form submissions.
+    
+    This ensures that NO click or form action can occur without AgentTrust validation.
+    """
+    
+    def __init__(self, element, agenttrust_validator, current_url):
+        """
+        Initialize intercepted element
+        
+        Args:
+            element: The actual Selenium WebElement
+            agenttrust_validator: Function that validates actions
+            current_url: Current page URL for validation
+        """
+        self._element = element
+        self._validate = agenttrust_validator
+        self._current_url = current_url
+    
+    def click(self):
+        """Intercept click - requires AgentTrust validation"""
+        # Get element info for validation
+        try:
+            element_text = self._element.text[:50] if self._element.text else ""
+            element_id = self._element.get_attribute("id") or ""
+            target = {"text": element_text, "id": element_id}
+        except:
+            target = {}
+        
+        # Validate click action
+        validation_result = self._validate("click", self._current_url or "", target=target)
+        
+        if validation_result.get("status") == "denied":
+            raise PermissionError(f"❌ AgentTrust DENIED: {validation_result.get('message')}")
+        
+        if validation_result.get("status") == "step_up_required":
+            raise PermissionError(
+                f"⚠️ AgentTrust STEP-UP REQUIRED: {validation_result.get('message')}"
+            )
+        
+        if validation_result.get("status") != "allowed":
+            raise ValueError(f"AgentTrust validation failed: {validation_result.get('status')}")
+        
+        # Only proceed if allowed
+        return self._element.click()
+    
+    def submit(self):
+        """Intercept form submit - requires AgentTrust validation"""
+        # Get form data if possible
+        form_data = {}
+        try:
+            # Try to get form data from parent form
+            if SELENIUM_AVAILABLE:
+                from selenium.webdriver.common.by import By
+                form = self._element.find_element(By.XPATH, "./ancestor::form[1]")
+                inputs = form.find_elements(By.TAG_NAME, "input")
+                for inp in inputs:
+                    name = inp.get_attribute("name")
+                    if name:
+                        form_data[name] = inp.get_attribute("value") or ""
+        except:
+            pass
+        
+        # Validate form submit
+        validation_result = self._validate("form_submit", self._current_url or "", form_data=form_data)
+        
+        if validation_result.get("status") == "denied":
+            raise PermissionError(f"❌ AgentTrust DENIED: {validation_result.get('message')}")
+        
+        if validation_result.get("status") == "step_up_required":
+            raise PermissionError(
+                f"⚠️ AgentTrust STEP-UP REQUIRED: {validation_result.get('message')}"
+            )
+        
+        if validation_result.get("status") != "allowed":
+            raise ValueError(f"AgentTrust validation failed: {validation_result.get('status')}")
+        
+        # Only proceed if allowed
+        return self._element.submit()
+    
+    def send_keys(self, *value):
+        """Intercept send_keys - validate as form interaction"""
+        # Get field info
+        field_name = self._element.get_attribute("name") or self._element.get_attribute("id") or ""
+        form_data = {field_name: "".join(str(v) for v in value)} if field_name else {}
+        
+        # Validate form interaction
+        validation_result = self._validate("form_submit", self._current_url or "", form_data=form_data)
+        
+        if validation_result.get("status") == "denied":
+            raise PermissionError(f"❌ AgentTrust DENIED: {validation_result.get('message')}")
+        
+        if validation_result.get("status") == "step_up_required":
+            raise PermissionError(
+                f"⚠️ AgentTrust STEP-UP REQUIRED: {validation_result.get('message')}"
+            )
+        
+        if validation_result.get("status") != "allowed":
+            raise ValueError(f"AgentTrust validation failed: {validation_result.get('status')}")
+        
+        return self._element.send_keys(*value)
+    
+    # Delegate read-only operations
+    @property
+    def text(self):
+        return self._element.text
+    
+    def get_attribute(self, name):
+        return self._element.get_attribute(name)
+    
+    def is_displayed(self):
+        return self._element.is_displayed()
+    
+    def is_enabled(self):
+        return self._element.is_enabled()
+    
+    def clear(self):
+        return self._element.clear()
+    
+    def find_element(self, by, value):
+        element = self._element.find_element(by, value)
+        return InterceptedWebElement(element, self._validate, self._current_url)
+    
+    def find_elements(self, by, value):
+        elements = self._element.find_elements(by, value)
+        return [InterceptedWebElement(el, self._validate, self._current_url) for el in elements]
+    
+    # Delegate all other attributes
+    def __getattr__(self, name):
+        return getattr(self._element, name)
+
+
 class BrowserController:
     """
     Browser automation controller using Selenium.
-    Provides methods to interact with the browser and get page content.
+    
+    CRITICAL: The WebDriver is wrapped with InterceptedWebDriver, which ensures
+    that NO browser action can occur without AgentTrust validation, even if
+    code tries to call driver methods directly.
     """
     
-    def __init__(self, headless: bool = False):
-        """Initialize browser controller"""
+    def __init__(self, headless: bool = False, agenttrust_validator=None):
+        """
+        Initialize browser controller
+        
+        Args:
+            headless: Run browser in headless mode
+            agenttrust_validator: Function to validate actions (REQUIRED for interception)
+        """
         if not SELENIUM_AVAILABLE:
             raise ImportError("Selenium is required for browser automation. Install with: pip install selenium")
+        
+        if not agenttrust_validator:
+            raise ValueError("agenttrust_validator is REQUIRED - browser actions cannot be performed without it")
         
         options = webdriver.ChromeOptions()
         if headless:
             options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
         
-        self.driver = webdriver.Chrome(options=options)
+        # Initialize actual driver
+        actual_driver = webdriver.Chrome(options=options)
+        actual_driver.implicitly_wait(5)
+        
+        # CRITICAL: Wrap driver with interception layer
+        # This ensures NO action can bypass AgentTrust validation
+        self.driver = InterceptedWebDriver(actual_driver, agenttrust_validator)
+        self._actual_driver = actual_driver  # Keep reference for cleanup
         self.current_url = None
     
     def navigate(self, url: str):
@@ -156,7 +427,7 @@ class BrowserController:
         Click an element based on target information
         
         Args:
-            target: dict with id, text, class, or other identifiers
+            target: dict with id, text, class, href, tagName, or other identifiers
         
         Returns:
             dict with success status
@@ -166,20 +437,76 @@ class BrowserController:
             
             # Try to find by ID first
             if target.get("id"):
-                element = self.driver.find_element(By.ID, target["id"])
-            # Try by text
-            elif target.get("text"):
-                element = self.driver.find_element(By.XPATH, f"//*[contains(text(), '{target['text'][:50]}')]")
-            # Try by class
-            elif target.get("className"):
-                element = self.driver.find_element(By.CLASS_NAME, target["className"])
+                try:
+                    element = self.driver.find_element(By.ID, target["id"])
+                except NoSuchElementException:
+                    pass
             
-            if element and element.is_displayed():
-                element.click()
-                return {"success": True, "message": "Element clicked successfully"}
+            # Try by href (for links)
+            if not element and target.get("href"):
+                try:
+                    element = self.driver.find_element(By.XPATH, f"//a[@href='{target['href']}']")
+                except NoSuchElementException:
+                    # Try partial match
+                    try:
+                        element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{target['href']}')]")
+                    except NoSuchElementException:
+                        pass
+            
+            # Try by text content
+            if not element and target.get("text"):
+                try:
+                    # Try exact match first
+                    element = self.driver.find_element(By.XPATH, f"//*[normalize-space(text())='{target['text'][:100]}']")
+                except NoSuchElementException:
+                    # Try partial match
+                    try:
+                        element = self.driver.find_element(By.XPATH, f"//*[contains(text(), '{target['text'][:50]}')]")
+                    except NoSuchElementException:
+                        pass
+            
+            # Try by tag name + text (for buttons, links)
+            if not element and target.get("tagName") and target.get("text"):
+                try:
+                    tag = target["tagName"].upper()
+                    element = self.driver.find_element(By.XPATH, f"//{tag}[contains(text(), '{target['text'][:50]}')]")
+                except NoSuchElementException:
+                    pass
+            
+            # Try by class name
+            if not element and target.get("className"):
+                try:
+                    element = self.driver.find_element(By.CLASS_NAME, target["className"])
+                except NoSuchElementException:
+                    pass
+            
+            # Try by CSS selector if provided
+            if not element and target.get("selector"):
+                try:
+                    element = self.driver.find_element(By.CSS_SELECTOR, target["selector"])
+                except NoSuchElementException:
+                    pass
+            
+            if element:
+                # Scroll element into view
+                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                
+                # Wait for element to be clickable
+                WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(element))
+                
+                if element.is_displayed():
+                    element.click()
+                    # Wait a bit for page to respond
+                    import time
+                    time.sleep(0.5)
+                    return {"success": True, "message": "Element clicked successfully", "new_url": self.driver.current_url}
+                else:
+                    return {"success": False, "message": "Element found but not visible"}
             else:
-                return {"success": False, "message": "Element not found or not visible"}
+                return {"success": False, "message": "Element not found with provided identifiers"}
         
+        except TimeoutException:
+            return {"success": False, "message": "Element not clickable within timeout"}
         except Exception as e:
             return {"success": False, "message": f"Error clicking element: {str(e)}"}
     
@@ -217,6 +544,211 @@ class BrowserController:
         
         except Exception as e:
             return {"success": False, "message": f"Error submitting form: {str(e)}"}
+    
+    def open_link(self, href: Optional[str] = None, link_text: Optional[str] = None, link_index: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Open a link on the current page
+        
+        Args:
+            href: Link URL to open (full or partial)
+            link_text: Text content of the link
+            link_index: Index of link in visible links list (0-based)
+        
+        Returns:
+            dict with success status and new URL
+        """
+        try:
+            element = None
+            
+            # Find by index
+            if link_index is not None:
+                links = self.driver.find_elements(By.TAG_NAME, "a")
+                visible_links = [link for link in links if link.is_displayed()]
+                if 0 <= link_index < len(visible_links):
+                    element = visible_links[link_index]
+            
+            # Find by href
+            if not element and href:
+                try:
+                    # Try exact match
+                    element = self.driver.find_element(By.XPATH, f"//a[@href='{href}']")
+                except NoSuchElementException:
+                    # Try partial match
+                    try:
+                        element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
+                    except NoSuchElementException:
+                        pass
+            
+            # Find by text
+            if not element and link_text:
+                try:
+                    element = self.driver.find_element(By.XPATH, f"//a[contains(text(), '{link_text[:50]}')]")
+                except NoSuchElementException:
+                    pass
+            
+            if element and element.is_displayed():
+                # Get the href before clicking
+                link_href = element.get_attribute("href")
+                
+                # Scroll into view and click
+                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(element))
+                element.click()
+                
+                # Wait for navigation
+                import time
+                time.sleep(1)
+                
+                return {
+                    "success": True,
+                    "message": "Link opened successfully",
+                    "href": link_href,
+                    "new_url": self.driver.current_url
+                }
+            else:
+                return {"success": False, "message": "Link not found or not visible"}
+        
+        except Exception as e:
+            return {"success": False, "message": f"Error opening link: {str(e)}"}
+    
+    def type_text(self, target: Dict[str, Any], text: str) -> Dict[str, Any]:
+        """
+        Type text into an input field
+        
+        Args:
+            target: dict identifying the input (id, name, placeholder, etc.)
+            text: Text to type
+        
+        Returns:
+            dict with success status
+        """
+        try:
+            element = None
+            
+            # Try by ID
+            if target.get("id"):
+                try:
+                    element = self.driver.find_element(By.ID, target["id"])
+                except NoSuchElementException:
+                    pass
+            
+            # Try by name
+            if not element and target.get("name"):
+                try:
+                    element = self.driver.find_element(By.NAME, target["name"])
+                except NoSuchElementException:
+                    pass
+            
+            # Try by placeholder
+            if not element and target.get("placeholder"):
+                try:
+                    element = self.driver.find_element(By.XPATH, f"//input[@placeholder='{target['placeholder']}']")
+                except NoSuchElementException:
+                    pass
+            
+            # Try by CSS selector
+            if not element and target.get("selector"):
+                try:
+                    element = self.driver.find_element(By.CSS_SELECTOR, target["selector"])
+                except NoSuchElementException:
+                    pass
+            
+            if element and element.is_displayed():
+                element.clear()
+                element.send_keys(text)
+                return {"success": True, "message": f"Text typed successfully: {text[:50]}"}
+            else:
+                return {"success": False, "message": "Input field not found or not visible"}
+        
+        except Exception as e:
+            return {"success": False, "message": f"Error typing text: {str(e)}"}
+    
+    def scroll_page(self, direction: str = "down", amount: int = 3) -> Dict[str, Any]:
+        """
+        Scroll the page
+        
+        Args:
+            direction: "down", "up", "top", or "bottom"
+            amount: Number of scroll steps (for down/up)
+        
+        Returns:
+            dict with success status
+        """
+        try:
+            if direction == "down":
+                for _ in range(amount):
+                    self.driver.execute_script("window.scrollBy(0, 500);")
+            elif direction == "up":
+                for _ in range(amount):
+                    self.driver.execute_script("window.scrollBy(0, -500);")
+            elif direction == "top":
+                self.driver.execute_script("window.scrollTo(0, 0);")
+            elif direction == "bottom":
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            
+            import time
+            time.sleep(0.3)
+            
+            return {"success": True, "message": f"Page scrolled {direction}"}
+        except Exception as e:
+            return {"success": False, "message": f"Error scrolling: {str(e)}"}
+    
+    def go_back(self) -> Dict[str, Any]:
+        """Go back in browser history"""
+        try:
+            self.driver.back()
+            import time
+            time.sleep(0.5)
+            return {"success": True, "message": "Navigated back", "url": self.driver.current_url}
+        except Exception as e:
+            return {"success": False, "message": f"Error going back: {str(e)}"}
+    
+    def go_forward(self) -> Dict[str, Any]:
+        """Go forward in browser history"""
+        try:
+            self.driver.forward()
+            import time
+            time.sleep(0.5)
+            return {"success": True, "message": "Navigated forward", "url": self.driver.current_url}
+        except Exception as e:
+            return {"success": False, "message": f"Error going forward: {str(e)}"}
+    
+    def wait_for_element(self, target: Dict[str, Any], timeout: int = 10) -> Dict[str, Any]:
+        """
+        Wait for an element to appear on the page
+        
+        Args:
+            target: dict identifying the element
+            timeout: Maximum wait time in seconds
+        
+        Returns:
+            dict with success status
+        """
+        try:
+            element = None
+            
+            if target.get("id"):
+                element = WebDriverWait(self.driver, timeout).until(
+                    EC.presence_of_element_located((By.ID, target["id"]))
+                )
+            elif target.get("class"):
+                element = WebDriverWait(self.driver, timeout).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, target["class"]))
+                )
+            elif target.get("text"):
+                element = WebDriverWait(self.driver, timeout).until(
+                    EC.presence_of_element_located((By.XPATH, f"//*[contains(text(), '{target['text'][:50]}')]"))
+                )
+            
+            if element:
+                return {"success": True, "message": "Element appeared", "element_found": True}
+            else:
+                return {"success": False, "message": "Element did not appear within timeout"}
+        
+        except TimeoutException:
+            return {"success": False, "message": f"Element not found within {timeout} seconds"}
+        except Exception as e:
+            return {"success": False, "message": f"Error waiting for element: {str(e)}"}
     
     def take_screenshot(self, save_path: Optional[str] = None) -> str:
         """
@@ -259,6 +791,19 @@ class BrowserActionExecutor:
         self.agenttrust = agenttrust_client
         self.browser = browser_controller
         self.action_history = []
+    
+    def _validate_action(self, action_type: str, url: str, **kwargs):
+        """
+        Internal validation function used by intercepted WebDriver
+        
+        This is called by InterceptedWebDriver for ALL browser actions.
+        """
+        result = self.agenttrust.execute_action(
+            action_type=action_type,
+            url=url,
+            **kwargs
+        )
+        return result
     
     def execute_click(self, url: str, target: dict, **kwargs):
         """
@@ -320,8 +865,23 @@ class BrowserActionExecutor:
         
         # Actually perform the click if browser is available
         browser_result = None
+        screenshot = None
         if self.browser and target:
             browser_result = self.browser.click_element(target)
+            # Capture screenshot AFTER action (to see result)
+            if browser_result and browser_result.get("success"):
+                try:
+                    import time
+                    time.sleep(0.5)  # Wait for page to update
+                    screenshot = self.browser.take_screenshot()
+                    # Update action with screenshot via API
+                    if screenshot and result.get("action_id"):
+                        try:
+                            self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
+                        except:
+                            pass  # Non-critical
+                except Exception as e:
+                    print(f"⚠️  Failed to capture screenshot: {e}")
         
         return {
             "status": "allowed",
@@ -329,7 +889,8 @@ class BrowserActionExecutor:
             "risk_level": result.get("risk_level"),
             "message": "Click action validated and allowed by AgentTrust",
             "executed": browser_result is not None,
-            "browser_result": browser_result
+            "browser_result": browser_result,
+            "screenshot": screenshot
         }
     
     def execute_form_submit(self, url: str, form_data: dict, **kwargs):
@@ -392,8 +953,23 @@ class BrowserActionExecutor:
         
         # Actually perform the form submit if browser is available
         browser_result = None
+        screenshot = None
         if self.browser and form_data:
             browser_result = self.browser.submit_form(form_data)
+            # Capture screenshot AFTER action (to see result)
+            if browser_result and browser_result.get("success"):
+                try:
+                    import time
+                    time.sleep(1)  # Wait for form submission to complete
+                    screenshot = self.browser.take_screenshot()
+                    # Update action with screenshot
+                    if screenshot and result.get("action_id"):
+                        try:
+                            self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
+                        except Exception as e:
+                            print(f"⚠️  Failed to update screenshot: {e}")
+                except Exception as e:
+                    print(f"⚠️  Failed to capture screenshot: {e}")
         
         return {
             "status": "allowed",
@@ -401,7 +977,8 @@ class BrowserActionExecutor:
             "risk_level": result.get("risk_level"),
             "message": "Form submit action validated and allowed by AgentTrust",
             "executed": browser_result is not None,
-            "browser_result": browser_result
+            "browser_result": browser_result,
+            "screenshot": screenshot
         }
     
     def execute_navigation(self, url: str, **kwargs):
@@ -463,8 +1040,23 @@ class BrowserActionExecutor:
         
         # Actually perform the navigation if browser is available
         browser_result = None
+        screenshot = None
         if self.browser:
             browser_result = self.browser.navigate(url)
+            # Capture screenshot AFTER navigation (to see new page)
+            if browser_result and browser_result.get("success"):
+                try:
+                    import time
+                    time.sleep(1.5)  # Wait for page to load
+                    screenshot = self.browser.take_screenshot()
+                    # Update action with screenshot
+                    if screenshot and result.get("action_id"):
+                        try:
+                            self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
+                        except Exception as e:
+                            print(f"⚠️  Failed to update screenshot: {e}")
+                except Exception as e:
+                    print(f"⚠️  Failed to capture screenshot: {e}")
         
         return {
             "status": "allowed",
@@ -472,7 +1064,8 @@ class BrowserActionExecutor:
             "risk_level": result.get("risk_level"),
             "message": "Navigation action validated and allowed by AgentTrust",
             "executed": browser_result is not None,
-            "browser_result": browser_result
+            "browser_result": browser_result,
+            "screenshot": screenshot
         }
     
     def get_page_content(self, include_html: bool = False) -> Dict[str, Any]:
@@ -508,6 +1101,161 @@ class BrowserActionExecutor:
             return ""
         
         return self.browser.get_current_url()
+    
+    def open_link(self, href: Optional[str] = None, link_text: Optional[str] = None, link_index: Optional[int] = None):
+        """
+        Open a link on the current page - MANDATORY AgentTrust validation
+        
+        This requires navigation validation through AgentTrust.
+        """
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        
+        # Get current URL first
+        current_url = self.browser.get_current_url()
+        
+        # Determine target URL
+        target_url = href
+        if not target_url and link_text:
+            # Find link to get its href
+            links = self.browser.get_visible_elements("link")
+            for link in links:
+                if link.get("text") and link_text.lower() in link.get("text", "").lower():
+                    target_url = link.get("href")
+                    break
+        
+        if not target_url:
+            return {"error": "Could not determine link URL"}
+        
+        # Validate navigation through AgentTrust
+        try:
+            result = self.execute_navigation(target_url)
+            # If navigation allowed, actually open the link
+            if result.get("status") == "allowed" and self.browser:
+                link_result = self.browser.open_link(href=href, link_text=link_text, link_index=link_index)
+                # Screenshot is already captured in execute_navigation
+                return {
+                    "status": "allowed",
+                    "action_id": result.get("action_id"),
+                    "risk_level": result.get("risk_level"),
+                    "link_opened": link_result.get("success", False),
+                    "new_url": link_result.get("new_url", target_url)
+                }
+            return result
+        except PermissionError as e:
+            return {"status": "denied", "message": str(e)}
+    
+    def type_text(self, target: Dict[str, Any], text: str):
+        """
+        Type text into an input field - MANDATORY AgentTrust validation
+        
+        Typing text is considered a form interaction and requires validation.
+        """
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        
+        current_url = self.browser.get_current_url()
+        
+        # Validate as form interaction
+        try:
+            # For typing, we validate as a form action
+            result = self.agenttrust.execute_action(
+                action_type="form_submit",  # Use form_submit for typing validation
+                url=current_url,
+                form_data={target.get("name") or target.get("id"): text}
+            )
+            
+            if result.get("status") == "allowed":
+                type_result = self.browser.type_text(target, text)
+                # Capture screenshot after typing
+                screenshot = None
+                if type_result.get("success"):
+                    try:
+                        import time
+                        time.sleep(0.3)
+                        screenshot = self.browser.take_screenshot()
+                        if screenshot and result.get("action_id"):
+                            try:
+                                self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                return {
+                    "status": "allowed",
+                    "action_id": result.get("action_id"),
+                    "risk_level": result.get("risk_level"),
+                    "typed": type_result.get("success", False)
+                }
+            elif result.get("status") == "denied":
+                raise PermissionError(result.get("message", "Typing denied by AgentTrust"))
+            elif result.get("status") == "step_up_required":
+                raise PermissionError(f"Step-up required: {result.get('message')}")
+        except PermissionError as e:
+            return {"status": "denied", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def scroll_page(self, direction: str = "down", amount: int = 3):
+        """Scroll the page - NO AgentTrust validation needed (read-only navigation)"""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        
+        return self.browser.scroll_page(direction, amount)
+    
+    def go_back(self):
+        """Go back in browser history - MANDATORY AgentTrust validation"""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        
+        # Get previous URL from history if possible, or use current URL
+        current_url = self.browser.get_current_url()
+        
+        try:
+            # Validate navigation back
+            result = self.execute_navigation(current_url)  # Navigation validation
+            if result.get("status") == "allowed":
+                back_result = self.browser.go_back()
+                return {
+                    "status": "allowed",
+                    "action_id": result.get("action_id"),
+                    "risk_level": result.get("risk_level"),
+                    "navigated_back": back_result.get("success", False),
+                    "url": back_result.get("url", "")
+                }
+            return result
+        except PermissionError as e:
+            return {"status": "denied", "message": str(e)}
+    
+    def go_forward(self):
+        """Go forward in browser history - MANDATORY AgentTrust validation"""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        
+        current_url = self.browser.get_current_url()
+        
+        try:
+            result = self.execute_navigation(current_url)
+            if result.get("status") == "allowed":
+                forward_result = self.browser.go_forward()
+                return {
+                    "status": "allowed",
+                    "action_id": result.get("action_id"),
+                    "risk_level": result.get("risk_level"),
+                    "navigated_forward": forward_result.get("success", False),
+                    "url": forward_result.get("url", "")
+                }
+            return result
+        except PermissionError as e:
+            return {"status": "denied", "message": str(e)}
+    
+    def wait_for_element(self, target: Dict[str, Any], timeout: int = 10):
+        """Wait for element - NO AgentTrust validation needed (read-only)"""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        
+        return self.browser.wait_for_element(target, timeout)
     
     def take_screenshot(self) -> str:
         """Take screenshot - NO AgentTrust validation needed (read-only)"""
@@ -554,20 +1302,31 @@ class ChatGPTAgentWithAgentTrust:
             print("  - AUTH0_AUDIENCE")
             sys.exit(1)
         
-        # Initialize browser controller if enabled
+        # CRITICAL: Create mandatory browser action executor FIRST
+        # This provides the validation function needed for browser interception
+        self.browser_executor = BrowserActionExecutor(agenttrust_client, None)
+        
+        # Initialize browser controller if enabled - MUST pass validator for interception
         browser_controller = None
         if enable_browser:
             try:
-                browser_controller = BrowserController(headless=headless)
-                print("✅ Browser automation enabled")
+                # Create validator function that uses the executor
+                def validator(action_type, url, **kwargs):
+                    return self.browser_executor._validate_action(action_type, url, **kwargs)
+                
+                browser_controller = BrowserController(
+                    headless=headless,
+                    agenttrust_validator=validator
+                )
+                
+                # Now set the browser on the executor
+                self.browser_executor.browser = browser_controller
+                print("✅ Browser automation enabled with MANDATORY AgentTrust interception")
             except ImportError:
                 print("⚠️  Browser automation disabled (Selenium not available)")
             except Exception as e:
                 print(f"⚠️  Browser automation disabled: {e}")
         
-        # CRITICAL: Create mandatory browser action executor
-        # This is the ONLY way to perform browser actions - 100% AgentTrust enforcement
-        self.browser_executor = BrowserActionExecutor(agenttrust_client, browser_controller)
         self.agenttrust = agenttrust_client  # Keep reference for audit log queries
         
         self.conversation_history = []
@@ -587,32 +1346,32 @@ class ChatGPTAgentWithAgentTrust:
         """
         print(f"\n👤 User: {user_message}\n")
         
-        # System prompt - AgentTrust is MANDATORY, not optional
+        # System prompt - simplified since interception is now at code level
         system_prompt = """You are a browser automation assistant with AgentTrust integration.
-
-CRITICAL: AgentTrust validation is MANDATORY for ALL browser actions. There is no way to bypass it.
 
 BROWSER INTERACTION:
 - You can see what's on the page using get_page_content and get_visible_elements functions
-- These are READ-ONLY functions - no AgentTrust validation needed
+- These are READ-ONLY functions - no validation needed
 - Use these to understand the page before taking actions
 
-WORKFLOW:
-1. First, use get_page_content or get_visible_elements to see what's on the page
-2. When you want to perform ANY browser action (click, form submit, navigation), you MUST call the agenttrust_browser_action function
-3. The function will return one of three statuses:
-   - "allowed": Action is approved by AgentTrust - you can proceed
-   - "step_up_required": High-risk action requires user approval - ask the user
-   - "denied": Action is blocked by AgentTrust policy - explain why and stop
-4. You CANNOT perform browser actions without calling this function first
-5. The function is the ONLY way to validate actions - there is no alternative
+AVAILABLE COMMANDS:
+READ-ONLY (no validation needed):
+- get_page_content: See page text and HTML
+- get_visible_elements: See buttons, links, inputs on the page
+- get_current_url: Get current page URL
+- scroll_page: Scroll up/down/top/bottom
+- wait_for_element: Wait for element to appear
+- take_screenshot: Capture page screenshot
 
-IMPORTANT:
-- Every browser action MUST go through AgentTrust validation
-- Reading page content does NOT require validation (it's read-only)
-- If validation fails, the action cannot proceed
-- Always explain what you're doing and why
-- Report AgentTrust validation results to the user"""
+BROWSER ACTIONS (automatically validated):
+- agenttrust_browser_action: Click, form submit, or navigate
+- open_link: Open/follow a link on the page
+- type_text: Type into input fields
+- go_back: Navigate back in history
+- go_forward: Navigate forward in history
+
+NOTE: All browser actions are automatically intercepted and validated by AgentTrust at the code level.
+If an action is denied, you will receive an error and cannot proceed. Always explain what you're doing."""
         
         messages = [
             {"role": "system", "content": system_prompt}
@@ -667,6 +1426,125 @@ IMPORTANT:
                         "parameters": {
                             "type": "object",
                             "properties": {}
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "open_link",
+                        "description": "Open/follow a link on the current page. Can find link by href, text, or index. Requires AgentTrust validation.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "href": {
+                                    "type": "string",
+                                    "description": "Link URL (full or partial) to open"
+                                },
+                                "link_text": {
+                                    "type": "string",
+                                    "description": "Text content of the link to open"
+                                },
+                                "link_index": {
+                                    "type": "integer",
+                                    "description": "Index of link in visible links list (0-based). Use get_visible_elements first to see available links."
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "type_text",
+                        "description": "Type text into an input field on the page. Requires AgentTrust validation.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "target": {
+                                    "type": "object",
+                                    "description": "Target input field (id, name, placeholder, or selector)",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "name": {"type": "string"},
+                                        "placeholder": {"type": "string"},
+                                        "selector": {"type": "string"}
+                                    }
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "Text to type into the field"
+                                }
+                            },
+                            "required": ["target", "text"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "scroll_page",
+                        "description": "Scroll the page up, down, to top, or to bottom. This is READ-ONLY navigation - no AgentTrust validation needed.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "direction": {
+                                    "type": "string",
+                                    "enum": ["down", "up", "top", "bottom"],
+                                    "description": "Scroll direction"
+                                },
+                                "amount": {
+                                    "type": "integer",
+                                    "description": "Number of scroll steps (for down/up, default: 3)"
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "go_back",
+                        "description": "Go back in browser history. Requires AgentTrust validation.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "go_forward",
+                        "description": "Go forward in browser history. Requires AgentTrust validation.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "wait_for_element",
+                        "description": "Wait for an element to appear on the page. This is READ-ONLY - no AgentTrust validation needed.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "target": {
+                                    "type": "object",
+                                    "description": "Element to wait for (id, class, or text)",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "class": {"type": "string"},
+                                        "text": {"type": "string"}
+                                    }
+                                },
+                                "timeout": {
+                                    "type": "integer",
+                                    "description": "Maximum wait time in seconds (default: 10)"
+                                }
+                            }
                         }
                     }
                 }
@@ -738,6 +1616,79 @@ IMPORTANT:
                             "description": "Get current page URL",
                             "parameters": {"type": "object", "properties": {}}
                         }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "open_link",
+                            "description": "Open a link on the current page",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "href": {"type": "string"},
+                                    "link_text": {"type": "string"},
+                                    "link_index": {"type": "integer"}
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "type_text",
+                            "description": "Type text into an input field",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "target": {"type": "object"},
+                                    "text": {"type": "string"}
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "scroll_page",
+                            "description": "Scroll the page",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "direction": {"type": "string"},
+                                    "amount": {"type": "integer"}
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "go_back",
+                            "description": "Go back in browser history",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "go_forward",
+                            "description": "Go forward in browser history",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "wait_for_element",
+                            "description": "Wait for element to appear",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "target": {"type": "object"},
+                                    "timeout": {"type": "integer"}
+                                }
+                            }
+                        }
                     }
                 ])
             
@@ -789,6 +1740,58 @@ IMPORTANT:
             url = self.browser_executor.get_current_url()
             print(f"🌐 Current URL: {url}")
             return {"url": url}
+        
+        elif function_name == "open_link":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.open_link(
+                href=args.get("href"),
+                link_text=args.get("link_text"),
+                link_index=args.get("link_index")
+            )
+            if result.get("status") == "allowed":
+                print(f"🔗 Link opened: {result.get('new_url', 'N/A')}")
+            return result
+        
+        elif function_name == "type_text":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.type_text(
+                target=args.get("target", {}),
+                text=args.get("text", "")
+            )
+            if result.get("status") == "allowed":
+                print(f"⌨️  Text typed into field")
+            return result
+        
+        elif function_name == "scroll_page":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.scroll_page(
+                direction=args.get("direction", "down"),
+                amount=args.get("amount", 3)
+            )
+            print(f"📜 Page scrolled {args.get('direction', 'down')}")
+            return result
+        
+        elif function_name == "go_back":
+            result = self.browser_executor.go_back()
+            if result.get("status") == "allowed":
+                print(f"⬅️  Navigated back to: {result.get('url', 'N/A')}")
+            return result
+        
+        elif function_name == "go_forward":
+            result = self.browser_executor.go_forward()
+            if result.get("status") == "allowed":
+                print(f"➡️  Navigated forward to: {result.get('url', 'N/A')}")
+            return result
+        
+        elif function_name == "wait_for_element":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.wait_for_element(
+                target=args.get("target", {}),
+                timeout=args.get("timeout", 10)
+            )
+            if result.get("success"):
+                print(f"⏳ Element appeared")
+            return result
         
         # Handle browser action function (requires AgentTrust validation)
         elif function_name == "agenttrust_browser_action":

@@ -76,6 +76,8 @@ app.use(validateInput);
 // Routes
 app.use('/api/actions', require('./routes/actions'));
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/users', require('./routes/users'));
+app.use('/api/sessions', require('./routes/sessions'));
 app.use('/api/policies', require('./routes/policies'));
 app.use('/api/audit', require('./routes/audit'));
 

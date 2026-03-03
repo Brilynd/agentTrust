@@ -47,6 +47,34 @@ async function getAuthToken() {
   throw new Error('No valid token. Please authenticate in the extension popup.');
 }
 
+async function captureScreenshot(tabId) {
+  try {
+    if (!tabId) {
+      return null;
+    }
+    
+    // Get the tab to capture
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+      return null; // Can't capture chrome:// pages
+    }
+    
+    // Capture visible tab as screenshot
+    // Note: captureVisibleTab requires active window, so we use the tab's windowId
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: 'png',
+      quality: 80
+    });
+    
+    // Convert to base64 (remove data:image/png;base64, prefix)
+    const base64 = dataUrl.split(',')[1];
+    return base64;
+  } catch (error) {
+    console.warn('Failed to capture screenshot:', error);
+    return null;
+  }
+}
+
 async function handleActionCapture(actionData, tab) {
   try {
     // Get configuration
@@ -59,6 +87,12 @@ async function handleActionCapture(actionData, tab) {
     
     if (!config.apiUrl) {
       throw new Error('API URL not configured');
+    }
+    
+    // Capture screenshot if tab is available
+    let screenshot = null;
+    if (tab && tab.id) {
+      screenshot = await captureScreenshot(tab.id);
     }
     
     // Get auth token
@@ -88,7 +122,8 @@ async function handleActionCapture(actionData, tab) {
         domain: actionData.domain,
         target: actionData.target,
         form: actionData.form,
-        timestamp: actionData.timestamp
+        timestamp: actionData.timestamp,
+        screenshot: screenshot // Include screenshot
       })
     });
     

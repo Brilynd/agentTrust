@@ -61,11 +61,24 @@ async function migrate() {
   try {
     console.log('Running migrations...');
     
+    // Create sessions table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        id VARCHAR(255) PRIMARY KEY,
+        agent_id VARCHAR(255) NOT NULL,
+        started_at TIMESTAMP DEFAULT NOW(),
+        ended_at TIMESTAMP,
+        action_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
     // Create actions table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS actions (
         id VARCHAR(255) PRIMARY KEY,
         agent_id VARCHAR(255) NOT NULL,
+        session_id VARCHAR(255),
         type VARCHAR(50) NOT NULL,
         timestamp TIMESTAMP NOT NULL,
         domain VARCHAR(255) NOT NULL,
@@ -78,8 +91,42 @@ async function migrate() {
         scopes TEXT[],
         step_up_required BOOLEAN DEFAULT FALSE,
         reason TEXT,
+        status VARCHAR(20) DEFAULT 'allowed',
+        screenshot TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       )
+    `);
+    
+    // Add status column if it doesn't exist (for existing databases)
+    await pool.query(`
+      ALTER TABLE actions 
+      ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'allowed'
+    `);
+    
+    // Add session_id column if it doesn't exist
+    await pool.query(`
+      ALTER TABLE actions 
+      ADD COLUMN IF NOT EXISTS session_id VARCHAR(255)
+    `);
+    
+    // Add screenshot column if it doesn't exist
+    await pool.query(`
+      ALTER TABLE actions 
+      ADD COLUMN IF NOT EXISTS screenshot TEXT
+    `);
+    
+    // Create foreign key for session_id
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'fk_actions_session'
+        ) THEN
+          ALTER TABLE actions 
+          ADD CONSTRAINT fk_actions_session 
+          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
     `);
     
     // Create index on agent_id for faster queries
@@ -100,6 +147,16 @@ async function migrate() {
     // Create index on risk_level for risk filtering
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_actions_risk_level ON actions(risk_level)
+    `);
+    
+    // Create index on session_id for session queries
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_actions_session_id ON actions(session_id)
+    `);
+    
+    // Create index on agent_id and started_at for session queries
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_agent_started ON sessions(agent_id, started_at)
     `);
     
     console.log('Migrations completed successfully!');
