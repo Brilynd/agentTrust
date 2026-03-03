@@ -24,6 +24,16 @@ import os
 import json
 import sys
 import base64
+import io
+
+# Fix emoji output on Windows terminals that use cp1252
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from typing import Optional, Dict, List, Any
 from openai import OpenAI
 from agenttrust_client import AgentTrustClient, AGENTTRUST_FUNCTION_DEFINITION
@@ -326,9 +336,8 @@ class BrowserController:
     """
     
     def _get_extension_path(self) -> Optional[str]:
-        """Get absolute path to AgentTrust extension folder for auto-loading."""
+        """Get absolute path to AgentTrust extension folder."""
         try:
-            # Script is in integrations/chatgpt/, extension is at project_root/extension
             script_dir = os.path.dirname(os.path.abspath(__file__))
             project_root = os.path.dirname(os.path.dirname(script_dir))
             ext_path = os.path.join(project_root, 'extension')
@@ -337,6 +346,7 @@ class BrowserController:
         except Exception:
             pass
         return None
+    
     
     def __init__(self, headless: bool = False, agenttrust_validator=None):
         """
@@ -352,54 +362,28 @@ class BrowserController:
         if not agenttrust_validator:
             raise ValueError("agenttrust_validator is REQUIRED - browser actions cannot be performed without it")
         
+        extension_path = self._get_extension_path()
+        load_ext = extension_path and os.getenv("AGENTTRUST_LOAD_EXTENSION", "true").lower() == "true"
+        
         options = webdriver.ChromeOptions()
         if headless:
-            options.add_argument('--headless')
+            options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-        # Load AgentTrust extension - use Edge if Chrome 137+ blocks it (Edge still supports --load-extension)
-        extension_path = self._get_extension_path()
-        load_extension = not headless and extension_path and os.getenv("AGENTTRUST_LOAD_EXTENSION", "true").lower() == "true"
-        if load_extension:
+        if load_ext:
             options.add_argument(f'--load-extension={extension_path}')
-            options.add_argument('--disable-features=DisableLoadExtensionCommandLineSwitch')
+            # Chrome 137+ blocks --load-extension in standard Chrome.
+            # Setting browser_version forces Selenium Manager to use Chrome for Testing,
+            # which still supports extension loading.
+            options.browser_version = 'stable'
         
-        actual_driver = None
-        # Try Chrome first
-        try:
-            actual_driver = webdriver.Chrome(options=options)
-            if load_extension:
-                print("✅ AgentTrust extension installed")
-        except Exception:
-            # Chrome 137+ may block --load-extension; try Edge (supports extensions)
-            if load_extension:
-                try:
-                    from selenium.webdriver.edge.options import Options as EdgeOptions
-                    edge_opts = EdgeOptions()
-                    edge_opts.add_argument('--load-extension=' + extension_path)
-                    edge_opts.add_argument('--no-sandbox')
-                    edge_opts.add_argument('--disable-dev-shm-usage')
-                    actual_driver = webdriver.Edge(options=edge_opts)
-                    print("✅ AgentTrust extension installed (Edge)")
-                except Exception as e2:
-                    opts_fallback = webdriver.ChromeOptions()
-                    if headless:
-                        opts_fallback.add_argument('--headless')
-                    opts_fallback.add_argument('--no-sandbox')
-                    opts_fallback.add_argument('--disable-dev-shm-usage')
-                    opts_fallback.add_argument('--disable-blink-features=AutomationControlled')
-                    opts_fallback.add_experimental_option("excludeSwitches", ["enable-automation"])
-                    opts_fallback.add_experimental_option('useAutomationExtension', False)
-                    actual_driver = webdriver.Chrome(options=opts_fallback)
-                    print("⚠️  Extension not loaded. Click extension icon → Sign in via popup. Or load manually: edge://extensions/ or chrome://extensions/")
-            else:
-                raise
-        if actual_driver is None:
-            actual_driver = webdriver.Chrome(options=options)
+        actual_driver = webdriver.Chrome(options=options)
+        if load_ext:
+            print("✅ AgentTrust extension installed")
         actual_driver.implicitly_wait(5)
         
         # CRITICAL: Wrap driver with interception layer
@@ -907,7 +891,7 @@ class BrowserController:
             return screenshot
     
     def close(self):
-        """Close the browser"""
+        """Close the browser."""
         if self.driver:
             self.driver.quit()
 
@@ -2112,20 +2096,6 @@ def main():
     agent = ChatGPTAgentWithAgentTrust(enable_browser=enable_browser, headless=headless)
     
     try:
-        # Example conversation
-        print("Example conversation:\n")
-        
-        # User request
-        agent.chat("I want to navigate to GitHub and view my repositories")
-        
-        # ChatGPT will:
-        # 1. Decide to navigate to GitHub
-        # 2. Call agenttrust_browser_action for navigation
-        # 3. AgentTrust validates (should be allowed)
-        # 4. ChatGPT reports success
-        
-        # Another request
-        agent.chat("Now I want to delete my test repository")
         
         # ChatGPT will:
         # 1. Decide to click delete button
