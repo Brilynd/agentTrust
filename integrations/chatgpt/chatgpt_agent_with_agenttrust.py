@@ -34,6 +34,7 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+import requests
 from typing import Optional, Dict, List, Any
 from openai import OpenAI
 from agenttrust_client import AgentTrustClient, AGENTTRUST_FUNCTION_DEFINITION
@@ -392,8 +393,62 @@ class BrowserController:
         self._actual_driver = actual_driver  # Keep reference for cleanup
         self.current_url = None
         
-        # Sign in via extension popup (click extension icon in browser toolbar)
-        # No website-based login - the extension is the UI.
+        # Auto-login to extension using .env credentials
+        if load_ext:
+            self._auto_login_extension()
+    
+    def _auto_login_extension(self) -> None:
+        """
+        Log into the extension automatically using EXTENSION_LOGIN_EMAIL
+        and EXTENSION_LOGIN_PASSWORD from .env.
+        
+        Calls the backend login API, then injects the token into
+        chrome.storage.local via the content script event listener.
+        """
+        import time
+        email = os.getenv("EXTENSION_LOGIN_EMAIL")
+        password = os.getenv("EXTENSION_LOGIN_PASSWORD")
+        if not email or not password:
+            return
+        
+        api_url = os.getenv("AGENTTRUST_API_URL", "http://localhost:3000/api")
+        
+        # 1) Call backend login API from Python
+        try:
+            resp = requests.post(
+                f"{api_url}/users/login",
+                json={"email": email, "password": password},
+                timeout=5,
+            )
+            data = resp.json()
+            if not data.get("success"):
+                print(f"⚠️  Extension auto-login failed: {data.get('error', 'unknown')}")
+                return
+            token = data["token"]
+            user_email = data.get("user", {}).get("email", email)
+        except Exception as e:
+            print(f"⚠️  Extension auto-login skipped (backend not reachable): {e}")
+            return
+        
+        # 2) Navigate to a real page so the content script is injected
+        try:
+            self._actual_driver.get(api_url.replace("/api", "/health"))
+            time.sleep(1)
+        except Exception:
+            self._actual_driver.get("about:blank")
+            time.sleep(0.5)
+        
+        # 3) Dispatch the event the content script listens for to store credentials
+        try:
+            self._actual_driver.execute_script(
+                "window.dispatchEvent(new CustomEvent('agenttrust-login-success', "
+                "{ detail: { token: arguments[0], email: arguments[1] } }));",
+                token, user_email,
+            )
+            time.sleep(0.5)
+            print(f"✅ Extension auto-login: {user_email}")
+        except Exception as e:
+            print(f"⚠️  Extension credential injection failed: {e}")
     
     def navigate(self, url: str):
         """Navigate to URL"""
@@ -2096,6 +2151,20 @@ def main():
     agent = ChatGPTAgentWithAgentTrust(enable_browser=enable_browser, headless=headless)
     
     try:
+        # Example conversation
+        print("Example conversation:\n")
+        
+        # User request
+        agent.chat("I want to navigate to GitHub and view my repositories")
+        
+        # ChatGPT will:
+        # 1. Decide to navigate to GitHub
+        # 2. Call agenttrust_browser_action for navigation
+        # 3. AgentTrust validates (should be allowed)
+        # 4. ChatGPT reports success
+        
+        # Another request
+        agent.chat("Now I want to delete my test repository")
         
         # ChatGPT will:
         # 1. Decide to click delete button
