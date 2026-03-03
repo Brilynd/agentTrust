@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentTrust - Auto Login</title>
+  <style>
+    body { font-family: system-ui; max-width: 400px; margin: 40px auto; padding: 20px; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 4px; font-weight: 500; }
+    input { width: 100%; padding: 8px 12px; box-sizing: border-box; }
+    button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .message { margin-top: 16px; padding: 12px; border-radius: 4px; }
+    .success { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <h1>AgentTrust Sign In</h1>
+  <p>Sign in to enable the AgentTrust extension.</p>
+  <form id="loginForm">
+    <div class="form-group">
+      <label for="email">Email</label>
+      <input type="email" id="email" required placeholder="admin@agenttrust.local">
+    </div>
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" required>
+    </div>
+    <button type="submit" id="submitBtn">Sign In</button>
+  </form>
+  <div id="message" class="message" style="display: none;"></div>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const submitBtn = document.getElementById('submitBtn');
+      const messageDiv = document.getElementById('message');
+      submitBtn.disabled = true;
+      messageDiv.style.display = 'none';
+      try {
+        const res = await fetch('/api/users/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          messageDiv.textContent = 'Sign in successful! Credentials stored in extension.';
+          messageDiv.className = 'message success';
+          messageDiv.style.display = 'block';
+          window.dispatchEvent(new CustomEvent('agenttrust-login-success', {
+            detail: { token: data.token, email: data.user?.email || email }
+          }));
+        } else {
+          messageDiv.textContent = data.error || 'Login failed';
+          messageDiv.className = 'message error';
+          messageDiv.style.display = 'block';
+        }
+      } catch (err) {
+        messageDiv.textContent = 'Failed to connect. Is the backend running?';
+        messageDiv.className = 'message error';
+        messageDiv.style.display = 'block';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

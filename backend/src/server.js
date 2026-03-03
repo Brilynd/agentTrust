@@ -73,6 +73,10 @@ app.use(requestId);
 app.use(securityHeaders);
 app.use(validateInput);
 
+// Static files (login page for extension auto sign-in)
+const path = require('path');
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
 // Routes
 app.use('/api/actions', require('./routes/actions'));
 app.use('/api/auth', require('./routes/auth'));

@@ -7,9 +7,17 @@ There is no way to perform a browser action without AgentTrust approval.
 
 Browser Automation: Uses Selenium to actually interact with the browser and get page content.
 
+Auth0 for AI Agents Hackathon: Built with Token Vault from Auth0 for AI Agents.
+- OAuth flows, token management, consent delegation: Auth0
+- Async auth and step-up authentication: Auth0
+
 Usage:
     pip install openai requests selenium
     python chatgpt_agent_with_agenttrust.py
+    
+    # Optional: Add to .env file:
+    # AGENTTRUST_DEV_MODE=true    # Run without backend (browser only)
+    # Sign in via extension popup (click extension icon in browser)
 """
 
 import os
@@ -20,13 +28,28 @@ from typing import Optional, Dict, List, Any
 from openai import OpenAI
 from agenttrust_client import AgentTrustClient, AGENTTRUST_FUNCTION_DEFINITION
 
+# Auth0 Token Vault - for hackathon compliance (optional, enables external API access)
+try:
+    from auth0_token_vault import Auth0TokenVaultClient
+    TOKEN_VAULT_AVAILABLE = True
+except ImportError:
+    TOKEN_VAULT_AVAILABLE = False
+    Auth0TokenVaultClient = None
+
 # Load .env file if python-dotenv is available
 try:
     from dotenv import load_dotenv
-    # Load .env from the same directory as this script
-    load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _project_root = os.path.dirname(os.path.dirname(_script_dir))
+    # Load from: integrations/chatgpt/.env, project root .env, backend/.env
+    for path in [
+        os.path.join(_project_root, 'backend', '.env'),
+        os.path.join(_project_root, '.env'),
+        os.path.join(_script_dir, '.env'),
+    ]:
+        if os.path.isfile(path):
+            load_dotenv(path)
 except ImportError:
-    # python-dotenv not installed, will use system environment variables only
     pass
 
 # Browser automation - optional import
@@ -35,6 +58,7 @@ try:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.common.action_chains import ActionChains
     from selenium.common.exceptions import TimeoutException, NoSuchElementException
     SELENIUM_AVAILABLE = True
 except ImportError:
@@ -301,6 +325,19 @@ class BrowserController:
     code tries to call driver methods directly.
     """
     
+    def _get_extension_path(self) -> Optional[str]:
+        """Get absolute path to AgentTrust extension folder for auto-loading."""
+        try:
+            # Script is in integrations/chatgpt/, extension is at project_root/extension
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(os.path.dirname(script_dir))
+            ext_path = os.path.join(project_root, 'extension')
+            if os.path.isdir(ext_path) and os.path.isfile(os.path.join(ext_path, 'manifest.json')):
+                return os.path.abspath(ext_path)
+        except Exception:
+            pass
+        return None
+    
     def __init__(self, headless: bool = False, agenttrust_validator=None):
         """
         Initialize browser controller
@@ -324,8 +361,45 @@ class BrowserController:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-        # Initialize actual driver
-        actual_driver = webdriver.Chrome(options=options)
+        # Load AgentTrust extension - use Edge if Chrome 137+ blocks it (Edge still supports --load-extension)
+        extension_path = self._get_extension_path()
+        load_extension = not headless and extension_path and os.getenv("AGENTTRUST_LOAD_EXTENSION", "true").lower() == "true"
+        if load_extension:
+            options.add_argument(f'--load-extension={extension_path}')
+            options.add_argument('--disable-features=DisableLoadExtensionCommandLineSwitch')
+        
+        actual_driver = None
+        # Try Chrome first
+        try:
+            actual_driver = webdriver.Chrome(options=options)
+            if load_extension:
+                print("✅ AgentTrust extension installed")
+        except Exception:
+            # Chrome 137+ may block --load-extension; try Edge (supports extensions)
+            if load_extension:
+                try:
+                    from selenium.webdriver.edge.options import Options as EdgeOptions
+                    edge_opts = EdgeOptions()
+                    edge_opts.add_argument('--load-extension=' + extension_path)
+                    edge_opts.add_argument('--no-sandbox')
+                    edge_opts.add_argument('--disable-dev-shm-usage')
+                    actual_driver = webdriver.Edge(options=edge_opts)
+                    print("✅ AgentTrust extension installed (Edge)")
+                except Exception as e2:
+                    opts_fallback = webdriver.ChromeOptions()
+                    if headless:
+                        opts_fallback.add_argument('--headless')
+                    opts_fallback.add_argument('--no-sandbox')
+                    opts_fallback.add_argument('--disable-dev-shm-usage')
+                    opts_fallback.add_argument('--disable-blink-features=AutomationControlled')
+                    opts_fallback.add_experimental_option("excludeSwitches", ["enable-automation"])
+                    opts_fallback.add_experimental_option('useAutomationExtension', False)
+                    actual_driver = webdriver.Chrome(options=opts_fallback)
+                    print("⚠️  Extension not loaded. Click extension icon → Sign in via popup. Or load manually: edge://extensions/ or chrome://extensions/")
+            else:
+                raise
+        if actual_driver is None:
+            actual_driver = webdriver.Chrome(options=options)
         actual_driver.implicitly_wait(5)
         
         # CRITICAL: Wrap driver with interception layer
@@ -333,6 +407,9 @@ class BrowserController:
         self.driver = InterceptedWebDriver(actual_driver, agenttrust_validator)
         self._actual_driver = actual_driver  # Keep reference for cleanup
         self.current_url = None
+        
+        # Sign in via extension popup (click extension icon in browser toolbar)
+        # No website-based login - the extension is the UI.
     
     def navigate(self, url: str):
         """Navigate to URL"""
@@ -422,6 +499,16 @@ class BrowserController:
         
         return elements
     
+    def _unwrap_element(self, element):
+        """Get the actual Selenium WebElement from InterceptedWebElement wrapper."""
+        return getattr(element, '_element', element)
+    
+    def _xpath_escape(self, text: str) -> str:
+        """Escape single quotes for XPath (use '' to escape ' in XPath)."""
+        if not text:
+            return ""
+        return str(text).replace("'", "''")
+    
     def click_element(self, target: Dict[str, Any]) -> Dict[str, Any]:
         """
         Click an element based on target information
@@ -432,8 +519,12 @@ class BrowserController:
         Returns:
             dict with success status
         """
+        import time
         try:
             element = None
+            text_safe = (target.get("text") or "")[:80].strip()
+            # XPath-safe text: escape single quote as '' in XPath
+            text_xpath = text_safe.replace("'", "''") if text_safe else ""
             
             # Try to find by ID first
             if target.get("id"):
@@ -444,34 +535,40 @@ class BrowserController:
             
             # Try by href (for links)
             if not element and target.get("href"):
+                href = str(target["href"])[:200].replace("'", "''")
                 try:
-                    element = self.driver.find_element(By.XPATH, f"//a[@href='{target['href']}']")
-                except NoSuchElementException:
-                    # Try partial match
-                    try:
-                        element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{target['href']}')]")
-                    except NoSuchElementException:
-                        pass
-            
-            # Try by text content
-            if not element and target.get("text"):
-                try:
-                    # Try exact match first
-                    element = self.driver.find_element(By.XPATH, f"//*[normalize-space(text())='{target['text'][:100]}']")
-                except NoSuchElementException:
-                    # Try partial match
-                    try:
-                        element = self.driver.find_element(By.XPATH, f"//*[contains(text(), '{target['text'][:50]}')]")
-                    except NoSuchElementException:
-                        pass
-            
-            # Try by tag name + text (for buttons, links)
-            if not element and target.get("tagName") and target.get("text"):
-                try:
-                    tag = target["tagName"].upper()
-                    element = self.driver.find_element(By.XPATH, f"//{tag}[contains(text(), '{target['text'][:50]}')]")
+                    element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
                 except NoSuchElementException:
                     pass
+            
+            # Try by tag name + text (buttons, links - use contains(., ) for nested elements)
+            if not element and target.get("tagName") and text_safe:
+                tag = str(target["tagName"]).upper().replace("HTML", "*")
+                if tag == "*":
+                    tag = "*"
+                try:
+                    element = self.driver.find_element(By.XPATH, f"//{tag}[contains(., '{text_xpath}')]")
+                except NoSuchElementException:
+                    pass
+            
+            # Try by text content (any element - contains(., ) matches nested text)
+            if not element and text_safe:
+                for xpath in [
+                    f"//a[contains(., '{text_xpath}')]",
+                    f"//button[contains(., '{text_xpath}')]",
+                    f"//*[@role='button'][contains(., '{text_xpath}')]",
+                    f"//*[contains(., '{text_xpath}')]",
+                ]:
+                    try:
+                        elements = self.driver.find_elements(By.XPATH, xpath)
+                        for el in elements:
+                            if el.is_displayed() and el.is_enabled():
+                                element = el
+                                break
+                        if element:
+                            break
+                    except NoSuchElementException:
+                        continue
             
             # Try by class name
             if not element and target.get("className"):
@@ -487,23 +584,51 @@ class BrowserController:
                 except NoSuchElementException:
                     pass
             
-            if element:
-                # Scroll element into view
-                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
-                
-                # Wait for element to be clickable
-                WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(element))
-                
-                if element.is_displayed():
-                    element.click()
-                    # Wait a bit for page to respond
-                    import time
-                    time.sleep(0.5)
-                    return {"success": True, "message": "Element clicked successfully", "new_url": self.driver.current_url}
-                else:
-                    return {"success": False, "message": "Element found but not visible"}
-            else:
+            if not element:
                 return {"success": False, "message": "Element not found with provided identifiers"}
+            
+            # Get actual Selenium element (unwrap InterceptedWebElement for scripts)
+            actual = self._unwrap_element(element)
+            
+            # Scroll into view
+            try:
+                self._actual_driver.execute_script(
+                    "arguments[0].scrollIntoView({behavior: 'instant', block: 'center', inline: 'center'});",
+                    actual
+                )
+            except Exception:
+                pass
+            time.sleep(0.2)
+            
+            # Wait for element to be clickable (use actual element for WebDriverWait)
+            try:
+                WebDriverWait(self._actual_driver, 5).until(EC.element_to_be_clickable(actual))
+            except TimeoutException:
+                return {"success": False, "message": "Element not clickable within timeout"}
+            
+            if not element.is_displayed():
+                return {"success": False, "message": "Element found but not visible"}
+            
+            # Try click: native first, then JS, then ActionChains
+            clicked = False
+            try:
+                element.click()
+                clicked = True
+            except Exception:
+                try:
+                    self._actual_driver.execute_script("arguments[0].click();", actual)
+                    clicked = True
+                except Exception:
+                    try:
+                        ActionChains(self._actual_driver).move_to_element(actual).click().perform()
+                        clicked = True
+                    except Exception:
+                        pass
+            
+            if clicked:
+                time.sleep(0.5)
+                return {"success": True, "message": "Element clicked successfully", "new_url": self.driver.current_url}
+            return {"success": False, "message": "Click failed (element may be obscured or not interactable)"}
         
         except TimeoutException:
             return {"success": False, "message": "Element not clickable within timeout"}
@@ -567,33 +692,46 @@ class BrowserController:
                 if 0 <= link_index < len(visible_links):
                     element = visible_links[link_index]
             
-            # Find by href
+            # Find by href (partial match - handles different domain/path formats)
             if not element and href:
+                href_esc = str(href)[:200].replace("'", "''")  # XPath: '' escapes '
                 try:
-                    # Try exact match
-                    element = self.driver.find_element(By.XPATH, f"//a[@href='{href}']")
+                    element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{href_esc}')]")
                 except NoSuchElementException:
-                    # Try partial match
-                    try:
-                        element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
-                    except NoSuchElementException:
-                        pass
+                    pass
             
-            # Find by text
+            # Find by text (use contains(., ) for nested elements like <a><span>text</span></a>)
             if not element and link_text:
+                text_esc = str(link_text)[:50].replace("'", "''")  # XPath: '' escapes '
                 try:
-                    element = self.driver.find_element(By.XPATH, f"//a[contains(text(), '{link_text[:50]}')]")
+                    links = self.driver.find_elements(By.XPATH, f"//a[contains(., '{text_esc}')]")
+                    for link in links:
+                        if link.is_displayed():
+                            element = link
+                            break
                 except NoSuchElementException:
                     pass
             
             if element and element.is_displayed():
                 # Get the href before clicking
                 link_href = element.get_attribute("href")
+                actual = self._unwrap_element(element)
                 
                 # Scroll into view and click
-                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
-                WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(element))
-                element.click()
+                try:
+                    self._actual_driver.execute_script(
+                        "arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});",
+                        actual
+                    )
+                except Exception:
+                    pass
+                import time
+                time.sleep(0.2)
+                WebDriverWait(self._actual_driver, 5).until(EC.element_to_be_clickable(actual))
+                try:
+                    element.click()
+                except Exception:
+                    self._actual_driver.execute_script("arguments[0].click();", actual)
                 
                 # Wait for navigation
                 import time
@@ -1293,13 +1431,13 @@ class ChatGPTAgentWithAgentTrust:
         
         try:
             agenttrust_client = AgentTrustClient()
+            if agenttrust_client.dev_mode:
+                print("⚠️  AGENTTRUST_DEV_MODE=true: Running without backend (browser automation only)")
         except ValueError as e:
             print(f"❌ AgentTrust configuration error: {e}")
-            print("\nPlease set the following environment variables:")
-            print("  - AUTH0_DOMAIN")
-            print("  - AUTH0_CLIENT_ID")
-            print("  - AUTH0_CLIENT_SECRET")
-            print("  - AUTH0_AUDIENCE")
+            print("\nOptions:")
+            print("  1. Set Auth0 env vars: AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE")
+            print("  2. Or set AGENTTRUST_DEV_MODE=true in .env to run without backend")
             sys.exit(1)
         
         # CRITICAL: Create mandatory browser action executor FIRST
@@ -1328,6 +1466,16 @@ class ChatGPTAgentWithAgentTrust:
                 print(f"⚠️  Browser automation disabled: {e}")
         
         self.agenttrust = agenttrust_client  # Keep reference for audit log queries
+        
+        # Auth0 Token Vault - for external API access (hackathon compliance)
+        self.token_vault = None
+        if TOKEN_VAULT_AVAILABLE and Auth0TokenVaultClient:
+            try:
+                self.token_vault = Auth0TokenVaultClient()
+                if self.token_vault.has_token_vault_config():
+                    print("✅ Auth0 Token Vault configured (hackathon: OAuth, token mgmt, consent)")
+            except Exception as e:
+                print(f"⚠️  Token Vault not configured: {e}")
         
         self.conversation_history = []
         self.actions_performed = []
@@ -1952,6 +2100,9 @@ def main():
     print("   - get_page_content: See what's on the page (read-only)")
     print("   - get_visible_elements: See buttons, links, inputs (read-only)")
     print("   - agenttrust_browser_action: Perform actions (requires validation)")
+    print("\n🏆 Auth0 for AI Agents Hackathon: Built with Token Vault")
+    print("   - OAuth flows, token management, consent: Auth0")
+    print("   - Async auth, step-up authentication: Auth0")
     print()
     
     # Enable browser automation by default

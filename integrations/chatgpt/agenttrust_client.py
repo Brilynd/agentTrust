@@ -1,6 +1,9 @@
 """
 AgentTrust Client for ChatGPT Integration
 Provides a Python client for ChatGPT to interact with AgentTrust API
+
+Auth0 for AI Agents Hackathon: Built with Token Vault for OAuth flows,
+token management, and consent delegation.
 """
 
 import requests
@@ -12,10 +15,12 @@ import os
 # Load .env file if python-dotenv is available
 try:
     from dotenv import load_dotenv
-    # Load .env from the same directory as this script
-    load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    _root = os.path.dirname(os.path.dirname(_dir))
+    for p in [os.path.join(_root, 'backend', '.env'), os.path.join(_root, '.env'), os.path.join(_dir, '.env')]:
+        if os.path.isfile(p):
+            load_dotenv(p)
 except ImportError:
-    # python-dotenv not installed, will use system environment variables only
     pass
 
 
@@ -45,13 +50,17 @@ class AgentTrustClient:
         self.auth0_client_id = auth0_client_id or os.getenv('AUTH0_CLIENT_ID')
         self.auth0_client_secret = auth0_client_secret or os.getenv('AUTH0_CLIENT_SECRET')
         self.auth0_audience = auth0_audience or os.getenv('AUTH0_AUDIENCE')
+        self.dev_mode = os.getenv('AGENTTRUST_DEV_MODE', 'false').lower() == 'true'
         
         self._token = None
         self._token_expiry = None
         
-        if not all([self.auth0_domain, self.auth0_client_id, 
+        if not self.dev_mode and not all([self.auth0_domain, self.auth0_client_id, 
                    self.auth0_client_secret, self.auth0_audience]):
-            raise ValueError("Auth0 credentials must be provided or set in environment")
+            raise ValueError(
+                "Auth0 credentials must be provided or set in environment. "
+                "Or set AGENTTRUST_DEV_MODE=true to run without backend (browser only)."
+            )
     
     def _get_token(self) -> str:
         """Get Auth0 access token (with caching)"""
@@ -113,6 +122,15 @@ class AgentTrustClient:
             from urllib.parse import urlparse
             domain = urlparse(url).netloc
         
+        # Dev mode: allow all actions without backend (for browser automation testing)
+        if self.dev_mode:
+            return {
+                "status": "allowed",
+                "action_id": f"dev-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                "risk_level": "low",
+                "message": "Action allowed (dev mode - no backend)"
+            }
+        
         # Build action data
         action_data = {
             "type": action_type,
@@ -131,17 +149,33 @@ class AgentTrustClient:
             action_data["screenshot"] = screenshot
         
         # Make request
-        token = self._get_token()
-        response = requests.post(
-            f"{self.api_url}/actions",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            },
-            json=action_data
-        )
+        try:
+            token = self._get_token()
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Auth failed: {e}. Set AGENTTRUST_DEV_MODE=true to run without backend."
+            }
+        try:
+            response = requests.post(
+                f"{self.api_url}/actions",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json=action_data,
+                timeout=10
+            )
+        except requests.exceptions.RequestException as e:
+            return {
+                "status": "error",
+                "message": f"Backend unreachable: {e}. Is it running? Set AGENTTRUST_DEV_MODE=true to run without backend."
+            }
         
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception:
+            result = {"error": response.text or "Unknown error"}
         
         if response.status_code == 201:
             return {
@@ -228,6 +262,8 @@ class AgentTrustClient:
             action_id: ID of the action to update
             screenshot: Base64 encoded screenshot
         """
+        if self.dev_mode:
+            return
         try:
             token = self._get_token()
             response = requests.patch(
@@ -266,6 +302,8 @@ class AgentTrustClient:
         Returns:
             Dict with actions array
         """
+        if self.dev_mode:
+            return {"actions": [], "message": "Dev mode - no audit log"}
         token = self._get_token()
         params = {"limit": limit}
         

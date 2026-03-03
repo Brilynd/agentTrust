@@ -30,6 +30,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(token => sendResponse({ success: true, token }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
+  } else if (request.type === 'STORE_CREDENTIALS') {
+    chrome.storage.local.set({
+      userToken: request.userToken,
+      userEmail: request.userEmail,
+      authToken: request.userToken,
+      tokenExpiry: request.tokenExpiry || Date.now() + (7 * 24 * 60 * 60 * 1000)
+    }).then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
   }
   
   return false;

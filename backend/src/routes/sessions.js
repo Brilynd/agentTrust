@@ -7,19 +7,14 @@ const { authenticateUser } = require('../middleware/auth');
 const { Session } = require('../models/session');
 const { Action } = require('../models/action');
 
-// Get all sessions for an agent
+// Get all sessions (optionally filtered by agentId)
 router.get('/', authenticateUser, async (req, res) => {
   try {
     const { agentId, limit = 50 } = req.query;
     
-    if (!agentId) {
-      return res.status(400).json({
-        success: false,
-        error: 'agentId is required'
-      });
-    }
-    
-    const sessions = await Session.findByAgent(agentId, parseInt(limit));
+    const sessions = (agentId && agentId !== 'all')
+      ? await Session.findByAgent(agentId, parseInt(limit))
+      : await Session.findAll(parseInt(limit));
     
     // Get action counts for each session
     const sessionsWithActions = await Promise.all(

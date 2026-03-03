@@ -54,6 +54,16 @@ class Session {
     const result = await pool.query(query, [agentId, limit]);
     return result.rows.map(row => new Session(row));
   }
+
+  static async findAll(limit = 50) {
+    const query = `
+      SELECT * FROM sessions 
+      ORDER BY started_at DESC 
+      LIMIT $1
+    `;
+    const result = await pool.query(query, [limit]);
+    return result.rows.map(row => new Session(row));
+  }
   
   static async getOrCreateActiveSession(agentId) {
     // Try to find an active session (not ended) from the last hour
