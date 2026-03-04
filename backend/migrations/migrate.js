@@ -114,6 +114,12 @@ async function migrate() {
       ALTER TABLE actions 
       ADD COLUMN IF NOT EXISTS screenshot TEXT
     `);
+
+    // Add prompt_id column to link actions to the prompt that triggered them
+    await pool.query(`
+      ALTER TABLE actions 
+      ADD COLUMN IF NOT EXISTS prompt_id VARCHAR(255)
+    `);
     
     // Create foreign key for session_id
     await pool.query(`
@@ -157,6 +163,26 @@ async function migrate() {
     // Create index on agent_id and started_at for session queries
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_sessions_agent_started ON sessions(agent_id, started_at)
+    `);
+
+    // Create prompts table to store user prompts linked to sessions
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS prompts (
+        id VARCHAR(255) PRIMARY KEY,
+        session_id VARCHAR(255) REFERENCES sessions(id) ON DELETE CASCADE,
+        agent_id VARCHAR(255) NOT NULL,
+        content TEXT NOT NULL,
+        response TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_prompts_session_id ON prompts(session_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_prompts_agent_id ON prompts(agent_id)
     `);
     
     console.log('Migrations completed successfully!');

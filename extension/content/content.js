@@ -14,17 +14,36 @@
         type: 'STORE_CREDENTIALS',
         userToken: token,
         userEmail: email,
-        tokenExpiry: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 days
+        tokenExpiry: Date.now() + (7 * 24 * 60 * 60 * 1000)
       }).catch(err => console.warn('Failed to store credentials:', err));
     }
   });
   
-  // Initialize action capture
+  // Listen for agent action events dispatched by the Python agent via Selenium.
+  // These events notify the extension in real-time when the agent performs,
+  // gets denied, or needs step-up for a browser action.
+  window.addEventListener('agenttrust-action-logged', (event) => {
+    const detail = event.detail;
+    if (detail && typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({
+        type: 'ACTION_CAPTURED',
+        data: {
+          type: detail.type,
+          url: detail.url,
+          domain: detail.domain,
+          status: detail.status,
+          riskLevel: detail.riskLevel,
+          actionId: detail.actionId,
+          target: detail.target,
+          formData: detail.formData,
+          timestamp: detail.timestamp || new Date().toISOString(),
+          fromAgent: true
+        }
+      }).catch(err => console.warn('Failed to relay agent action:', err));
+    }
+  });
+  
   if (typeof window.agentTrustInitialized === 'undefined') {
     window.agentTrustInitialized = true;
-    
-    // Import action capture module
-    // Note: In manifest v3, modules need to be bundled or loaded differently
-    // This is a placeholder structure
   }
 })();

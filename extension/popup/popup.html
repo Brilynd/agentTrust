@@ -7,132 +7,136 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <!-- Login Screen -->
+
+  <!-- ─── Login ─── -->
   <div id="loginScreen" class="screen">
-    <div class="container">
-      <header>
-        <h1>🛡 AgentTrust</h1>
-        <p class="subtitle">Login to view actions</p>
-      </header>
-      
-      <main>
-        <form id="loginForm">
-          <div class="form-group">
-            <label for="email">Email</label>
-            <input type="email" id="email" required placeholder="admin@agenttrust.local">
-          </div>
-          
-          <div class="form-group">
-            <label for="password">Password</label>
-            <input type="password" id="password" required placeholder="Enter password">
-          </div>
-          
-          <div id="loginError" class="error-message" style="display: none;"></div>
-          
-          <button type="submit" class="btn btn-primary" id="loginBtn">Login</button>
-          
-          <p class="register-link">
-            Don't have an account? <a href="#" id="showRegister">Register</a>
-          </p>
-        </form>
-        
-        <form id="registerForm" style="display: none;">
-          <div class="form-group">
-            <label for="regName">Name</label>
-            <input type="text" id="regName" placeholder="Your name">
-          </div>
-          
-          <div class="form-group">
-            <label for="regEmail">Email</label>
-            <input type="email" id="regEmail" required placeholder="your@email.com">
-          </div>
-          
-          <div class="form-group">
-            <label for="regPassword">Password</label>
-            <input type="password" id="regPassword" required placeholder="Min 6 characters">
-          </div>
-          
-          <div id="registerError" class="error-message" style="display: none;"></div>
-          
-          <button type="submit" class="btn btn-primary" id="registerBtn">Register</button>
-          
-          <p class="register-link">
-            Already have an account? <a href="#" id="showLogin">Login</a>
-          </p>
-        </form>
-      </main>
-    </div>
-  </div>
-  
-  <!-- Main Screen (after login) -->
-  <div id="mainScreen" class="screen" style="display: none;">
-    <div class="container">
-      <header>
-        <h1>🛡 AgentTrust</h1>
-        <div class="user-info">
-          <span id="userEmail"></span>
-          <button id="logoutBtn" class="btn-link">Logout</button>
+    <div class="login-container">
+      <div class="login-brand">
+        <svg class="logo-icon" width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="10" fill="url(#g1)"/>
+          <path d="M18 8l8 5v10l-8 5-8-5V13l8-5z" stroke="#fff" stroke-width="2" fill="none"/>
+          <circle cx="18" cy="18" r="3" fill="#fff"/>
+          <defs><linearGradient id="g1" x1="0" y1="0" x2="36" y2="36"><stop stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/></linearGradient></defs>
+        </svg>
+        <h1>AgentTrust</h1>
+        <p class="login-subtitle">Identity &amp; Audit Layer for AI Agents</p>
+      </div>
+
+      <form id="loginForm" class="auth-form">
+        <div class="field">
+          <label for="email">Email</label>
+          <input type="email" id="email" required placeholder="admin@agenttrust.local" autocomplete="email">
         </div>
-      </header>
-      
-      <main>
-        <section class="stats">
-          <h2>Action Statistics</h2>
-          <div class="stat-grid">
-            <div class="stat-item">
-              <div class="stat-value" id="totalActions">0</div>
-              <div class="stat-label">Total Actions</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value" id="highRiskCount">0</div>
-              <div class="stat-label">High Risk</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value" id="blockedCount">0</div>
-              <div class="stat-label">Blocked</div>
-            </div>
-          </div>
-        </section>
-        
-        <section class="filters">
-          <h2>Filters</h2>
-          <div class="filter-group">
-            <select id="viewMode">
-              <option value="sessions">By Session</option>
-              <option value="actions">All Actions</option>
-            </select>
-            
-            <select id="riskFilter">
-              <option value="">All Risk Levels</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-            
-            <select id="typeFilter">
-              <option value="">All Types</option>
-              <option value="click">Click</option>
-              <option value="form_submit">Form Submit</option>
-              <option value="navigation">Navigation</option>
-            </select>
-            
-            <input type="text" id="domainFilter" placeholder="Filter by domain">
-            
-            <button id="applyFilters" class="btn btn-secondary">Apply</button>
-            <button id="refreshActions" class="btn btn-primary">Refresh</button>
-          </div>
-        </section>
-        
-        <section class="actions-list">
-          <h2 id="listTitle">Recent Sessions</h2>
-          <div id="actionsContainer" class="actions-container">
-            <div class="loading">Loading...</div>
-          </div>
-        </section>
-      </main>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" required placeholder="Enter password" autocomplete="current-password">
+        </div>
+        <div id="loginError" class="form-error" hidden></div>
+        <button type="submit" class="btn btn-primary btn-full" id="loginBtn">Sign in</button>
+        <p class="auth-switch">No account? <a href="#" id="showRegister">Create one</a></p>
+      </form>
+
+      <form id="registerForm" class="auth-form" hidden>
+        <div class="field">
+          <label for="regName">Name</label>
+          <input type="text" id="regName" placeholder="Your name" autocomplete="name">
+        </div>
+        <div class="field">
+          <label for="regEmail">Email</label>
+          <input type="email" id="regEmail" required placeholder="you@example.com" autocomplete="email">
+        </div>
+        <div class="field">
+          <label for="regPassword">Password</label>
+          <input type="password" id="regPassword" required placeholder="Min 6 characters" autocomplete="new-password">
+        </div>
+        <div id="registerError" class="form-error" hidden></div>
+        <button type="submit" class="btn btn-primary btn-full" id="registerBtn">Create account</button>
+        <p class="auth-switch">Have an account? <a href="#" id="showLogin">Sign in</a></p>
+      </form>
     </div>
   </div>
-  
+
+  <!-- ─── Dashboard ─── -->
+  <div id="mainScreen" class="screen" hidden>
+    <header class="topbar">
+      <div class="topbar-left">
+        <svg class="topbar-logo" width="22" height="22" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="10" fill="url(#g2)"/>
+          <path d="M18 8l8 5v10l-8 5-8-5V13l8-5z" stroke="#fff" stroke-width="2" fill="none"/>
+          <circle cx="18" cy="18" r="3" fill="#fff"/>
+          <defs><linearGradient id="g2" x1="0" y1="0" x2="36" y2="36"><stop stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/></linearGradient></defs>
+        </svg>
+        <span class="topbar-title">AgentTrust</span>
+      </div>
+      <div class="topbar-right">
+        <label class="live-toggle" title="Auto-refresh every 5s">
+          <input type="checkbox" id="autoRefresh">
+          <span class="live-dot"></span>
+          <span class="live-text">Live</span>
+        </label>
+        <span class="topbar-email" id="userEmail"></span>
+        <button id="logoutBtn" class="btn-ghost">Sign out</button>
+      </div>
+    </header>
+
+    <main class="dashboard">
+      <!-- Stats -->
+      <section class="stats-bar">
+        <div class="stat" data-color="primary">
+          <span class="stat-num" id="totalActions">0</span>
+          <span class="stat-lbl">Actions</span>
+        </div>
+        <div class="stat" data-color="danger">
+          <span class="stat-num" id="highRiskCount">0</span>
+          <span class="stat-lbl">High Risk</span>
+        </div>
+        <div class="stat" data-color="warning">
+          <span class="stat-num" id="blockedCount">0</span>
+          <span class="stat-lbl">Blocked</span>
+        </div>
+        <div class="stat" data-color="purple">
+          <span class="stat-num" id="agentCount">0</span>
+          <span class="stat-lbl">Agents</span>
+        </div>
+      </section>
+
+      <!-- Toolbar -->
+      <section class="toolbar">
+        <select id="viewMode" class="toolbar-select">
+          <option value="sessions">Sessions</option>
+          <option value="actions">All Actions</option>
+        </select>
+        <select id="riskFilter" class="toolbar-select">
+          <option value="">All Risks</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+        <select id="typeFilter" class="toolbar-select">
+          <option value="">All Types</option>
+          <option value="click">Click</option>
+          <option value="form_submit">Form</option>
+          <option value="navigation">Nav</option>
+        </select>
+        <input type="text" id="domainFilter" class="toolbar-input" placeholder="Domain...">
+        <button id="refreshActions" class="btn btn-icon" title="Refresh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+        </button>
+      </section>
+
+      <!-- Feed -->
+      <section class="feed">
+        <div class="feed-header">
+          <h2 id="listTitle">Sessions</h2>
+          <span id="actionCountLabel" class="feed-count"></span>
+        </div>
+        <div id="actionsContainer" class="feed-body">
+          <div class="state-empty">Loading&hellip;</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>

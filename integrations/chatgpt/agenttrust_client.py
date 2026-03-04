@@ -54,6 +54,8 @@ class AgentTrustClient:
         
         self._token = None
         self._token_expiry = None
+        self.current_session_id = None
+        self.current_prompt_id = None
         
         if not self.dev_mode and not all([self.auth0_domain, self.auth0_client_id, 
                    self.auth0_client_secret, self.auth0_audience]):
@@ -92,6 +94,44 @@ class AgentTrustClient:
         
         return self._token
     
+    def create_session(self) -> Optional[str]:
+        """Create a new session on the backend and store its ID. Returns session ID."""
+        if self.dev_mode:
+            self.current_session_id = f"dev-session-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            return self.current_session_id
+        try:
+            token = self._get_token()
+            response = requests.post(
+                f"{self.api_url}/sessions",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={},
+                timeout=5
+            )
+            if response.status_code == 201:
+                sid = response.json().get("session", {}).get("id")
+                self.current_session_id = sid
+                return sid
+        except Exception as e:
+            print(f"Warning: Failed to create session: {e}")
+        return None
+
+    def end_session(self) -> None:
+        """Close the current session on the backend."""
+        if self.dev_mode or not self.current_session_id:
+            return
+        try:
+            token = self._get_token()
+            requests.post(
+                f"{self.api_url}/sessions/{self.current_session_id}/end",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={},
+                timeout=5
+            )
+        except Exception as e:
+            print(f"Warning: Failed to end session: {e}")
+        finally:
+            self.current_session_id = None
+
     def execute_action(
         self,
         action_type: str,
@@ -138,6 +178,12 @@ class AgentTrustClient:
             "domain": domain,
             "timestamp": datetime.now().isoformat()
         }
+        
+        if self.current_session_id:
+            action_data["sessionId"] = self.current_session_id
+
+        if self.current_prompt_id:
+            action_data["promptId"] = self.current_prompt_id
         
         if target:
             action_data["target"] = target
@@ -275,10 +321,61 @@ class AgentTrustClient:
                 json={"screenshot": screenshot}
             )
             if response.status_code != 200:
-                print(f"⚠️  Failed to update action with screenshot: {response.status_code}")
+                detail = ""
+                try:
+                    detail = f" - {response.json().get('error', response.text[:200])}"
+                except Exception:
+                    pass
+                print(f"⚠️  Failed to update action with screenshot: {response.status_code}{detail}")
         except Exception as e:
             print(f"⚠️  Error updating screenshot: {e}")
     
+    def store_prompt(self, content: str, session_id: Optional[str] = None) -> Optional[str]:
+        """Store a user prompt and return the prompt ID."""
+        if self.dev_mode:
+            return None
+        try:
+            token = self._get_token()
+            payload = {"content": content}
+            sid = session_id or self.current_session_id
+            if sid:
+                payload["sessionId"] = sid
+            response = requests.post(
+                f"{self.api_url}/prompts",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=5
+            )
+            if response.status_code == 201:
+                pid = response.json().get("prompt", {}).get("id")
+                if pid:
+                    self.current_prompt_id = pid
+                return pid
+        except Exception as e:
+            print(f"⚠️  Failed to store prompt: {e}")
+        return None
+
+    def update_prompt_response(self, prompt_id: str, response_text: str) -> None:
+        """Update a stored prompt with the agent's response."""
+        if self.dev_mode or not prompt_id:
+            return
+        try:
+            token = self._get_token()
+            requests.patch(
+                f"{self.api_url}/prompts/{prompt_id}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json={"response": response_text},
+                timeout=5
+            )
+        except Exception as e:
+            print(f"⚠️  Failed to update prompt response: {e}")
+
     def get_audit_log(
         self,
         agent_id: Optional[str] = None,

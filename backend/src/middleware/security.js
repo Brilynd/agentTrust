@@ -57,38 +57,18 @@ function securityHeaders(req, res, next) {
  * Validates common input patterns
  */
 function validateInput(req, res, next) {
-  // Check for suspicious patterns in request body
+  // SQL injection is prevented at the query layer via parameterized
+  // statements ($1, $2, …).  Regex-based body scanning produces
+  // false positives on legitimate action data (GitHub page content
+  // routinely contains words like "Create", "Delete", "Update").
+  // Only reject obviously malicious payloads that combine multiple
+  // attack indicators in a single value.
   if (req.body) {
     const bodyStr = JSON.stringify(req.body);
-    
-    // Basic SQL injection pattern detection
-    const sqlPatterns = [
-      /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE)\b)/i,
-      /('|\\'|;|--|\/\*|\*\/|\+|\%)/i
-    ];
-    
-    // Basic XSS pattern detection
-    const xssPatterns = [
-      /<script[^>]*>.*?<\/script>/gi,
-      /javascript:/gi,
-      /on\w+\s*=/gi
-    ];
-    
-    // Check for SQL patterns
-    if (sqlPatterns.some(pattern => pattern.test(bodyStr))) {
-      console.warn('Potential SQL injection attempt detected:', {
-        ip: req.ip,
-        path: req.path,
-        requestId: req.id
-      });
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid input detected'
-      });
-    }
-    
-    // Check for XSS patterns
-    if (xssPatterns.some(pattern => pattern.test(bodyStr))) {
+
+    // Only block <script> injection — the one pattern that is both
+    // unambiguous and never appears in legitimate browser action data.
+    if (/<script[\s>]/i.test(bodyStr)) {
       console.warn('Potential XSS attempt detected:', {
         ip: req.ip,
         path: req.path,
@@ -100,7 +80,7 @@ function validateInput(req, res, next) {
       });
     }
   }
-  
+
   next();
 }
 

@@ -17,14 +17,18 @@ async function enforcePolicy(req, res, next) {
     // Check policy
     const policyCheck = await checkPolicy(actionData, req.agent.scopes);
     
-    // Get or create active session for this agent
+    // Use explicit sessionId from agent, or fall back to auto-detect
     let session;
     try {
-      session = await Session.getOrCreateActiveSession(req.agent.id);
+      if (actionData.sessionId) {
+        session = await Session.findById(actionData.sessionId);
+      }
+      if (!session) {
+        session = await Session.getOrCreateActiveSession(req.agent.id);
+      }
       await session.incrementActionCount();
     } catch (sessionError) {
       console.error('Failed to get/create session (continuing anyway):', sessionError);
-      // Continue without session if it fails
     }
     
     // CRITICAL: Log action BEFORE responding (whether allowed or denied)
@@ -43,7 +47,8 @@ async function enforcePolicy(req, res, next) {
       timestamp: actionData.timestamp || new Date().toISOString(),
       riskLevel: riskLevel,
       status: policyCheck.allowed ? 'allowed' : (policyCheck.requiresStepUp ? 'step_up_required' : 'denied'),
-      screenshot: actionData.screenshot || null // Screenshot from agent or extension
+      screenshot: actionData.screenshot || null,
+      promptId: actionData.promptId || null
     };
     
     // Log action to database (even if denied)

@@ -485,53 +485,76 @@ class BrowserController:
     
     def get_visible_elements(self, element_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Get visible interactive elements on the page
+        Get visible interactive elements on the page with rich metadata.
         
-        Args:
-            element_type: Filter by type ('button', 'link', 'input', 'form', etc.)
-        
-        Returns:
-            List of element information
+        Returns indexed elements with aria-labels, roles, and other useful
+        attributes so the LLM can pick the right element on the first try.
         """
         elements = []
+        idx = 0
         
         try:
-            # Get buttons
             if not element_type or element_type == 'button':
                 buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                for btn in buttons[:20]:  # Limit to 20
+                for btn in buttons[:30]:
                     if btn.is_displayed():
                         elements.append({
+                            "index": idx,
                             "type": "button",
-                            "text": btn.text[:100],
-                            "id": btn.get_attribute("id"),
-                            "class": btn.get_attribute("class")
+                            "text": (btn.text or "")[:120].strip(),
+                            "id": btn.get_attribute("id") or "",
+                            "class": btn.get_attribute("class") or "",
+                            "aria_label": btn.get_attribute("aria-label") or "",
+                            "role": btn.get_attribute("role") or "",
+                            "data_testid": btn.get_attribute("data-testid") or "",
                         })
+                        idx += 1
             
-            # Get links
             if not element_type or element_type == 'link':
                 links = self.driver.find_elements(By.TAG_NAME, "a")
-                for link in links[:20]:  # Limit to 20
+                for link in links[:30]:
                     if link.is_displayed():
                         elements.append({
+                            "index": idx,
                             "type": "link",
-                            "text": link.text[:100],
-                            "href": link.get_attribute("href"),
-                            "id": link.get_attribute("id")
+                            "text": (link.text or "")[:120].strip(),
+                            "href": link.get_attribute("href") or "",
+                            "id": link.get_attribute("id") or "",
+                            "aria_label": link.get_attribute("aria-label") or "",
                         })
+                        idx += 1
             
-            # Get inputs
             if not element_type or element_type == 'input':
                 inputs = self.driver.find_elements(By.TAG_NAME, "input")
-                for inp in inputs[:20]:  # Limit to 20
+                for inp in inputs[:20]:
                     if inp.is_displayed():
                         elements.append({
+                            "index": idx,
                             "type": "input",
-                            "input_type": inp.get_attribute("type"),
-                            "name": inp.get_attribute("name"),
-                            "id": inp.get_attribute("id"),
-                            "placeholder": inp.get_attribute("placeholder")
+                            "input_type": inp.get_attribute("type") or "",
+                            "name": inp.get_attribute("name") or "",
+                            "id": inp.get_attribute("id") or "",
+                            "placeholder": inp.get_attribute("placeholder") or "",
+                            "aria_label": inp.get_attribute("aria-label") or "",
+                            "value": (inp.get_attribute("value") or "")[:60],
                         })
+                        idx += 1
+            
+            # Also grab elements with role="button" that aren't <button>
+            if not element_type or element_type == 'button':
+                role_btns = self.driver.find_elements(By.CSS_SELECTOR, "[role='button']:not(button)")
+                for rb in role_btns[:15]:
+                    if rb.is_displayed():
+                        elements.append({
+                            "index": idx,
+                            "type": "role_button",
+                            "text": (rb.text or "")[:120].strip(),
+                            "id": rb.get_attribute("id") or "",
+                            "class": rb.get_attribute("class") or "",
+                            "aria_label": rb.get_attribute("aria-label") or "",
+                            "tagName": rb.tag_name,
+                        })
+                        idx += 1
         
         except Exception as e:
             print(f"⚠️  Error getting elements: {e}")
@@ -982,6 +1005,35 @@ class BrowserActionExecutor:
         )
         return result
     
+    def _notify_extension(self, action_type: str, url: str, status: str, risk_level: str = None,
+                          action_id: str = None, target: dict = None, form_data: dict = None):
+        """
+        Dispatch a DOM event so the extension's content script can relay the
+        action to the service worker and update the popup badge/log in real time.
+        """
+        if not self.browser or not hasattr(self.browser, '_actual_driver'):
+            return
+        try:
+            import json as _json
+            detail = _json.dumps({
+                "type": action_type,
+                "url": url,
+                "domain": url.split("//")[-1].split("/")[0] if url else "",
+                "status": status,
+                "riskLevel": risk_level or "unknown",
+                "actionId": action_id,
+                "target": target,
+                "formData": form_data,
+                "timestamp": __import__("datetime").datetime.now().isoformat()
+            })
+            self.browser._actual_driver.execute_script(
+                "window.dispatchEvent(new CustomEvent('agenttrust-action-logged', "
+                "{ detail: JSON.parse(arguments[0]) }));",
+                detail
+            )
+        except Exception:
+            pass
+    
     def execute_click(self, url: str, target: dict, **kwargs):
         """
         Execute a click action - MANDATORY AgentTrust validation
@@ -1027,8 +1079,14 @@ class BrowserActionExecutor:
                 f"Risk level: {result.get('risk_level')}"
             )
         
-        if status != "allowed":
-            # Unknown status - fail safe
+        if status not in ("allowed", "denied", "step_up_required"):
+            self.action_history.append({
+                "action": "click", "url": url,
+                "status": status or "error",
+                "reason": result.get("message")
+            })
+            self._notify_extension("click", url, "error",
+                                   target=target)
             raise ValueError(f"AgentTrust validation failed with status: {status}")
         
         # Action is allowed - log and return
@@ -1059,6 +1117,11 @@ class BrowserActionExecutor:
                             pass  # Non-critical
                 except Exception as e:
                     print(f"⚠️  Failed to capture screenshot: {e}")
+        
+        self._notify_extension("click", url, "allowed",
+                               risk_level=result.get("risk_level"),
+                               action_id=result.get("action_id"),
+                               target=target)
         
         return {
             "status": "allowed",
@@ -1115,8 +1178,14 @@ class BrowserActionExecutor:
                 f"Risk level: {result.get('risk_level')}"
             )
         
-        if status != "allowed":
-            # Unknown status - fail safe
+        if status not in ("allowed", "denied", "step_up_required"):
+            self.action_history.append({
+                "action": "form_submit", "url": url,
+                "status": status or "error",
+                "reason": result.get("message")
+            })
+            self._notify_extension("form_submit", url, "error",
+                                   form_data=form_data)
             raise ValueError(f"AgentTrust validation failed with status: {status}")
         
         # Action is allowed - log and return
@@ -1147,6 +1216,11 @@ class BrowserActionExecutor:
                             print(f"⚠️  Failed to update screenshot: {e}")
                 except Exception as e:
                     print(f"⚠️  Failed to capture screenshot: {e}")
+        
+        self._notify_extension("form_submit", url, "allowed",
+                               risk_level=result.get("risk_level"),
+                               action_id=result.get("action_id"),
+                               form_data=form_data)
         
         return {
             "status": "allowed",
@@ -1202,8 +1276,13 @@ class BrowserActionExecutor:
                 f"Risk level: {result.get('risk_level')}"
             )
         
-        if status != "allowed":
-            # Unknown status - fail safe
+        if status not in ("allowed", "denied", "step_up_required"):
+            self.action_history.append({
+                "action": "navigation", "url": url,
+                "status": status or "error",
+                "reason": result.get("message")
+            })
+            self._notify_extension("navigation", url, "error")
             raise ValueError(f"AgentTrust validation failed with status: {status}")
         
         # Action is allowed - log and return
@@ -1234,6 +1313,10 @@ class BrowserActionExecutor:
                             print(f"⚠️  Failed to update screenshot: {e}")
                 except Exception as e:
                     print(f"⚠️  Failed to capture screenshot: {e}")
+        
+        self._notify_extension("navigation", url, "allowed",
+                               risk_level=result.get("risk_level"),
+                               action_id=result.get("action_id"))
         
         return {
             "status": "allowed",
@@ -1519,46 +1602,140 @@ class ChatGPTAgentWithAgentTrust:
         self.conversation_history = []
         self.actions_performed = []
         self.actions_blocked = []
+        self._consecutive_failures = 0
+        self._last_action_key = None
+        self._tool_call_count = 0
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    
+    # ------------------------------------------------------------------ #
+    # Tool definitions (built once, reused every turn)
+    # ------------------------------------------------------------------ #
+    def _build_tools(self) -> list:
+        """Return the full OpenAI tools list."""
+        tools = [AGENTTRUST_FUNCTION_DEFINITION]
+        if not self.browser_executor.browser:
+            return tools
+        tools.extend([
+            {"type": "function", "function": {
+                "name": "get_page_content",
+                "description": "Get the visible text, title and URL of the current page. Use this BEFORE every action to understand what is on screen. Pass include_html=true only when you need tag structure.",
+                "parameters": {"type": "object", "properties": {
+                    "include_html": {"type": "boolean", "description": "Include raw HTML (default false)"}
+                }}
+            }},
+            {"type": "function", "function": {
+                "name": "get_visible_elements",
+                "description": "List interactive elements (buttons, links, inputs) visible on the current page. Each element has an 'index' you can reference. Call this to discover what you can click/type.",
+                "parameters": {"type": "object", "properties": {
+                    "element_type": {"type": "string", "enum": ["button", "link", "input", "form"],
+                                     "description": "Filter by element type (optional)"}
+                }}
+            }},
+            {"type": "function", "function": {
+                "name": "get_current_url",
+                "description": "Return the current page URL.",
+                "parameters": {"type": "object", "properties": {}}
+            }},
+            {"type": "function", "function": {
+                "name": "open_link",
+                "description": "Follow a link on the current page. Identify the link by href, visible text, or index from get_visible_elements.",
+                "parameters": {"type": "object", "properties": {
+                    "href": {"type": "string", "description": "Full or partial link URL"},
+                    "link_text": {"type": "string", "description": "Visible text of the link"},
+                    "link_index": {"type": "integer", "description": "Index from get_visible_elements"}
+                }}
+            }},
+            {"type": "function", "function": {
+                "name": "type_text",
+                "description": "Type text into an input field identified by id, name, placeholder, or CSS selector.",
+                "parameters": {"type": "object", "properties": {
+                    "target": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "name": {"type": "string"},
+                        "placeholder": {"type": "string"}, "selector": {"type": "string"}
+                    }},
+                    "text": {"type": "string", "description": "Text to type"}
+                }, "required": ["target", "text"]}
+            }},
+            {"type": "function", "function": {
+                "name": "scroll_page",
+                "description": "Scroll the page. Use when elements might be below the fold.",
+                "parameters": {"type": "object", "properties": {
+                    "direction": {"type": "string", "enum": ["down", "up", "top", "bottom"]},
+                    "amount": {"type": "integer", "description": "Scroll steps (default 3)"}
+                }}
+            }},
+            {"type": "function", "function": {
+                "name": "go_back",
+                "description": "Navigate back in browser history.",
+                "parameters": {"type": "object", "properties": {}}
+            }},
+            {"type": "function", "function": {
+                "name": "go_forward",
+                "description": "Navigate forward in browser history.",
+                "parameters": {"type": "object", "properties": {}}
+            }},
+            {"type": "function", "function": {
+                "name": "wait_for_element",
+                "description": "Wait for an element to appear on the page (by id, class, or text).",
+                "parameters": {"type": "object", "properties": {
+                    "target": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "class": {"type": "string"}, "text": {"type": "string"}
+                    }},
+                    "timeout": {"type": "integer", "description": "Max seconds (default 10)"}
+                }}
+            }},
+        ])
+        return tools
+    
+    # ------------------------------------------------------------------ #
+    # Main chat loop
+    # ------------------------------------------------------------------ #
+    MAX_TOOL_ROUNDS = 25      # hard cap per user message
+    MAX_CONSECUTIVE_FAILS = 3  # same action fails -> give up
     
     def chat(self, user_message):
-        """
-        Chat with user, using AgentTrust for browser actions
-        
-        This is the real-world flow:
-        1. User asks ChatGPT to do something
-        2. ChatGPT decides what browser actions are needed
-        3. For each action, ChatGPT calls AgentTrust function
-        4. AgentTrust validates
-        5. ChatGPT acts based on validation result
-        """
+        """Process one user message, call tools as needed, return final text."""
         print(f"\n👤 User: {user_message}\n")
+
+        # Store the user prompt in the DB so the extension can show it
+        prompt_id = None
+        try:
+            prompt_id = self.agenttrust.store_prompt(user_message)
+        except Exception:
+            pass
         
-        # System prompt - simplified since interception is now at code level
-        system_prompt = """You are a browser automation assistant with AgentTrust integration.
+        system_prompt = """You are a hands-on browser automation agent. You have FULL control of a
+real browser through your tools. Your job is to PERFORM the user's requests
+by actually navigating, clicking, typing, and reading pages — NOT by giving
+instructions for the user to follow manually.
 
-BROWSER INTERACTION:
-- You can see what's on the page using get_page_content and get_visible_elements functions
-- These are READ-ONLY functions - no validation needed
-- Use these to understand the page before taking actions
+CRITICAL: You MUST use your tools to carry out every request. NEVER respond
+with a list of manual steps. NEVER say "I'm unable to perform this" or
+"please do this yourself." You ARE the one doing it.
 
-AVAILABLE COMMANDS:
-READ-ONLY (no validation needed):
-- get_page_content: See page text and HTML
-- get_visible_elements: See buttons, links, inputs on the page
-- get_current_url: Get current page URL
-- scroll_page: Scroll up/down/top/bottom
-- wait_for_element: Wait for element to appear
-- take_screenshot: Capture page screenshot
+WORKFLOW for every request:
+1. LOOK  — call get_page_content or get_visible_elements to see the current
+   page. If there is no page loaded yet, start by navigating.
+2. PLAN  — pick the single best next action. Use the most specific element
+   identifier available: id > href > aria-label > text.  Fill the "target"
+   object completely (id, text, tagName, href, className, selector).
+3. ACT   — call exactly ONE action tool (agenttrust_browser_action,
+   open_link, type_text, etc.).
+4. VERIFY — check browser_result.success in the response.  If false,
+   re-examine the page with get_visible_elements and try a different
+   element or approach.
+5. REPEAT steps 1-4 until the task is done, then give a brief summary.
 
-BROWSER ACTIONS (automatically validated):
-- agenttrust_browser_action: Click, form submit, or navigate
-- open_link: Open/follow a link on the page
-- type_text: Type into input fields
-- go_back: Navigate back in history
-- go_forward: Navigate forward in history
-
-NOTE: All browser actions are automatically intercepted and validated by AgentTrust at the code level.
-If an action is denied, you will receive an error and cannot proceed. Always explain what you're doing."""
+RULES:
+- ALWAYS start by using tools. Never skip straight to a text answer.
+- If a page requires login credentials you don't have, navigate to the
+  login page, then ASK the user for their credentials so you can type
+  them in. Do NOT give up.
+- If AgentTrust blocks an action (denied / step-up required), explain
+  the policy decision and ask the user how they'd like to proceed.
+- If the same action fails 3 times, STOP and tell the user what is
+  happening.
+- Keep text replies short and action-oriented."""
         
         messages = [
             {"role": "system", "content": system_prompt}
@@ -1566,332 +1743,81 @@ If an action is denied, you will receive an error and cannot proceed. Always exp
             {"role": "user", "content": user_message}
         ]
         
-        # Build function definitions - include page content functions
-        tools = [AGENTTRUST_FUNCTION_DEFINITION]
+        tools = self._build_tools()
+        self._tool_call_count = 0
+        self._consecutive_failures = 0
+        self._last_action_key = None
         
-        # Add page content functions if browser is available
-        if self.browser_executor.browser:
-            tools.extend([
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_page_content",
-                        "description": "Get the current page content including text, title, and URL. This is READ-ONLY - no AgentTrust validation needed.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "include_html": {
-                                    "type": "boolean",
-                                    "description": "Whether to include HTML source (default: false)"
-                                }
-                            }
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_visible_elements",
-                        "description": "Get visible interactive elements on the current page (buttons, links, inputs, etc.). This is READ-ONLY - no AgentTrust validation needed.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "element_type": {
-                                    "type": "string",
-                                    "enum": ["button", "link", "input", "form"],
-                                    "description": "Filter by element type (optional)"
-                                }
-                            }
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_current_url",
-                        "description": "Get the current page URL. This is READ-ONLY - no AgentTrust validation needed.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "open_link",
-                        "description": "Open/follow a link on the current page. Can find link by href, text, or index. Requires AgentTrust validation.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "href": {
-                                    "type": "string",
-                                    "description": "Link URL (full or partial) to open"
-                                },
-                                "link_text": {
-                                    "type": "string",
-                                    "description": "Text content of the link to open"
-                                },
-                                "link_index": {
-                                    "type": "integer",
-                                    "description": "Index of link in visible links list (0-based). Use get_visible_elements first to see available links."
-                                }
-                            }
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "type_text",
-                        "description": "Type text into an input field on the page. Requires AgentTrust validation.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "target": {
-                                    "type": "object",
-                                    "description": "Target input field (id, name, placeholder, or selector)",
-                                    "properties": {
-                                        "id": {"type": "string"},
-                                        "name": {"type": "string"},
-                                        "placeholder": {"type": "string"},
-                                        "selector": {"type": "string"}
-                                    }
-                                },
-                                "text": {
-                                    "type": "string",
-                                    "description": "Text to type into the field"
-                                }
-                            },
-                            "required": ["target", "text"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "scroll_page",
-                        "description": "Scroll the page up, down, to top, or to bottom. This is READ-ONLY navigation - no AgentTrust validation needed.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "direction": {
-                                    "type": "string",
-                                    "enum": ["down", "up", "top", "bottom"],
-                                    "description": "Scroll direction"
-                                },
-                                "amount": {
-                                    "type": "integer",
-                                    "description": "Number of scroll steps (for down/up, default: 3)"
-                                }
-                            }
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "go_back",
-                        "description": "Go back in browser history. Requires AgentTrust validation.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "go_forward",
-                        "description": "Go forward in browser history. Requires AgentTrust validation.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "wait_for_element",
-                        "description": "Wait for an element to appear on the page. This is READ-ONLY - no AgentTrust validation needed.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "target": {
-                                    "type": "object",
-                                    "description": "Element to wait for (id, class, or text)",
-                                    "properties": {
-                                        "id": {"type": "string"},
-                                        "class": {"type": "string"},
-                                        "text": {"type": "string"}
-                                    }
-                                },
-                                "timeout": {
-                                    "type": "integer",
-                                    "description": "Maximum wait time in seconds (default: 10)"
-                                }
-                            }
-                        }
-                    }
-                }
-            ])
+        # Force tool use on the first call so the LLM never gives a
+        # text-only "here are the steps" response.  Subsequent rounds
+        # use "auto" so it can finish with a text summary.
+        first_call = True
         
-        # Get ChatGPT's response
         response = self.openai.chat.completions.create(
-            model="gpt-4",
+            model=self.model,
             messages=messages,
             tools=tools,
-            tool_choice="auto"
+            tool_choice="required" if (first_call and self.browser_executor.browser) else "auto"
         )
-        
+        first_call = False
         message = response.choices[0].message
         
-        # Handle tool calls (AgentTrust validation or page content)
-        while message.tool_calls:
-            # Handle all tool calls in this message
+        while message.tool_calls and self._tool_call_count < self.MAX_TOOL_ROUNDS:
+            messages.append(message)
+            
             for tool_call in message.tool_calls:
-                function_call = type('obj', (object,), {
+                self._tool_call_count += 1
+                fc = type('obj', (object,), {
                     'name': tool_call.function.name,
                     'arguments': tool_call.function.arguments
                 })()
-                result = self.handle_function_call(function_call)
+                result = self.handle_function_call(fc)
                 
-                # Add tool call and result to conversation
-                messages.append(message)
+                action_key = f"{tool_call.function.name}:{tool_call.function.arguments}"
+                if isinstance(result, dict) and (
+                    result.get("status") in ("denied", "step_up_required", "error") or
+                    (result.get("browser_result") and not result["browser_result"].get("success"))
+                ):
+                    if action_key == self._last_action_key:
+                        self._consecutive_failures += 1
+                    else:
+                        self._consecutive_failures = 1
+                    self._last_action_key = action_key
+                    
+                    if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILS:
+                        result["_loop_warning"] = (
+                            f"This action has failed {self._consecutive_failures} times in a row. "
+                            "STOP retrying and tell the user what went wrong."
+                        )
+                else:
+                    self._consecutive_failures = 0
+                    self._last_action_key = action_key
+                
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "name": tool_call.function.name,
-                    "content": json.dumps(result)
+                    "content": json.dumps(result, default=str)
                 })
             
-            # Get ChatGPT's response to the validation result
-            tools = [AGENTTRUST_FUNCTION_DEFINITION]
-            if self.browser_executor.browser:
-                tools.extend([
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "get_page_content",
-                            "description": "Get the current page content",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "include_html": {"type": "boolean"}
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "get_visible_elements",
-                            "description": "Get visible interactive elements",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "element_type": {"type": "string"}
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "get_current_url",
-                            "description": "Get current page URL",
-                            "parameters": {"type": "object", "properties": {}}
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "open_link",
-                            "description": "Open a link on the current page",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "href": {"type": "string"},
-                                    "link_text": {"type": "string"},
-                                    "link_index": {"type": "integer"}
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "type_text",
-                            "description": "Type text into an input field",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "target": {"type": "object"},
-                                    "text": {"type": "string"}
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "scroll_page",
-                            "description": "Scroll the page",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "direction": {"type": "string"},
-                                    "amount": {"type": "integer"}
-                                }
-                            }
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "go_back",
-                            "description": "Go back in browser history",
-                            "parameters": {"type": "object", "properties": {}}
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "go_forward",
-                            "description": "Go forward in browser history",
-                            "parameters": {"type": "object", "properties": {}}
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "wait_for_element",
-                            "description": "Wait for element to appear",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "target": {"type": "object"},
-                                    "timeout": {"type": "integer"}
-                                }
-                            }
-                        }
-                    }
-                ])
-            
             response = self.openai.chat.completions.create(
-                model="gpt-4",
+                model=self.model,
                 messages=messages,
                 tools=tools,
                 tool_choice="auto"
             )
             message = response.choices[0].message
         
-        # Regular text response
-        response_text = message.content
+        response_text = message.content or ""
         print(f"🤖 ChatGPT: {response_text}\n")
+
+        # Store the agent's response alongside the prompt
+        if prompt_id:
+            try:
+                self.agenttrust.update_prompt_response(prompt_id, response_text)
+            except Exception:
+                pass
         
-        # Update conversation history
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": response_text})
         
@@ -1920,8 +1846,9 @@ If an action is denied, you will receive an error and cannot proceed. Always exp
             elements = self.browser_executor.get_visible_elements(
                 element_type=args.get("element_type")
             )
-            print(f"🔍 Found {len(elements)} visible elements")
-            return {"elements": elements, "count": len(elements)}
+            current_url = self.browser_executor.get_current_url()
+            print(f"🔍 Found {len(elements)} visible elements on {current_url}")
+            return {"elements": elements, "count": len(elements), "current_url": current_url}
         
         elif function_name == "get_current_url":
             url = self.browser_executor.get_current_url()
@@ -2007,64 +1934,40 @@ If an action is denied, you will receive an error and cannot proceed. Always exp
         if target:
             print(f"   Target: {target.get('text', target.get('id', 'N/A'))}")
         
-        # MANDATORY: Use BrowserActionExecutor - this enforces 100% AgentTrust validation
         try:
             if action_type == "click":
                 result = self.browser_executor.execute_click(url=url, target=target)
-                print(f"   ✅ AgentTrust: ALLOWED (Risk: {result.get('risk_level', 'unknown')})")
-                self.actions_performed.append({
-                    "type": action_type,
-                    "url": url,
-                    "action_id": result.get("action_id"),
-                    "risk_level": result.get("risk_level")
-                })
-                return {
-                    "status": "allowed",
-                    "message": f"Action allowed by AgentTrust. Risk level: {result.get('risk_level')}",
-                    "action_id": result.get("action_id"),
-                    "risk_level": result.get("risk_level")
-                }
-            
             elif action_type == "form_submit":
                 result = self.browser_executor.execute_form_submit(url=url, form_data=form_data)
-                print(f"   ✅ AgentTrust: ALLOWED (Risk: {result.get('risk_level', 'unknown')})")
-                self.actions_performed.append({
-                    "type": action_type,
-                    "url": url,
-                    "action_id": result.get("action_id"),
-                    "risk_level": result.get("risk_level")
-                })
-                return {
-                    "status": "allowed",
-                    "message": f"Action allowed by AgentTrust. Risk level: {result.get('risk_level')}",
-                    "action_id": result.get("action_id"),
-                    "risk_level": result.get("risk_level")
-                }
-            
             elif action_type == "navigation":
                 result = self.browser_executor.execute_navigation(url=url)
-                print(f"   ✅ AgentTrust: ALLOWED (Risk: {result.get('risk_level', 'unknown')})")
-                self.actions_performed.append({
-                    "type": action_type,
-                    "url": url,
-                    "action_id": result.get("action_id"),
-                    "risk_level": result.get("risk_level")
-                })
-                return {
-                    "status": "allowed",
-                    "message": f"Action allowed by AgentTrust. Risk level: {result.get('risk_level')}",
-                    "action_id": result.get("action_id"),
-                    "risk_level": result.get("risk_level")
-                }
-            
             else:
-                return {
-                    "status": "error",
-                    "message": f"Unknown action type: {action_type}"
-                }
+                return {"status": "error", "message": f"Unknown action type: {action_type}"}
+            
+            br = result.get("browser_result") or {}
+            executed_ok = br.get("success", False) if br else result.get("executed", False)
+            risk = result.get("risk_level", "unknown")
+            print(f"   ✅ AgentTrust: ALLOWED (Risk: {risk}) | Executed: {executed_ok}")
+            
+            self.actions_performed.append({
+                "type": action_type, "url": url,
+                "action_id": result.get("action_id"), "risk_level": risk
+            })
+            
+            return {
+                "status": "allowed",
+                "action_id": result.get("action_id"),
+                "risk_level": risk,
+                "browser_result": {
+                    "success": executed_ok,
+                    "message": br.get("message", ""),
+                    "new_url": br.get("new_url", ""),
+                },
+                "message": f"AgentTrust allowed ({risk} risk). "
+                           + (f"Browser: {br.get('message', 'OK')}" if br else "No browser.")
+            }
         
         except PermissionError as e:
-            # AgentTrust denied or requires step-up
             error_msg = str(e)
             
             if "STEP-UP REQUIRED" in error_msg:
@@ -2074,19 +1977,24 @@ If an action is denied, you will receive an error and cannot proceed. Always exp
                     "url": url,
                     "reason": "Step-up required"
                 })
+                self.browser_executor._notify_extension(
+                    action_type, url, "step_up_required",
+                    target=target, form_data=form_data)
                 return {
                     "status": "step_up_required",
                     "message": error_msg,
                     "requires_user_approval": True
                 }
             else:
-                # Denied
                 print(f"   ❌ AgentTrust: DENIED")
                 self.actions_blocked.append({
                     "type": action_type,
                     "url": url,
                     "reason": error_msg
                 })
+                self.browser_executor._notify_extension(
+                    action_type, url, "denied",
+                    target=target, form_data=form_data)
                 return {
                     "status": "denied",
                     "message": error_msg,
@@ -2094,8 +2002,14 @@ If an action is denied, you will receive an error and cannot proceed. Always exp
                 }
         
         except Exception as e:
-            # Any other error - fail safe
             print(f"   ❌ AgentTrust validation error: {e}")
+            self.actions_blocked.append({
+                "type": action_type, "url": url,
+                "reason": str(e)
+            })
+            self.browser_executor._notify_extension(
+                action_type, url, "error",
+                target=target, form_data=form_data)
             return {
                 "status": "error",
                 "message": f"AgentTrust validation failed: {str(e)}"
@@ -2150,33 +2064,18 @@ def main():
     
     agent = ChatGPTAgentWithAgentTrust(enable_browser=enable_browser, headless=headless)
     
+    # Create a fresh session for this script run
+    session_id = agent.agenttrust.create_session()
+    if session_id:
+        print(f"Session created: {session_id}")
+    else:
+        print("Warning: Could not create session")
+    
     try:
-        # Example conversation
-        print("Example conversation:\n")
-        
-        # User request
-        agent.chat("I want to navigate to GitHub and view my repositories")
-        
-        # ChatGPT will:
-        # 1. Decide to navigate to GitHub
-        # 2. Call agenttrust_browser_action for navigation
-        # 3. AgentTrust validates (should be allowed)
-        # 4. ChatGPT reports success
-        
-        # Another request
-        agent.chat("Now I want to delete my test repository")
-        
-        # ChatGPT will:
-        # 1. Decide to click delete button
-        # 2. Call agenttrust_browser_action for delete click
-        # 3. AgentTrust detects high-risk (should require step-up)
-        # 4. ChatGPT asks for approval
-        
-        # Interactive mode
-        print("\n" + "="*70)
+        print("="*70)
         print("Interactive Mode")
         print("="*70)
-        print("Type your requests. ChatGPT will use AgentTrust for browser actions.")
+        print("Tell the agent what to do. It will use the browser directly.")
         print("Type 'quit' to exit.\n")
         
         while True:
@@ -2195,6 +2094,10 @@ def main():
         traceback.print_exc()
     finally:
         agent.print_summary()
+        
+        # End the session
+        agent.agenttrust.end_session()
+        print("Session closed")
         
         # Close browser if it was opened
         if agent.browser_executor.browser:

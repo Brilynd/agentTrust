@@ -29,6 +29,7 @@ async function getPreviousHash(agentId) {
 async function logAction(actionData) {
   const {
     agentId,
+    sessionId,
     type,
     domain,
     url,
@@ -38,21 +39,19 @@ async function logAction(actionData) {
     scopes,
     stepUpRequired,
     reason,
-    status // 'allowed', 'denied', or 'step_up_required'
+    status,
+    screenshot,
+    promptId
   } = actionData;
   
-  // Get previous hash for this agent
   const previousHash = await getPreviousHash(agentId);
-  
-  // Calculate cryptographic hash
   const hash = createHash(previousHash, actionData);
-  
-  // Generate unique ID
   const id = `action_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
   const loggedAction = {
     id,
     agentId,
+    sessionId: sessionId || null,
     type,
     timestamp: actionData.timestamp || new Date().toISOString(),
     domain,
@@ -65,15 +64,13 @@ async function logAction(actionData) {
     scopes,
     stepUpRequired,
     reason,
-    status: status || 'allowed' // Default to 'allowed' if not specified
+    status: status || 'allowed',
+    screenshot: screenshot || null,
+    promptId: promptId || null
   };
   
-  // Store in database
   const savedAction = await Action.create(loggedAction);
-  
-  // Update cache
   previousHashCache.set(agentId, hash);
-  
   return savedAction;
 }
 

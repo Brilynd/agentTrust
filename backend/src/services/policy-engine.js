@@ -34,28 +34,38 @@ function getDefaultPolicies() {
 
 async function classifyRisk(actionData) {
   const policies = await loadPolicies();
-  const { type, domain, target, form } = actionData;
+  const { type, domain, url, target, form } = actionData;
   
   let riskScore = 0;
   
-  // Check domain
-  if (policies.blocked_domains.some(blocked => domain.includes(blocked))) {
+  if (policies.blocked_domains.some(blocked => domain && domain.includes(blocked))) {
     return 'blocked';
   }
   
-  if (policies.financial_domains.some(fin => domain.includes(fin))) {
+  if (policies.financial_domains.some(fin => domain && domain.includes(fin))) {
     riskScore += 3;
   }
   
-  // Check keywords in target
-  const text = (target?.text || '').toLowerCase();
-  const className = (target?.className || '').toLowerCase();
-  const id = (target?.id || '').toLowerCase();
+  // Build a searchable text blob from ALL available context
+  const targetText = (target?.text || '').toLowerCase();
+  const targetClass = (target?.className || '').toLowerCase();
+  const targetId = (target?.id || '').toLowerCase();
+  const targetAriaLabel = (target?.aria_label || '').toLowerCase();
+  const urlLower = (url || '').toLowerCase();
+  const domainLower = (domain || '').toLowerCase();
   
-  const allText = `${text} ${className} ${id}`;
+  const allText = `${targetText} ${targetClass} ${targetId} ${targetAriaLabel} ${urlLower}`;
   
-  // High risk keywords
+  // High risk: keywords in element text, URL path, or element attributes
+  const highRiskUrlPatterns = [
+    '/delete', '/remove', '/destroy', '/settings/admin',
+    '/transfer', '/merge', '/close', '/deactivate'
+  ];
+  
   if (policies.high_risk_keywords.some(keyword => allText.includes(keyword))) {
+    riskScore += 3;
+  }
+  if (highRiskUrlPatterns.some(pattern => urlLower.includes(pattern))) {
     riskScore += 3;
   }
   
@@ -64,17 +74,24 @@ async function classifyRisk(actionData) {
     riskScore += 1;
   }
   
-  // Check form fields
+  // Form-submit type actions on sensitive domains get extra score
+  if (type === 'form_submit') {
+    riskScore += 1;
+  }
+  
+  // Check form fields for passwords
   if (form) {
-    const hasPassword = Object.values(form.fields || {}).some(
-      field => field.type === 'password' && field.hasValue
-    );
-    if (hasPassword) {
-      riskScore += 2;
+    const fields = form.fields || form;
+    if (typeof fields === 'object') {
+      const hasPassword = Object.values(fields).some(
+        field => field && (field.type === 'password' && field.hasValue)
+      );
+      if (hasPassword) {
+        riskScore += 2;
+      }
     }
   }
   
-  // Determine risk level
   if (riskScore >= 3) return 'high';
   if (riskScore >= 1) return 'medium';
   return 'low';

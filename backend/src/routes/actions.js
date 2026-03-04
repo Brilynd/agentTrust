@@ -5,29 +5,18 @@ const express = require('express');
 const router = express.Router();
 const { validateAction } = require('../middleware/auth');
 const { enforcePolicy } = require('../middleware/policy');
-const { logAction } = require('../services/audit');
 
 // Log an action
+// NOTE: The enforcePolicy middleware already logs the action to the database
+// (for both allowed and denied actions). We reuse that logged action here
+// instead of creating a duplicate.
 router.post('/', validateAction, enforcePolicy, async (req, res) => {
   try {
-    // Normalize action data format
-    const actionData = {
-      type: req.body.type,
-      url: req.body.url,
-      domain: req.body.domain,
-      target: req.body.target || null,
-      formData: req.body.form?.fields || req.body.formData || req.body.form || null,
-      scopes: req.agent.scopes || [],
-      stepUpRequired: req.policyCheck?.requiresStepUp || false,
-      reason: req.body.reason || null,
-      agentId: req.agent.id,
-      timestamp: req.body.timestamp || new Date().toISOString(),
-      riskLevel: req.policyCheck?.riskLevel || req.body.riskLevel || null,
-      screenshot: req.body.screenshot || null // Screenshot from agent or extension
-    };
+    const loggedAction = req.loggedAction;
     
-    // Log action to database
-    const loggedAction = await logAction(actionData);
+    if (!loggedAction) {
+      return res.status(500).json({ success: false, error: 'Action was not logged by policy middleware' });
+    }
     
     res.status(201).json({
       success: true,
@@ -61,7 +50,7 @@ router.post('/', validateAction, enforcePolicy, async (req, res) => {
 // Query audit log (for authenticated users - browser extension)
 router.get('/user', require('../middleware/auth').authenticateUser, async (req, res) => {
   try {
-    const { agentId, domain, riskLevel, startDate, endDate, limit = 100 } = req.query;
+    const { agentId, domain, riskLevel, type, startDate, endDate, limit = 100 } = req.query;
     
     const { Action } = require('../models/action');
     
@@ -71,6 +60,9 @@ router.get('/user', require('../middleware/auth').authenticateUser, async (req, 
     
     if (agentId) {
       filters.agentId = agentId;
+    }
+    if (type) {
+      filters.type = type;
     }
     if (domain) {
       filters.domain = domain;
@@ -236,6 +228,46 @@ router.patch('/:actionId', validateAction, async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+// Log an action from the extension (user auth) — used for error/failed
+// actions that the agent couldn't log via M2M because the API call itself failed.
+router.post('/extension-log', require('../middleware/auth').authenticateUser, async (req, res) => {
+  try {
+    const { type, url, domain, status, target, formData, timestamp } = req.body;
+    if (!type || !url) {
+      return res.status(400).json({ success: false, error: 'type and url are required' });
+    }
+
+    const { logAction } = require('../services/audit');
+    const { Session } = require('../models/session');
+
+    // Try to attach to an active session (use a generic agent id)
+    const agentId = req.body.agentId || 'extension-captured';
+    let session;
+    try { session = await Session.getOrCreateActiveSession(agentId); } catch { /* ignore */ }
+
+    const logged = await logAction({
+      agentId,
+      sessionId: session?.id || null,
+      type,
+      url,
+      domain: domain || new URL(url).hostname,
+      target: target || null,
+      formData: formData || null,
+      riskLevel: req.body.riskLevel || 'unknown',
+      status: status || 'error',
+      reason: req.body.reason || req.body.message || null,
+      scopes: [],
+      stepUpRequired: false,
+      timestamp: timestamp || new Date().toISOString()
+    });
+
+    res.status(201).json({ success: true, action: { id: logged.id } });
+  } catch (error) {
+    console.error('Failed to log extension action:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

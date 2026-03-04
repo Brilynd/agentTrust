@@ -22,6 +22,7 @@ class Action {
     this.reason = data.reason;
     this.status = data.status || 'allowed'; // 'allowed', 'denied', or 'step_up_required'
     this.screenshot = data.screenshot;
+    this.promptId = data.prompt_id || data.promptId;
     this.createdAt = data.created_at;
   }
   
@@ -43,15 +44,16 @@ class Action {
       stepUpRequired,
       reason,
       status,
-      screenshot
+      screenshot,
+      promptId
     } = data;
     
     const query = `
       INSERT INTO actions (
         id, agent_id, session_id, type, timestamp, domain, url, risk_level,
         hash, previous_hash, target, form_data, scopes,
-        step_up_required, reason, status, screenshot
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        step_up_required, reason, status, screenshot, prompt_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING *
     `;
     
@@ -72,7 +74,8 @@ class Action {
       stepUpRequired || false,
       reason || null,
       status || 'allowed',
-      screenshot || null
+      screenshot || null,
+      promptId || null
     ];
     
     try {
@@ -151,6 +154,12 @@ class Action {
     if (filters.sessionId) {
       query += ` AND session_id = $${paramIndex}`;
       values.push(filters.sessionId);
+      paramIndex++;
+    }
+    
+    if (filters.type) {
+      query += ` AND type = $${paramIndex}`;
+      values.push(filters.type);
       paramIndex++;
     }
     

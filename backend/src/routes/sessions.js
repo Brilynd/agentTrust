@@ -1,11 +1,38 @@
 // Sessions Routes
-// Handles session queries for authenticated users
+// Handles session creation, ending, and queries
 
 const express = require('express');
 const router = express.Router();
-const { authenticateUser } = require('../middleware/auth');
+const { authenticateUser, validateAction } = require('../middleware/auth');
 const { Session } = require('../models/session');
 const { Action } = require('../models/action');
+const { Prompt } = require('../models/prompt');
+
+// Agent explicitly creates a new session (M2M auth)
+router.post('/', validateAction, async (req, res) => {
+  try {
+    const session = await Session.create(req.agent.id);
+    res.status(201).json({ success: true, session: session.toJSON() });
+  } catch (error) {
+    console.error('Failed to create session:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Agent ends a session (M2M auth)
+router.post('/:sessionId/end', validateAction, async (req, res) => {
+  try {
+    const session = await Session.findById(req.params.sessionId);
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Session not found' });
+    }
+    const ended = await session.end();
+    res.json({ success: true, session: ended.toJSON() });
+  } catch (error) {
+    console.error('Failed to end session:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // Get all sessions (optionally filtered by agentId)
 router.get('/', authenticateUser, async (req, res) => {
@@ -16,21 +43,29 @@ router.get('/', authenticateUser, async (req, res) => {
       ? await Session.findByAgent(agentId, parseInt(limit))
       : await Session.findAll(parseInt(limit));
     
-    // Get action counts for each session
-    const sessionsWithActions = await Promise.all(
+    const sessionsWithDetails = await Promise.all(
       sessions.map(async (session) => {
-        const actions = await Action.findBySession(session.id);
+        const [actions, prompts] = await Promise.all([
+          Action.findBySession(session.id),
+          Prompt.findBySession(session.id)
+        ]);
         return {
           ...session.toJSON(),
+          prompts: prompts.map(p => p.toJSON()),
           actions: actions.map(action => ({
             id: action.id,
+            agentId: action.agentId,
             type: action.type,
             timestamp: action.timestamp,
             domain: action.domain,
             url: action.url,
             riskLevel: action.riskLevel,
-            status: action.status,
-            screenshot: action.screenshot
+            status: action.status || 'allowed',
+            target: action.target,
+            formData: action.formData,
+            reason: action.reason,
+            screenshot: action.screenshot,
+            promptId: action.promptId || null
           }))
         };
       })
@@ -38,8 +73,8 @@ router.get('/', authenticateUser, async (req, res) => {
     
     res.json({
       success: true,
-      sessions: sessionsWithActions,
-      count: sessionsWithActions.length
+      sessions: sessionsWithDetails,
+      count: sessionsWithDetails.length
     });
   } catch (error) {
     console.error('Failed to query sessions:', error);
@@ -64,12 +99,16 @@ router.get('/:sessionId', authenticateUser, async (req, res) => {
       });
     }
     
-    const actions = await Action.findBySession(sessionId);
+    const [actions, prompts] = await Promise.all([
+      Action.findBySession(sessionId),
+      Prompt.findBySession(sessionId)
+    ]);
     
     res.json({
       success: true,
       session: {
         ...session.toJSON(),
+        prompts: prompts.map(p => p.toJSON()),
         actions: actions.map(action => ({
           id: action.id,
           type: action.type,
@@ -81,7 +120,8 @@ router.get('/:sessionId', authenticateUser, async (req, res) => {
           target: action.target,
           formData: action.formData,
           reason: action.reason,
-          screenshot: action.screenshot
+          screenshot: action.screenshot,
+          promptId: action.promptId || null
         }))
       }
     });

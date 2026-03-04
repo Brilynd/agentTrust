@@ -1,347 +1,399 @@
-// Popup Script
-// Handles login, logout, and action viewing
-
 const API_URL = 'http://localhost:3000/api';
+let autoRefreshInterval = null;
 
-// Initialize popup
+// ─── Bootstrap ───────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
-  await checkAuthStatus();
-  setupEventListeners();
+  await checkAuth();
+  bindEvents();
 });
 
-async function checkAuthStatus() {
-  const stored = await chrome.storage.local.get(['userToken', 'userEmail']);
-  
-  if (stored.userToken && stored.userEmail) {
-    // User is logged in
-    showMainScreen(stored.userEmail);
-    await loadActions();
+async function checkAuth() {
+  const { userToken, userEmail } = await chrome.storage.local.get(['userToken', 'userEmail']);
+  if (userToken && userEmail) {
+    showDashboard(userEmail);
+    await loadData();
   } else {
-    // Show login screen
-    showLoginScreen();
+    showLogin();
   }
 }
 
-function setupEventListeners() {
-  // Login form
-  document.getElementById('loginForm').addEventListener('submit', handleLogin);
-  document.getElementById('registerForm').addEventListener('submit', handleRegister);
-  document.getElementById('showRegister').addEventListener('click', (e) => {
-    e.preventDefault();
-    document.getElementById('loginForm').style.display = 'none';
-    document.getElementById('registerForm').style.display = 'block';
-  });
-  document.getElementById('showLogin').addEventListener('click', (e) => {
-    e.preventDefault();
-    document.getElementById('registerForm').style.display = 'none';
-    document.getElementById('loginForm').style.display = 'block';
-  });
-  
-  // Logout
-  document.getElementById('logoutBtn').addEventListener('click', handleLogout);
-  
-  // Filters
-  document.getElementById('applyFilters').addEventListener('click', loadActions);
-  document.getElementById('refreshActions').addEventListener('click', loadActions);
-  document.getElementById('viewMode').addEventListener('change', loadActions);
+function bindEvents() {
+  // Auth
+  $('loginForm').addEventListener('submit', handleLogin);
+  $('registerForm').addEventListener('submit', handleRegister);
+  $('showRegister').addEventListener('click', e => { e.preventDefault(); $('loginForm').hidden = true; $('registerForm').hidden = false; });
+  $('showLogin').addEventListener('click', e => { e.preventDefault(); $('registerForm').hidden = true; $('loginForm').hidden = false; });
+  $('logoutBtn').addEventListener('click', handleLogout);
+
+  // Dashboard
+  $('refreshActions').addEventListener('click', loadData);
+  $('viewMode').addEventListener('change', loadData);
+  $('riskFilter').addEventListener('change', loadData);
+  $('typeFilter').addEventListener('change', loadData);
+  $('domainFilter').addEventListener('keydown', e => { if (e.key === 'Enter') loadData(); });
+  $('autoRefresh').addEventListener('change', e => e.target.checked ? startLive() : stopLive());
 }
 
+// ─── Auth ────────────────────────────────────────────
 async function handleLogin(e) {
   e.preventDefault();
-  
-  const email = document.getElementById('email').value;
-  const password = document.getElementById('password').value;
-  const errorDiv = document.getElementById('loginError');
-  const loginBtn = document.getElementById('loginBtn');
-  
-  errorDiv.style.display = 'none';
-  loginBtn.disabled = true;
-  loginBtn.textContent = 'Logging in...';
-  
+  const email = $('email').value;
+  const password = $('password').value;
+  const btn = $('loginBtn');
+  hideError('loginError');
+  btn.disabled = true; btn.textContent = 'Signing in\u2026';
+
   try {
-    const response = await fetch(`${API_URL}/users/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ email, password })
-    });
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      // Store token and user info
-      await chrome.storage.local.set({
-        userToken: data.token,
-        userEmail: data.user.email
-      });
-      
-      showMainScreen(data.user.email);
-      await loadActions();
+    const res = await apiFetch('/users/login', { method: 'POST', body: { email, password } });
+    if (res.success) {
+      await chrome.storage.local.set({ userToken: res.token, userEmail: res.user.email });
+      showDashboard(res.user.email);
+      await loadData();
     } else {
-      errorDiv.textContent = data.error || 'Login failed';
-      errorDiv.style.display = 'block';
+      showError('loginError', res.error || 'Login failed');
     }
-  } catch (error) {
-    errorDiv.textContent = 'Failed to connect to server. Make sure the backend is running.';
-    errorDiv.style.display = 'block';
+  } catch {
+    showError('loginError', 'Cannot reach server. Is the backend running?');
   } finally {
-    loginBtn.disabled = false;
-    loginBtn.textContent = 'Login';
+    btn.disabled = false; btn.textContent = 'Sign in';
   }
 }
 
 async function handleRegister(e) {
   e.preventDefault();
-  
-  const name = document.getElementById('regName').value;
-  const email = document.getElementById('regEmail').value;
-  const password = document.getElementById('regPassword').value;
-  const errorDiv = document.getElementById('registerError');
-  const registerBtn = document.getElementById('registerBtn');
-  
-  errorDiv.style.display = 'none';
-  registerBtn.disabled = true;
-  registerBtn.textContent = 'Registering...';
-  
+  const name = $('regName').value;
+  const email = $('regEmail').value;
+  const password = $('regPassword').value;
+  const btn = $('registerBtn');
+  hideError('registerError');
+  btn.disabled = true; btn.textContent = 'Creating\u2026';
+
   try {
-    const response = await fetch(`${API_URL}/users/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ email, password, name })
-    });
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      // Store token and user info
-      await chrome.storage.local.set({
-        userToken: data.token,
-        userEmail: data.user.email
-      });
-      
-      showMainScreen(data.user.email);
-      await loadActions();
+    const res = await apiFetch('/users/register', { method: 'POST', body: { email, password, name } });
+    if (res.success) {
+      await chrome.storage.local.set({ userToken: res.token, userEmail: res.user.email });
+      showDashboard(res.user.email);
+      await loadData();
     } else {
-      errorDiv.textContent = data.error || 'Registration failed';
-      errorDiv.style.display = 'block';
+      showError('registerError', res.error || 'Registration failed');
     }
-  } catch (error) {
-    errorDiv.textContent = 'Failed to connect to server. Make sure the backend is running.';
-    errorDiv.style.display = 'block';
+  } catch {
+    showError('registerError', 'Cannot reach server.');
   } finally {
-    registerBtn.disabled = false;
-    registerBtn.textContent = 'Register';
+    btn.disabled = false; btn.textContent = 'Create account';
   }
 }
 
 async function handleLogout() {
+  stopLive();
   await chrome.storage.local.remove(['userToken', 'userEmail']);
-  showLoginScreen();
+  showLogin();
 }
 
-function showLoginScreen() {
-  document.getElementById('loginScreen').style.display = 'block';
-  document.getElementById('mainScreen').style.display = 'none';
-}
+// ─── Screens ─────────────────────────────────────────
+function showLogin()  { $('loginScreen').hidden = false; $('mainScreen').hidden = true; }
+function showDashboard(email) { $('loginScreen').hidden = true; $('mainScreen').hidden = false; $('userEmail').textContent = email; }
 
-function showMainScreen(email) {
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('mainScreen').style.display = 'block';
-  document.getElementById('userEmail').textContent = email;
-}
+// ─── Live refresh ────────────────────────────────────
+function startLive()  { stopLive(); autoRefreshInterval = setInterval(loadData, 5000); }
+function stopLive()   { if (autoRefreshInterval) { clearInterval(autoRefreshInterval); autoRefreshInterval = null; } }
 
-async function loadActions() {
-  const stored = await chrome.storage.local.get(['userToken', 'selectedAgentId']);
-  
-  if (!stored.userToken) {
-    return;
-  }
-  
-  const container = document.getElementById('actionsContainer');
-  const viewMode = document.getElementById('viewMode').value;
-  container.innerHTML = '<div class="loading">Loading...</div>';
-  
+// ─── Data loading ────────────────────────────────────
+async function loadData() {
+  const { userToken } = await chrome.storage.local.get(['userToken']);
+  if (!userToken) return;
+
+  const mode = $('viewMode').value;
+  $('listTitle').textContent = mode === 'sessions' ? 'Sessions' : 'All Actions';
+
   try {
-    if (viewMode === 'sessions') {
-      // Load sessions view
-      await loadSessions(stored.selectedAgentId || 'all');
-    } else {
-      // Load flat actions view
-      await loadActionsFlat();
-    }
-  } catch (error) {
-    container.innerHTML = `<div class="error">Failed to load: ${error.message}</div>`;
+    if (mode === 'sessions') await loadSessions(userToken);
+    else await loadActionsFlat(userToken);
+  } catch (err) {
+    $('actionsContainer').innerHTML = renderError(err.message);
   }
 }
 
-async function loadSessions(agentId) {
-  const stored = await chrome.storage.local.get(['userToken']);
-  const container = document.getElementById('actionsContainer');
-  document.getElementById('listTitle').textContent = 'Recent Sessions';
-  
-  try {
-    const params = new URLSearchParams({ limit: '20' });
-    if (agentId && agentId !== 'all') {
-      params.append('agentId', agentId);
-    }
-    
-    const response = await fetch(`${API_URL}/sessions?${params}`, {
-      headers: {
-        'Authorization': `Bearer ${stored.userToken}`
-      }
-    });
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      displaySessions(data.sessions);
-      // Calculate stats from all sessions
-      const allActions = data.sessions.flatMap(s => s.actions || []);
-      updateStats(allActions);
-    } else {
-      container.innerHTML = `<div class="error">Error: ${data.error}</div>`;
-    }
-  } catch (error) {
-    container.innerHTML = `<div class="error">Failed to load sessions: ${error.message}</div>`;
-  }
+async function loadSessions(token) {
+  const res = await apiFetch('/sessions?limit=20', { token });
+  if (!res.success) throw new Error(res.error);
+
+  const allActions = res.sessions.flatMap(s => s.actions || []);
+  updateStats(allActions);
+  renderSessions(res.sessions);
 }
 
-async function loadActionsFlat() {
-  const stored = await chrome.storage.local.get(['userToken']);
-  const container = document.getElementById('actionsContainer');
-  document.getElementById('listTitle').textContent = 'Recent Actions';
-  
-  try {
-    // Get filter values
-    const riskLevel = document.getElementById('riskFilter').value;
-    const type = document.getElementById('typeFilter').value;
-    const domain = document.getElementById('domainFilter').value;
-    
-    // Build query string
-    const params = new URLSearchParams({ limit: '50' });
-    if (riskLevel) params.append('riskLevel', riskLevel);
-    if (type) params.append('type', type);
-    if (domain) params.append('domain', domain);
-    
-    const response = await fetch(`${API_URL}/actions/user?${params}`, {
-      headers: {
-        'Authorization': `Bearer ${stored.userToken}`
-      }
-    });
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      displayActions(data.actions);
-      updateStats(data.actions);
-    } else {
-      container.innerHTML = `<div class="error">Error: ${data.error}</div>`;
-    }
-  } catch (error) {
-    container.innerHTML = `<div class="error">Failed to load actions: ${error.message}</div>`;
-  }
+async function loadActionsFlat(token) {
+  const params = new URLSearchParams({ limit: '50' });
+  const risk = $('riskFilter').value;
+  const type = $('typeFilter').value;
+  const domain = $('domainFilter').value.trim();
+  if (risk) params.set('riskLevel', risk);
+  if (type) params.set('type', type);
+  if (domain) params.set('domain', domain);
+
+  const res = await apiFetch(`/actions/user?${params}`, { token });
+  if (!res.success) throw new Error(res.error);
+
+  updateStats(res.actions);
+  renderActionsFlat(res.actions);
 }
 
-function displaySessions(sessions) {
-  const container = document.getElementById('actionsContainer');
-  
-  if (sessions.length === 0) {
-    container.innerHTML = '<div class="empty">No sessions found</div>';
-    return;
-  }
-  
-  container.innerHTML = sessions.map(session => {
-    const startTime = formatTime(session.startedAt);
-    const actionCount = session.actions?.length || 0;
-    
-    return `
-    <div class="session-item">
-      <div class="session-header">
-        <div class="session-info">
-          <strong>Session</strong>
-          <span class="session-time">${startTime}</span>
-          <span class="session-count">${actionCount} actions</span>
-        </div>
-      </div>
-      <div class="session-actions">
-        ${session.actions && session.actions.length > 0 ? 
-          session.actions.map(action => renderAction(action)).join('') :
-          '<div class="empty">No actions in this session</div>'
-        }
-      </div>
-    </div>
-    `;
-  }).join('');
-}
-
-function renderAction(action) {
-  const status = action.status || 'allowed';
-  const isBlocked = status === 'denied' || status === 'step_up_required';
-  const statusClass = isBlocked ? 'blocked' : status;
-  const screenshotHtml = action.screenshot ? 
-    `<div class="action-screenshot">
-      <img src="data:image/png;base64,${action.screenshot}" alt="Screenshot" class="screenshot-img">
-    </div>` : '';
-  
-  return `
-    <div class="action-item ${action.riskLevel || 'unknown'} ${statusClass}">
-      <div class="action-header">
-        <span class="action-type">${action.type}</span>
-        <span class="action-time">${formatTime(action.timestamp)}</span>
-        ${action.riskLevel ? `<span class="risk-badge ${action.riskLevel}">${action.riskLevel}</span>` : ''}
-        ${isBlocked ? `<span class="status-badge ${status}">${status === 'denied' ? 'BLOCKED' : 'STEP-UP REQUIRED'}</span>` : ''}
-      </div>
-      ${screenshotHtml}
-      <div class="action-details">
-        <div class="detail-item">
-          <strong>Domain:</strong> ${action.domain || 'N/A'}
-        </div>
-        <div class="detail-item">
-          <strong>URL:</strong> <a href="${action.url}" target="_blank">${truncateUrl(action.url)}</a>
-        </div>
-        ${action.target ? `<div class="detail-item"><strong>Target:</strong> ${JSON.stringify(action.target)}</div>` : ''}
-        ${action.formData ? `<div class="detail-item"><strong>Form Data:</strong> ${JSON.stringify(action.formData)}</div>` : ''}
-        ${action.reason ? `<div class="detail-item"><strong>Reason:</strong> ${action.reason}</div>` : ''}
-        ${action.status ? `<div class="detail-item"><strong>Status:</strong> <span class="status-text ${status}">${status}</span></div>` : ''}
-      </div>
-    </div>
-  `;
-}
-
-function displayActions(actions) {
-  const container = document.getElementById('actionsContainer');
-  
-  if (actions.length === 0) {
-    container.innerHTML = '<div class="empty">No actions found</div>';
-    return;
-  }
-  
-  container.innerHTML = actions.map(action => renderAction(action)).join('');
-}
-
+// ─── Stats ───────────────────────────────────────────
 function updateStats(actions) {
-  const total = actions.length;
-  const highRisk = actions.filter(a => a.riskLevel === 'high').length;
-  const blocked = actions.filter(a => a.status === 'denied' || a.status === 'step_up_required').length;
-  
-  document.getElementById('totalActions').textContent = total;
-  document.getElementById('highRiskCount').textContent = highRisk;
-  document.getElementById('blockedCount').textContent = blocked;
+  if (!actions) return;
+  $('totalActions').textContent  = actions.length;
+  $('highRiskCount').textContent = actions.filter(a => a.riskLevel === 'high').length;
+  $('blockedCount').textContent  = actions.filter(a => a.status === 'denied' || a.status === 'step_up_required').length;
+  $('agentCount').textContent    = new Set(actions.map(a => a.agentId).filter(Boolean)).size;
 }
 
-function formatTime(timestamp) {
-  if (!timestamp) return 'N/A';
-  const date = new Date(timestamp);
-  return date.toLocaleString();
-}
+// ─── Render: Sessions ────────────────────────────────
+function renderSessions(sessions) {
+  const el = $('actionsContainer');
+  const countEl = $('actionCountLabel');
 
-function truncateUrl(url) {
-  if (!url) return 'N/A';
-  if (url.length > 50) {
-    return url.substring(0, 47) + '...';
+  if (!sessions || sessions.length === 0) {
+    el.innerHTML = renderEmpty('No sessions yet', 'Agent activity will appear here once the agent runs.');
+    countEl.textContent = '';
+    return;
   }
-  return url;
+
+  countEl.textContent = `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`;
+
+  el.innerHTML = sessions.map((session, idx) => {
+    const time = fmtTime(session.startedAt);
+    const promptCount = (session.prompts || []).length;
+    const actionCount = (session.actions || []).length;
+    const hasHigh = (session.actions || []).some(a => a.riskLevel === 'high');
+    const hasBlocked = (session.actions || []).some(a => a.status === 'denied' || a.status === 'step_up_required');
+
+    // Build the first prompt's text as a session title preview
+    const firstPrompt = (session.prompts || [])[0];
+    const title = firstPrompt ? truncate(firstPrompt.content, 60) : `Session ${idx + 1}`;
+
+    const turns = buildConversationTurns(session);
+
+    return `
+      <div class="session-card${hasHigh ? ' has-high-risk' : ''}${hasBlocked ? ' has-blocked' : ''}${idx === 0 ? ' open' : ''}" data-session>
+        <div class="session-head" data-toggle-session>
+          <div class="session-head-left">
+            <span class="session-indicator"></span>
+            <span class="session-head-title">${esc(title)}</span>
+          </div>
+          <div class="session-head-meta">
+            <span class="meta-pill">${promptCount}p &middot; ${actionCount}a</span>
+            <span class="meta-time">${time}</span>
+            <svg class="session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+        </div>
+        <div class="session-body">
+          ${turns}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Bind collapse/expand for sessions
+  el.querySelectorAll('[data-toggle-session]').forEach(head => {
+    head.addEventListener('click', () => head.closest('[data-session]').classList.toggle('open'));
+  });
+
+}
+
+/**
+ * Build conversation log by grouping actions to prompts via promptId.
+ * Each prompt renders: user message → GPT response → each action's screenshot.
+ * Actions link to prompts via action.promptId === prompt.id (set by the agent).
+ */
+function buildConversationTurns(session) {
+  const prompts = (session.prompts || []).slice().sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
+  const actions = (session.actions || []).slice().sort((a, b) => ts(a.timestamp) - ts(b.timestamp));
+
+  if (prompts.length === 0 && actions.length === 0) {
+    return '<div class="state-empty" style="padding:20px">No activity in this session</div>';
+  }
+
+  // Group actions by their promptId
+  const actionsByPrompt = {};
+  const unlinked = [];
+  for (const action of actions) {
+    if (action.promptId) {
+      if (!actionsByPrompt[action.promptId]) actionsByPrompt[action.promptId] = [];
+      actionsByPrompt[action.promptId].push(action);
+    } else {
+      unlinked.push(action);
+    }
+  }
+
+  // If there are no prompts, render actions flat
+  if (prompts.length === 0) {
+    return actions.map(renderActionBlock).join('')
+      || '<div class="state-empty" style="padding:20px">No prompts recorded</div>';
+  }
+
+  let html = '';
+
+  // Render each prompt with its linked actions
+  for (const prompt of prompts) {
+    const linked = actionsByPrompt[prompt.id] || [];
+    html += renderTurn(prompt, linked);
+  }
+
+  // Render any unlinked actions (from before promptId was added) at the end
+  if (unlinked.length > 0) {
+    const visible = unlinked.filter(a => a.screenshot || a.status === 'error' || a.status === 'denied');
+    if (visible.length > 0) {
+      html += visible.map(renderActionBlock).join('');
+    }
+  }
+
+  return html;
+}
+
+// ─── One turn: user message → GPT response → action screenshots ──
+function renderTurn(prompt, actions) {
+  const responseHtml = prompt.response
+    ? `<div class="turn-response"><div class="turn-label">ChatGPT</div><div class="turn-response-text">${esc(prompt.response)}</div></div>`
+    : '';
+
+  const actionsHtml = actions.map(renderActionBlock).join('');
+
+  return `<div class="conv-turn">`
+    + `<div class="turn-request"><div class="turn-label">You</div><div class="turn-request-text">${esc(prompt.content)}</div></div>`
+    + responseHtml
+    + actionsHtml
+    + `</div>`;
+}
+
+// ─── Render a single action (label + screenshot, or error) ──
+function renderActionBlock(action) {
+  const isError = action.status === 'error' || action.status === 'unauthorized' || action.status === 'denied';
+  const hasScreenshot = !!action.screenshot;
+
+  if (!hasScreenshot && !isError) return '';
+
+  const target = describeTarget(action);
+  const actionLabel = `${esc(fmtType(action.type))}${target ? ' &mdash; ' + target : ''}`;
+
+  if (isError) {
+    const badge = action.status === 'denied' ? 'BLOCKED' : 'ERROR';
+    const img = hasScreenshot
+      ? `<div class="turn-screenshot"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`
+      : '';
+    return `<div class="turn-error"><span class="turn-error-badge">${badge}</span> ${actionLabel}</div>` + img;
+  }
+
+  return `<div class="turn-action-label">${actionLabel}</div>`
+    + `<div class="turn-screenshot"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`;
+}
+
+function describeTarget(action) {
+  if (action.type === 'navigation' && action.url) {
+    try { const u = new URL(action.url); return `<code>${esc(u.hostname + u.pathname)}</code>`; }
+    catch { return `<code>${esc(truncate(action.url, 60))}</code>`; }
+  }
+  const t = parseTarget(action.target);
+  if (!t) return '';
+  if (t.text) return esc(truncate(t.text, 60));
+  if (t.id)   return `<code>#${esc(t.id)}</code>`;
+  if (t.href) return `<code>${esc(truncate(t.href, 60))}</code>`;
+  return '';
+}
+
+// ─── Render: Flat actions view ───────────────────────
+function renderActionsFlat(actions) {
+  const el = $('actionsContainer');
+  const countEl = $('actionCountLabel');
+
+  if (!actions || actions.length === 0) {
+    el.innerHTML = renderEmpty('No actions yet', 'Actions will appear here once the agent starts working.');
+    countEl.textContent = '';
+    return;
+  }
+
+  countEl.textContent = `${actions.length} action${actions.length !== 1 ? 's' : ''}`;
+
+  const visible = actions.filter(a => a.screenshot || a.status === 'error' || a.status === 'denied');
+  if (visible.length === 0) {
+    el.innerHTML = renderEmpty('No screenshots', 'No screenshots captured yet.');
+    return;
+  }
+  el.innerHTML = visible.map(a => renderActionBlock(a)).join('');
+}
+
+// ─── Icons ───────────────────────────────────────────
+function typeIcon(type) {
+  switch (type) {
+    case 'click':       return '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 15l-2 5L9 9l11 4-5 2z"/></svg>';
+    case 'form_submit': return '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>';
+    case 'navigation':  return '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+    default:            return '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/></svg>';
+  }
+}
+
+function fmtType(type) {
+  if (!type) return 'Unknown';
+  return type.replace(/_/g, ' ');
+}
+
+// ─── Empty / error states ────────────────────────────
+function renderEmpty(title, sub) {
+  return `
+    <div class="state-empty">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+      <strong>${esc(title)}</strong><br>${esc(sub)}
+    </div>`;
+}
+
+function renderError(msg) {
+  return `<div class="state-error">Failed to load: ${esc(msg)}</div>`;
+}
+
+// ─── Utilities ───────────────────────────────────────
+function $(id) { return document.getElementById(id); }
+
+function showError(id, msg) { const el = $(id); el.textContent = msg; el.hidden = false; }
+function hideError(id) { $(id).hidden = true; }
+
+function ts(v) { return new Date(v).getTime(); }
+
+async function apiFetch(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (opts.token) {
+    headers['Authorization'] = `Bearer ${opts.token}`;
+  } else {
+    const { userToken } = await chrome.storage.local.get(['userToken']);
+    if (userToken) headers['Authorization'] = `Bearer ${userToken}`;
+  }
+  const fetchOpts = { method: opts.method || 'GET', headers };
+  if (opts.body) fetchOpts.body = JSON.stringify(opts.body);
+  const res = await fetch(`${API_URL}${path}`, fetchOpts);
+  return res.json();
+}
+
+function fmtTime(timestamp) {
+  if (!timestamp) return '';
+  const d = new Date(timestamp);
+  const diff = Date.now() - d.getTime();
+  if (diff < 60000) return 'Just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function truncate(s, max) {
+  if (!s) return '';
+  s = String(s);
+  return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function parseTarget(val) {
+  if (!val) return null;
+  if (typeof val === 'object') return val;
+  try { return JSON.parse(val); } catch { return null; }
 }
