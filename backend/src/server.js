@@ -85,6 +85,8 @@ app.use('/api/sessions', require('./routes/sessions'));
 app.use('/api/policies', require('./routes/policies'));
 app.use('/api/audit', require('./routes/audit'));
 app.use('/api/prompts', require('./routes/prompts'));
+app.use('/api/commands', require('./routes/commands'));
+app.use('/api/approvals', require('./routes/approvals'));
 
 // Health check
 app.get('/health', (req, res) => {

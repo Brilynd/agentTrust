@@ -117,12 +117,13 @@ async function checkPolicy(actionData, agentScopes) {
     if (!isAllowed) {
       return {
         allowed: false,
-        reason: 'Domain not in allowed list'
+        requiresStepUp: true,
+        reason: 'Domain not in allowed list — requires user approval'
       };
     }
   }
   
-  // Check if step-up is required
+  // Check if step-up is required based on risk level
   if (policies.requires_step_up.includes(riskLevel)) {
     const hasHighRiskScope = agentScopes.includes('browser.high_risk');
     
@@ -130,16 +131,17 @@ async function checkPolicy(actionData, agentScopes) {
       return {
         allowed: false,
         requiresStepUp: true,
-        reason: 'High-risk action requires step-up authentication'
+        reason: `${riskLevel}-risk action requires user approval`
       };
     }
   }
   
-  // Check scope requirements
+  // Check scope requirements — offer step-up approval instead of flat denial
   if (actionData.type === 'form_submit' && !agentScopes.includes('browser.form.submit')) {
     return {
       allowed: false,
-      reason: 'Insufficient scope: browser.form.submit required'
+      requiresStepUp: true,
+      reason: 'Form submission requires user approval (missing browser.form.submit scope)'
     };
   }
   

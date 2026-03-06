@@ -2072,21 +2072,53 @@ def main():
         print("Warning: Could not create session")
     
     try:
+        import threading, queue as _queue
+
         print("="*70)
         print("Interactive Mode")
         print("="*70)
-        print("Tell the agent what to do. It will use the browser directly.")
+        print("Tell the agent what to do (terminal or browser extension).")
         print("Type 'quit' to exit.\n")
-        
+
+        input_q = _queue.Queue()
+        stop_event = threading.Event()
+
+        def _terminal_reader():
+            """Read terminal input on a background thread."""
+            while not stop_event.is_set():
+                try:
+                    line = input("You: ").strip()
+                    if line:
+                        input_q.put(("terminal", line))
+                except EOFError:
+                    break
+
+        terminal_thread = threading.Thread(target=_terminal_reader, daemon=True)
+        terminal_thread.start()
+
         while True:
-            user_input = input("You: ").strip()
-            if user_input.lower() in ['quit', 'exit', 'q']:
+            # Check terminal input (non-blocking)
+            try:
+                source, text = input_q.get(timeout=0.1)
+            except _queue.Empty:
+                source, text = None, None
+
+            if text and text.lower() in ['quit', 'exit', 'q']:
                 break
-            
-            if user_input:
-                agent.chat(user_input)
-        
+
+            if text:
+                print(f"  [from {source}]")
+                agent.chat(text)
+                continue
+
+            # No terminal input — long-poll the backend for browser commands
+            cmd = agent.agenttrust.poll_command(timeout=5)
+            if cmd:
+                print(f"\n📨 Browser command: {cmd['content']}")
+                agent.chat(cmd["content"])
+
     except KeyboardInterrupt:
+        stop_event.set()
         print("\n\n⚠️  Interrupted by user")
     except Exception as e:
         print(f"\n\n❌ Error: {e}")

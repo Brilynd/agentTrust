@@ -30,14 +30,5 @@
   "requires_step_up": [
     "high"
   ],
-  "domain_trust_profiles": {
-    "github.com": {
-      "risk_multiplier": 0.5,
-      "allowed_actions": ["click", "form_submit", "navigation"]
-    },
-    "slack.com": {
-      "risk_multiplier": 0.7,
-      "allowed_actions": ["click", "form_submit", "navigation"]
-    }
-  }
+  "domain_trust_profiles": {}
 }

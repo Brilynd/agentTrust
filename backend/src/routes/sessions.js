@@ -64,6 +64,7 @@ router.get('/', authenticateUser, async (req, res) => {
             target: action.target,
             formData: action.formData,
             reason: action.reason,
+            stepUpRequired: action.stepUpRequired,
             screenshot: action.screenshot,
             promptId: action.promptId || null
           }))
@@ -120,6 +121,7 @@ router.get('/:sessionId', authenticateUser, async (req, res) => {
           target: action.target,
           formData: action.formData,
           reason: action.reason,
+          stepUpRequired: action.stepUpRequired,
           screenshot: action.screenshot,
           promptId: action.promptId || null
         }))

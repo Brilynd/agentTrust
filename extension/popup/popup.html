@@ -75,12 +75,39 @@
           <span class="live-text">Live</span>
         </label>
         <span class="topbar-email" id="userEmail"></span>
+        <button id="popoutBtn" class="btn-ghost" title="Open in window">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        </button>
         <button id="logoutBtn" class="btn-ghost">Sign out</button>
       </div>
     </header>
 
-    <main class="dashboard">
-      <!-- Stats -->
+    <!-- Approval banner (appears above all panels when an approval is pending) -->
+    <div id="approvalBanner" class="approval-banner" hidden>
+      <div class="approval-banner-inner">
+        <div class="approval-info">
+          <span class="approval-icon">🔐</span>
+          <div class="approval-details">
+            <strong>Step-Up Approval Required</strong>
+            <span id="approvalDesc" class="approval-desc"></span>
+          </div>
+        </div>
+        <div class="approval-actions">
+          <button id="approvalApproveBtn" class="btn btn-approve">Approve</button>
+          <button id="approvalDenyBtn" class="btn btn-deny">Deny</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab bar -->
+    <nav class="tab-bar">
+      <button class="tab active" data-tab="monitor">Monitor</button>
+      <button class="tab" data-tab="chat">Chat</button>
+      <button class="tab" data-tab="permissions">Permissions <span id="approvalDot" class="approval-dot" hidden></span></button>
+    </nav>
+
+    <!-- ─── Monitor panel (existing dashboard) ─── -->
+    <main id="monitorPanel" class="dashboard">
       <section class="stats-bar">
         <div class="stat" data-color="primary">
           <span class="stat-num" id="totalActions">0</span>
@@ -100,7 +127,6 @@
         </div>
       </section>
 
-      <!-- Toolbar -->
       <section class="toolbar">
         <select id="viewMode" class="toolbar-select">
           <option value="sessions">Sessions</option>
@@ -124,7 +150,6 @@
         </button>
       </section>
 
-      <!-- Feed -->
       <section class="feed">
         <div class="feed-header">
           <h2 id="listTitle">Sessions</h2>
@@ -135,6 +160,73 @@
         </div>
       </section>
     </main>
+
+    <!-- ─── Chat panel ─── -->
+    <div id="chatPanel" class="chat-panel" hidden>
+      <div id="chatMessages" class="chat-messages">
+        <div class="state-empty">No active session. Start the agent to begin chatting.</div>
+      </div>
+      <form id="chatForm" class="chat-input-bar">
+        <input type="text" id="chatInput" class="chat-input" placeholder="Send a command to the agent&hellip;" autocomplete="off">
+        <button type="submit" class="chat-send-btn" id="chatSendBtn" title="Send">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </form>
+    </div>
+
+    <!-- ─── Permissions panel ─── -->
+    <div id="permissionsPanel" class="permissions-panel" hidden>
+      <div class="perm-section">
+        <h3 class="perm-heading">Blocked Domains</h3>
+        <p class="perm-hint">Actions on these domains will always be denied.</p>
+        <div class="chip-list" id="blockedDomainsList"></div>
+        <div class="chip-add">
+          <input type="text" id="blockedDomainInput" class="chip-input" placeholder="Add domain (e.g. evil.com)">
+          <button type="button" class="btn btn-sm btn-add" id="addBlockedDomainBtn">Add</button>
+        </div>
+      </div>
+
+      <div class="perm-section">
+        <h3 class="perm-heading">Allowed Domains</h3>
+        <p class="perm-hint">If set, only these domains are permitted. Leave empty to allow all.</p>
+        <div class="chip-list" id="allowedDomainsList"></div>
+        <div class="chip-add">
+          <input type="text" id="allowedDomainInput" class="chip-input" placeholder="Add domain (e.g. github.com)">
+          <button type="button" class="btn btn-sm btn-add" id="addAllowedDomainBtn">Add</button>
+        </div>
+      </div>
+
+      <div class="perm-section">
+        <h3 class="perm-heading">High-Risk Keywords</h3>
+        <p class="perm-hint">Actions containing these keywords trigger step-up approval.</p>
+        <div class="chip-list" id="highRiskKeywordsList"></div>
+        <div class="chip-add">
+          <input type="text" id="highRiskKeywordInput" class="chip-input" placeholder="Add keyword (e.g. delete)">
+          <button type="button" class="btn btn-sm btn-add" id="addHighRiskKeywordBtn">Add</button>
+        </div>
+      </div>
+
+      <div class="perm-section">
+        <h3 class="perm-heading">Financial Domains</h3>
+        <p class="perm-hint">Domains treated as financial — increases risk score.</p>
+        <div class="chip-list" id="financialDomainsList"></div>
+        <div class="chip-add">
+          <input type="text" id="financialDomainInput" class="chip-input" placeholder="Add domain (e.g. paypal.com)">
+          <button type="button" class="btn btn-sm btn-add" id="addFinancialDomainBtn">Add</button>
+        </div>
+      </div>
+
+      <div class="perm-section">
+        <h3 class="perm-heading">Step-Up Required For</h3>
+        <p class="perm-hint">Risk levels that require user approval before proceeding.</p>
+        <div class="stepup-toggles">
+          <label class="toggle-label"><input type="checkbox" id="stepUpHigh" value="high"> High Risk</label>
+          <label class="toggle-label"><input type="checkbox" id="stepUpMedium" value="medium"> Medium Risk</label>
+        </div>
+      </div>
+
+      <div class="perm-status" id="permSaveStatus"></div>
+    </div>
   </div>
 
   <script src="popup.js"></script>

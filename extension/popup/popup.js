@@ -1,8 +1,18 @@
 const API_URL = 'http://localhost:3000/api';
 let autoRefreshInterval = null;
+let chatRefreshInterval = null;
+let approvalPollInterval = null;
+let activeSessionId = null;
+let currentTab = 'monitor';
+let currentPolicies = null;
+let currentApproval = null;
 
 // ─── Bootstrap ───────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  // Detect pop-out window (opened via ?popout=1 or window width check)
+  if (new URLSearchParams(window.location.search).has('popout')) {
+    document.body.classList.add('popout');
+  }
   await checkAuth();
   bindEvents();
 });
@@ -24,6 +34,7 @@ function bindEvents() {
   $('showRegister').addEventListener('click', e => { e.preventDefault(); $('loginForm').hidden = true; $('registerForm').hidden = false; });
   $('showLogin').addEventListener('click', e => { e.preventDefault(); $('registerForm').hidden = true; $('loginForm').hidden = false; });
   $('logoutBtn').addEventListener('click', handleLogout);
+  $('popoutBtn').addEventListener('click', handlePopout);
 
   // Dashboard
   $('refreshActions').addEventListener('click', loadData);
@@ -32,6 +43,35 @@ function bindEvents() {
   $('typeFilter').addEventListener('change', loadData);
   $('domainFilter').addEventListener('keydown', e => { if (e.key === 'Enter') loadData(); });
   $('autoRefresh').addEventListener('change', e => e.target.checked ? startLive() : stopLive());
+
+  // Tabs
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+  });
+
+  // Chat
+  $('chatForm').addEventListener('submit', handleSendCommand);
+
+  // Approval banner
+  $('approvalApproveBtn').addEventListener('click', () => respondToApproval(true));
+  $('approvalDenyBtn').addEventListener('click', () => respondToApproval(false));
+
+  // Permissions panel — chip add buttons
+  bindChipAdd('addBlockedDomainBtn', 'blockedDomainInput', 'blocked_domains');
+  bindChipAdd('addAllowedDomainBtn', 'allowedDomainInput', 'allowed_domains');
+  bindChipAdd('addHighRiskKeywordBtn', 'highRiskKeywordInput', 'high_risk_keywords');
+  bindChipAdd('addFinancialDomainBtn', 'financialDomainInput', 'financial_domains');
+
+  // Enter key on chip inputs
+  ['blockedDomainInput', 'allowedDomainInput', 'highRiskKeywordInput', 'financialDomainInput'].forEach(id => {
+    $(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); $(id).nextElementSibling.click(); }
+    });
+  });
+
+  // Step-up toggle checkboxes
+  $('stepUpHigh').addEventListener('change', handleStepUpToggle);
+  $('stepUpMedium').addEventListener('change', handleStepUpToggle);
 }
 
 // ─── Auth ────────────────────────────────────────────
@@ -86,13 +126,34 @@ async function handleRegister(e) {
 
 async function handleLogout() {
   stopLive();
+  stopApprovalPolling();
   await chrome.storage.local.remove(['userToken', 'userEmail']);
   showLogin();
 }
 
+// ─── Pop-out window ──────────────────────────────────
+function handlePopout() {
+  chrome.windows.create({
+    url: chrome.runtime.getURL('popup/popup.html?popout=1'),
+    type: 'popup',
+    width: 520,
+    height: 780
+  });
+  window.close();
+}
+
 // ─── Screens ─────────────────────────────────────────
-function showLogin()  { $('loginScreen').hidden = false; $('mainScreen').hidden = true; }
-function showDashboard(email) { $('loginScreen').hidden = true; $('mainScreen').hidden = false; $('userEmail').textContent = email; }
+function showLogin()  {
+  $('loginScreen').hidden = false;
+  $('mainScreen').hidden = true;
+  stopApprovalPolling();
+}
+function showDashboard(email) {
+  $('loginScreen').hidden = true;
+  $('mainScreen').hidden = false;
+  $('userEmail').textContent = email;
+  startApprovalPolling();
+}
 
 // ─── Live refresh ────────────────────────────────────
 function startLive()  { stopLive(); autoRefreshInterval = setInterval(loadData, 5000); }
@@ -268,9 +329,11 @@ function renderTurn(prompt, actions) {
 // ─── Render a single action (label + screenshot, or error) ──
 function renderActionBlock(action) {
   const isError = action.status === 'error' || action.status === 'unauthorized' || action.status === 'denied';
+  const isOverride = action.status === 'approved_override';
+  const isStepUp = action.status === 'step_up_required';
   const hasScreenshot = !!action.screenshot;
 
-  if (!hasScreenshot && !isError) return '';
+  if (!hasScreenshot && !isError && !isOverride && !isStepUp) return '';
 
   const target = describeTarget(action);
   const actionLabel = `${esc(fmtType(action.type))}${target ? ' &mdash; ' + target : ''}`;
@@ -283,8 +346,17 @@ function renderActionBlock(action) {
     return `<div class="turn-error"><span class="turn-error-badge">${badge}</span> ${actionLabel}</div>` + img;
   }
 
-  return `<div class="turn-action-label">${actionLabel}</div>`
-    + `<div class="turn-screenshot"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`;
+  if (isStepUp) {
+    const reason = action.reason ? ` — ${esc(action.reason)}` : '';
+    return `<div class="turn-stepup"><span class="turn-stepup-badge">AWAITING APPROVAL</span> ${actionLabel}${reason}</div>`;
+  }
+
+  const overrideBadge = isOverride
+    ? `<span class="turn-override-badge">MANUAL OVERRIDE</span> `
+    : '';
+
+  return `<div class="turn-action-label">${overrideBadge}${actionLabel}</div>`
+    + `<div class="turn-screenshot${isOverride ? ' override-border' : ''}"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`;
 }
 
 function describeTarget(action) {
@@ -347,6 +419,310 @@ function renderEmpty(title, sub) {
 
 function renderError(msg) {
   return `<div class="state-error">Failed to load: ${esc(msg)}</div>`;
+}
+
+// ─── Tab switching ───────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  $('monitorPanel').hidden      = (tab !== 'monitor');
+  $('chatPanel').hidden         = (tab !== 'chat');
+  $('permissionsPanel').hidden  = (tab !== 'permissions');
+
+  if (tab === 'chat') {
+    loadChatHistory();
+    startChatRefresh();
+  } else {
+    stopChatRefresh();
+  }
+
+  if (tab === 'permissions') {
+    loadPolicies();
+  }
+}
+
+function startChatRefresh() {
+  stopChatRefresh();
+  chatRefreshInterval = setInterval(loadChatHistory, 3000);
+}
+
+function stopChatRefresh() {
+  if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
+}
+
+// ─── Chat: load history from active session ──────────
+async function loadChatHistory() {
+  const { userToken } = await chrome.storage.local.get(['userToken']);
+  if (!userToken) return;
+
+  try {
+    const res = await apiFetch('/sessions?limit=1', { token: userToken });
+    if (!res.success || !res.sessions || res.sessions.length === 0) {
+      $('chatMessages').innerHTML = '<div class="state-empty">No active session. Start the agent to begin chatting.</div>';
+      activeSessionId = null;
+      return;
+    }
+
+    const session = res.sessions[0];
+    activeSessionId = session.id;
+
+    const prompts = (session.prompts || []).slice().sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
+    const actions = (session.actions || []).slice().sort((a, b) => ts(a.timestamp) - ts(b.timestamp));
+
+    if (prompts.length === 0) {
+      $('chatMessages').innerHTML = '<div class="state-empty">Session active. Send a command below.</div>';
+      return;
+    }
+
+    // Group actions by promptId
+    const actionsByPrompt = {};
+    for (const a of actions) {
+      if (a.promptId) {
+        if (!actionsByPrompt[a.promptId]) actionsByPrompt[a.promptId] = [];
+        actionsByPrompt[a.promptId].push(a);
+      }
+    }
+
+    const container = $('chatMessages');
+    const wasScrolledToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
+
+    let html = '';
+    for (const p of prompts) {
+      html += `<div class="chat-bubble user"><span class="bubble-label">You</span>${esc(p.content)}</div>`;
+
+      if (p.response) {
+        const linked = actionsByPrompt[p.id] || [];
+        const screenshots = linked.filter(a => a.screenshot);
+
+        let screenshotHtml = '';
+        for (const a of screenshots) {
+          screenshotHtml += `<div class="chat-screenshot"><img src="data:image/png;base64,${a.screenshot}" alt="Screenshot"></div>`;
+        }
+
+        html += `<div class="chat-bubble agent"><span class="bubble-label">ChatGPT</span>${esc(p.response)}${screenshotHtml}</div>`;
+      }
+    }
+
+    // Check if the last prompt has no response yet (agent is thinking)
+    const lastPrompt = prompts[prompts.length - 1];
+    if (lastPrompt && !lastPrompt.response) {
+      html += `<div class="chat-thinking"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`;
+    }
+
+    container.innerHTML = html;
+
+    if (wasScrolledToBottom) {
+      container.scrollTop = container.scrollHeight;
+    }
+  } catch (err) {
+    console.error('Chat load error:', err);
+  }
+}
+
+// ─── Chat: send command ──────────────────────────────
+async function handleSendCommand(e) {
+  e.preventDefault();
+  const input = $('chatInput');
+  const btn = $('chatSendBtn');
+  const text = input.value.trim();
+  if (!text) return;
+
+  if (!activeSessionId) {
+    // Try to detect session
+    await loadChatHistory();
+    if (!activeSessionId) return;
+  }
+
+  input.value = '';
+  btn.disabled = true;
+
+  // Optimistic UI: add user bubble + thinking indicator immediately
+  const container = $('chatMessages');
+  const emptyState = container.querySelector('.state-empty');
+  if (emptyState) emptyState.remove();
+
+  container.insertAdjacentHTML('beforeend',
+    `<div class="chat-bubble user"><span class="bubble-label">You</span>${esc(text)}</div>`
+    + `<div class="chat-thinking" id="thinkingIndicator"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`
+  );
+  container.scrollTop = container.scrollHeight;
+
+  try {
+    await apiFetch('/commands', {
+      method: 'POST',
+      body: { content: text, sessionId: activeSessionId }
+    });
+  } catch (err) {
+    console.error('Send command error:', err);
+  } finally {
+    btn.disabled = false;
+    input.focus();
+  }
+}
+
+// ─── Permissions: load & save ─────────────────────────
+async function loadPolicies() {
+  try {
+    const res = await apiFetch('/policies/user');
+    if (res.success && res.policies) {
+      currentPolicies = res.policies;
+      renderPolicies(res.policies);
+    }
+  } catch (err) {
+    console.error('Failed to load policies:', err);
+    showPermStatus('Failed to load policies', 'error');
+  }
+}
+
+async function savePolicies(policies) {
+  try {
+    const res = await apiFetch('/policies/user', {
+      method: 'PUT',
+      body: { policies }
+    });
+    if (res.success) {
+      currentPolicies = policies;
+      showPermStatus('Saved', 'success');
+    } else {
+      showPermStatus(res.error || 'Save failed', 'error');
+    }
+  } catch (err) {
+    console.error('Failed to save policies:', err);
+    showPermStatus('Failed to save', 'error');
+  }
+}
+
+function showPermStatus(msg, type) {
+  const el = $('permSaveStatus');
+  el.textContent = msg;
+  el.className = 'perm-status ' + type;
+  setTimeout(() => { el.textContent = ''; el.className = 'perm-status'; }, 3000);
+}
+
+function renderPolicies(p) {
+  renderChipList('blockedDomainsList', p.blocked_domains || [], 'blocked_domains');
+  renderChipList('allowedDomainsList', p.allowed_domains || [], 'allowed_domains');
+  renderChipList('highRiskKeywordsList', p.high_risk_keywords || [], 'high_risk_keywords');
+  renderChipList('financialDomainsList', p.financial_domains || [], 'financial_domains');
+
+  const stepUp = p.requires_step_up || [];
+  $('stepUpHigh').checked = stepUp.includes('high');
+  $('stepUpMedium').checked = stepUp.includes('medium');
+}
+
+function renderChipList(containerId, items, policyKey) {
+  const container = $(containerId);
+  container.innerHTML = items.map((item, idx) =>
+    `<span class="chip" data-key="${esc(policyKey)}" data-idx="${idx}">${esc(item)}<button class="chip-remove" title="Remove">&times;</button></span>`
+  ).join('');
+
+  container.querySelectorAll('.chip-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const chip = btn.closest('.chip');
+      const key = chip.dataset.key;
+      const idx = parseInt(chip.dataset.idx);
+      removeChip(key, idx);
+    });
+  });
+}
+
+function removeChip(policyKey, idx) {
+  if (!currentPolicies || !currentPolicies[policyKey]) return;
+  currentPolicies[policyKey].splice(idx, 1);
+  savePolicies(currentPolicies);
+  renderPolicies(currentPolicies);
+}
+
+function bindChipAdd(btnId, inputId, policyKey) {
+  $(btnId).addEventListener('click', () => {
+    const input = $(inputId);
+    const val = input.value.trim();
+    if (!val) return;
+
+    if (!currentPolicies) currentPolicies = {};
+    if (!currentPolicies[policyKey]) currentPolicies[policyKey] = [];
+
+    if (currentPolicies[policyKey].includes(val)) {
+      input.value = '';
+      return;
+    }
+
+    currentPolicies[policyKey].push(val);
+    input.value = '';
+    savePolicies(currentPolicies);
+    renderPolicies(currentPolicies);
+  });
+}
+
+function handleStepUpToggle() {
+  if (!currentPolicies) currentPolicies = {};
+  const levels = [];
+  if ($('stepUpHigh').checked) levels.push('high');
+  if ($('stepUpMedium').checked) levels.push('medium');
+  currentPolicies.requires_step_up = levels;
+  savePolicies(currentPolicies);
+}
+
+// ─── Approval polling ─────────────────────────────────
+function startApprovalPolling() {
+  stopApprovalPolling();
+  pollApprovals();
+  approvalPollInterval = setInterval(pollApprovals, 3000);
+}
+
+function stopApprovalPolling() {
+  if (approvalPollInterval) { clearInterval(approvalPollInterval); approvalPollInterval = null; }
+}
+
+async function pollApprovals() {
+  try {
+    const params = activeSessionId ? `?sessionId=${activeSessionId}` : '';
+    const res = await apiFetch(`/approvals/pending${params}`);
+    if (res.success && res.approvals && res.approvals.length > 0) {
+      const approval = res.approvals[0];
+      currentApproval = approval;
+      showApprovalBanner(approval);
+    } else {
+      currentApproval = null;
+      hideApprovalBanner();
+    }
+  } catch (err) {
+    // Silently ignore polling errors
+  }
+}
+
+function showApprovalBanner(approval) {
+  const desc = `${fmtType(approval.type)} on ${esc(approval.domain || 'unknown domain')} — Risk: ${approval.riskLevel || 'unknown'}`;
+  $('approvalDesc').innerHTML = desc + (approval.reason ? `<br>${esc(approval.reason)}` : '');
+  $('approvalBanner').hidden = false;
+  $('approvalDot').hidden = false;
+}
+
+function hideApprovalBanner() {
+  $('approvalBanner').hidden = true;
+  $('approvalDot').hidden = true;
+}
+
+async function respondToApproval(approved) {
+  if (!currentApproval) return;
+
+  const approvalId = currentApproval.id;
+  $('approvalApproveBtn').disabled = true;
+  $('approvalDenyBtn').disabled = true;
+
+  try {
+    await apiFetch(`/approvals/${approvalId}/respond`, {
+      method: 'POST',
+      body: { approved }
+    });
+    currentApproval = null;
+    hideApprovalBanner();
+  } catch (err) {
+    console.error('Failed to respond to approval:', err);
+  } finally {
+    $('approvalApproveBtn').disabled = false;
+    $('approvalDenyBtn').disabled = false;
+  }
 }
 
 // ─── Utilities ───────────────────────────────────────

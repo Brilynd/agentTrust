@@ -8,6 +8,7 @@ token management, and consent delegation.
 
 import requests
 import json
+import time
 from datetime import datetime
 from typing import Dict, Optional, Any
 import os
@@ -231,7 +232,24 @@ class AgentTrustClient:
                 "message": "Action allowed and logged"
             }
         elif response.status_code == 403:
-            if result.get("requiresStepUp"):
+            if result.get("requiresStepUp") and result.get("approvalId"):
+                approval_id = result["approvalId"]
+                print(f"🔐 High-risk action requires user approval (approvalId={approval_id}). Waiting...")
+                approval_result = self.wait_for_approval(approval_id, timeout=60)
+
+                if approval_result.get("approved"):
+                    print("✅ Action approved by user. Retrying...")
+                    return self._retry_with_approval(action_data, approval_id)
+                else:
+                    reason = approval_result.get("reason", "User denied the action")
+                    print(f"❌ Action denied by user: {reason}")
+                    return {
+                        "status": "denied",
+                        "message": f"Action denied by user: {reason}",
+                        "risk_level": result.get("riskLevel"),
+                        "approval_denied": True
+                    }
+            elif result.get("requiresStepUp"):
                 return {
                     "status": "step_up_required",
                     "message": "High-risk action requires user approval",
@@ -257,6 +275,75 @@ class AgentTrustClient:
                 "status_code": response.status_code
             }
     
+    def wait_for_approval(self, approval_id: str, timeout: int = 60) -> Dict[str, Any]:
+        """Long-poll the backend waiting for the user to approve or deny an action.
+        
+        Args:
+            approval_id: The approval request ID from a step_up_required response
+            timeout: Maximum seconds to wait for user decision
+            
+        Returns:
+            Dict with 'approved' bool and optional 'reason'
+        """
+        if self.dev_mode:
+            return {"approved": False, "reason": "Dev mode - no approval flow"}
+        try:
+            token = self._get_token()
+            response = requests.get(
+                f"{self.api_url}/approvals/{approval_id}/wait",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"timeout": timeout * 1000},
+                timeout=timeout + 10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "approved": data.get("approved", False),
+                    "reason": data.get("reason"),
+                    "approvalId": approval_id,
+                    "actionId": data.get("actionId")
+                }
+            elif response.status_code == 404:
+                return {"approved": False, "reason": "Approval request not found or expired"}
+            else:
+                return {"approved": False, "reason": f"Unexpected status: {response.status_code}"}
+        except requests.exceptions.Timeout:
+            return {"approved": False, "reason": "Approval wait timed out"}
+        except Exception as e:
+            print(f"⚠️  Approval wait error: {e}")
+            return {"approved": False, "reason": str(e)}
+
+    def _retry_with_approval(self, action_data: Dict, approval_id: str) -> Dict[str, Any]:
+        """Retry a previously blocked action after receiving user approval."""
+        action_data["approvalId"] = approval_id
+        try:
+            token = self._get_token()
+            response = requests.post(
+                f"{self.api_url}/actions",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json=action_data,
+                timeout=10
+            )
+            result = response.json() if response.status_code != 204 else {}
+            if response.status_code == 201:
+                return {
+                    "status": "allowed",
+                    "action_id": result.get("action", {}).get("id"),
+                    "risk_level": result.get("action", {}).get("riskLevel"),
+                    "message": "Action allowed after user approval"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": result.get("error", "Retry after approval failed"),
+                    "status_code": response.status_code
+                }
+        except Exception as e:
+            return {"status": "error", "message": f"Retry failed: {e}"}
+
     def request_step_up(
         self,
         action_data: Dict,
@@ -375,6 +462,31 @@ class AgentTrustClient:
             )
         except Exception as e:
             print(f"⚠️  Failed to update prompt response: {e}")
+
+    def poll_command(self, timeout: int = 30) -> Optional[Dict]:
+        """Long-poll the backend for a pending command from the browser extension.
+        Returns the command dict if one arrives, or None on timeout."""
+        if self.dev_mode or not self.current_session_id:
+            return None
+        try:
+            token = self._get_token()
+            response = requests.get(
+                f"{self.api_url}/commands/pending",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"sessionId": self.current_session_id, "timeout": timeout * 1000},
+                timeout=timeout + 5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("success") and data.get("command"):
+                    return data["command"]
+        except requests.exceptions.Timeout:
+            pass
+        except (requests.exceptions.ConnectionError, ConnectionResetError, ConnectionError):
+            pass
+        except Exception as e:
+            print(f"⚠️  Command poll error: {e}")
+        return None
 
     def get_audit_log(
         self,
