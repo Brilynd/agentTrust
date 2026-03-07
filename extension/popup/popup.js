@@ -7,6 +7,11 @@ let currentTab = 'monitor';
 let currentPolicies = null;
 let currentApproval = null;
 
+// Pending chat messages sent locally but not yet confirmed in the DB.
+// Each entry: { text, sentAt (timestamp) }
+let pendingChatMessages = [];
+let pendingWarningTimer = null;
+
 // ─── Bootstrap ───────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   // Detect pop-out window (opened via ?popout=1 or window width check)
@@ -481,6 +486,8 @@ async function loadChatHistory() {
   try {
     const res = await apiFetch('/sessions?limit=1', { token: userToken });
     if (!res.success || !res.sessions || res.sessions.length === 0) {
+      // Still show pending messages even when no session exists yet
+      if (pendingChatMessages.length > 0) return;
       $('chatMessages').innerHTML = '<div class="state-empty">No active session. Start the agent to begin chatting.</div>';
       activeSessionId = null;
       return;
@@ -492,7 +499,21 @@ async function loadChatHistory() {
     const prompts = (session.prompts || []).slice().sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
     const actions = (session.actions || []).slice().sort((a, b) => ts(a.timestamp) - ts(b.timestamp));
 
-    if (prompts.length === 0) {
+    // Reconcile: remove pending messages that now appear in DB prompts
+    if (pendingChatMessages.length > 0) {
+      const dbTexts = new Set(prompts.map(p => p.content));
+      pendingChatMessages = pendingChatMessages.filter(pm => !dbTexts.has(pm.text));
+      if (pendingChatMessages.length === 0) {
+        clearTimeout(pendingWarningTimer);
+        pendingWarningTimer = null;
+      }
+    }
+
+    // Expire very old pending messages (> 60s) to avoid stale UI
+    const now = Date.now();
+    pendingChatMessages = pendingChatMessages.filter(pm => now - pm.sentAt < 60000);
+
+    if (prompts.length === 0 && pendingChatMessages.length === 0) {
       $('chatMessages').innerHTML = '<div class="state-empty">Session active. Send a command below.</div>';
       return;
     }
@@ -530,6 +551,12 @@ async function loadChatHistory() {
     const lastPrompt = prompts[prompts.length - 1];
     if (lastPrompt && !lastPrompt.response) {
       html += `<div class="chat-thinking"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`;
+    }
+
+    // Append any pending messages that haven't appeared in DB yet
+    for (const pm of pendingChatMessages) {
+      html += `<div class="chat-bubble user pending-msg"><span class="bubble-label">You</span>${esc(pm.text)}</div>`;
+      html += `<div class="chat-thinking" id="thinkingIndicator"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`;
     }
 
     container.innerHTML = html;
@@ -579,15 +606,27 @@ async function handleSendCommand(e) {
   input.value = '';
   btn.disabled = true;
 
+  // Track locally so loadChatHistory preserves it until the DB catches up
+  pendingChatMessages.push({ text, sentAt: Date.now() });
+
   const container = $('chatMessages');
   const emptyState = container.querySelector('.state-empty');
   if (emptyState) emptyState.remove();
 
   container.insertAdjacentHTML('beforeend',
-    `<div class="chat-bubble user"><span class="bubble-label">You</span>${esc(text)}</div>`
+    `<div class="chat-bubble user pending-msg"><span class="bubble-label">You</span>${esc(text)}</div>`
     + `<div class="chat-thinking" id="thinkingIndicator"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`
   );
   container.scrollTop = container.scrollHeight;
+
+  // Start a timeout — if no response within 15s, warn the user
+  clearTimeout(pendingWarningTimer);
+  pendingWarningTimer = setTimeout(() => {
+    const indicator = $('thinkingIndicator');
+    if (indicator) {
+      indicator.innerHTML = '<span class="chat-warning">Agent may not be running or connected. Check that the Python script is active.</span>';
+    }
+  }, 15000);
 
   try {
     await apiFetch('/commands', {
@@ -596,6 +635,10 @@ async function handleSendCommand(e) {
     });
   } catch (err) {
     console.error('Send command error:', err);
+    const indicator = $('thinkingIndicator');
+    if (indicator) {
+      indicator.innerHTML = '<span class="chat-warning">Failed to send command. Is the backend running?</span>';
+    }
   } finally {
     btn.disabled = false;
     input.focus();

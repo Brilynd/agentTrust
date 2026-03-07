@@ -94,7 +94,45 @@ class AgentTrustClient:
         self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
         
         return self._token
-    
+
+    def verify_connectivity(self) -> Dict[str, Any]:
+        """Pre-flight check: backend reachable + Auth0 token obtainable.
+        Returns {"ok": True} on success, or {"ok": False, "error": str, "phase": str}."""
+        if self.dev_mode:
+            return {"ok": True, "note": "dev_mode"}
+
+        # 1) Backend reachable?
+        health_url = self.api_url.replace("/api", "/health")
+        try:
+            r = requests.get(health_url, timeout=5)
+            if r.status_code != 200:
+                return {"ok": False, "phase": "backend",
+                        "error": f"Backend returned HTTP {r.status_code} at {health_url}"}
+        except requests.exceptions.ConnectionError:
+            return {"ok": False, "phase": "backend",
+                    "error": f"Cannot reach backend at {health_url}. Is it running?"}
+        except Exception as e:
+            return {"ok": False, "phase": "backend", "error": str(e)}
+
+        # 2) Auth0 token obtainable?
+        try:
+            self._get_token()
+        except Exception as e:
+            err = str(e)
+            hint = ""
+            if "Service not enabled" in err or "access_denied" in err:
+                hint = (
+                    "\n\n   HOW TO FIX:\n"
+                    f"   1. Go to your Auth0 dashboard -> Applications -> APIs\n"
+                    f"   2. Create an API with identifier: {self.auth0_audience}\n"
+                    f"   3. Under the 'Machine to Machine Applications' tab,\n"
+                    f"      authorize your M2M application ({self.auth0_client_id})\n"
+                    f"   4. Restart the Python agent"
+                )
+            return {"ok": False, "phase": "auth0", "error": err + hint}
+
+        return {"ok": True}
+
     def create_session(self) -> Optional[str]:
         """Create a new session on the backend and store its ID. Returns session ID."""
         if self.dev_mode:
@@ -201,7 +239,8 @@ class AgentTrustClient:
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Auth failed: {e}. Set AGENTTRUST_DEV_MODE=true to run without backend."
+                "error_type": "auth0",
+                "message": f"Auth0 token error: {e}"
             }
         try:
             response = requests.post(
@@ -216,7 +255,8 @@ class AgentTrustClient:
         except requests.exceptions.RequestException as e:
             return {
                 "status": "error",
-                "message": f"Backend unreachable: {e}. Is it running? Set AGENTTRUST_DEV_MODE=true to run without backend."
+                "error_type": "backend",
+                "message": f"Backend unreachable: {e}. Is the backend running?"
             }
         
         try:
@@ -265,7 +305,8 @@ class AgentTrustClient:
         elif response.status_code == 401:
             return {
                 "status": "unauthorized",
-                "message": "Authentication failed",
+                "error_type": "auth0",
+                "message": "Authentication failed — Auth0 token may be invalid or expired",
                 "error": result.get("error")
             }
         else:

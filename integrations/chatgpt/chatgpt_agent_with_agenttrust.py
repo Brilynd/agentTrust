@@ -468,6 +468,10 @@ class BrowserController:
         email = os.getenv("EXTENSION_LOGIN_EMAIL")
         password = os.getenv("EXTENSION_LOGIN_PASSWORD")
         if not email or not password:
+            print("⚠️  EXTENSION_LOGIN_EMAIL / EXTENSION_LOGIN_PASSWORD not set.")
+            print("   The browser extension will NOT be auto-logged-in.")
+            print("   To use the extension chat, click the AgentTrust extension icon")
+            print("   in the browser toolbar and sign in manually.\n")
             return
         
         api_url = os.getenv("AGENTTRUST_API_URL", "http://localhost:3000/api")
@@ -1141,11 +1145,14 @@ class BrowserActionExecutor:
                 "reason": error_msg
             })
             self._notify_extension("click", url, "error", target=target)
-            return {
+            ret = {
                 "status": "error",
-                "message": f"AgentTrust validation error: {error_msg}. Try again.",
+                "message": f"AgentTrust validation error: {error_msg}",
                 "browser_result": {"success": False, "message": error_msg}
             }
+            if result.get("error_type"):
+                ret["error_type"] = result["error_type"]
+            return ret
         
         # Action is allowed - log and return
         self.action_history.append({
@@ -1243,11 +1250,14 @@ class BrowserActionExecutor:
                 "reason": error_msg
             })
             self._notify_extension("form_submit", url, "error", form_data=form_data)
-            return {
+            ret = {
                 "status": "error",
-                "message": f"AgentTrust validation error: {error_msg}. Try again.",
+                "message": f"AgentTrust validation error: {error_msg}",
                 "browser_result": {"success": False, "message": error_msg}
             }
+            if result.get("error_type"):
+                ret["error_type"] = result["error_type"]
+            return ret
         
         # Action is allowed - log and return
         self.action_history.append({
@@ -1354,12 +1364,14 @@ class BrowserActionExecutor:
                 "reason": error_msg
             })
             self._notify_extension("navigation", url, "error")
-            return {
+            ret = {
                 "status": "error",
-                "message": f"AgentTrust validation error: {error_msg}. "
-                           "This may be a temporary issue — try again or navigate to a different page.",
+                "message": f"AgentTrust validation error: {error_msg}",
                 "browser_result": {"success": False, "message": error_msg}
             }
+            if result.get("error_type"):
+                ret["error_type"] = result["error_type"]
+            return ret
         
         # Action is allowed - log and return
         self.action_history.append({
@@ -2815,6 +2827,7 @@ ROUTINES:
         while message.tool_calls and self._tool_call_count < self.MAX_TOOL_ROUNDS:
             messages.append(message)
             
+            _auth0_fatal = False
             for tool_call in message.tool_calls:
                 self._tool_call_count += 1
                 fc = type('obj', (object,), {
@@ -2822,7 +2835,24 @@ ROUTINES:
                     'arguments': tool_call.function.arguments
                 })()
                 result = self.handle_function_call(fc)
-                
+
+                # Detect auth0 / backend connectivity errors and abort the
+                # tool loop instead of letting ChatGPT hallucinate an excuse.
+                _err_type = None
+                if isinstance(result, dict):
+                    _err_type = result.get("error_type")
+                    if not _err_type and isinstance(result.get("browser_result"), dict):
+                        _err_type = result["browser_result"].get("error_type")
+                if _err_type in ("auth0", "backend"):
+                    _auth0_fatal = True
+                    err_msg = (result if isinstance(result, dict) else {}).get("message", "")
+                    print(f"\n❌ CONNECTIVITY ERROR: {err_msg}")
+                    print("   The agent cannot perform actions. Check Auth0 and backend setup.\n")
+                    result = {
+                        "status": "error",
+                        "message": "System connectivity error. Tell the user there is a backend configuration issue and to check the terminal for details."
+                    }
+
                 action_key = f"{tool_call.function.name}:{tool_call.function.arguments}"
                 if isinstance(result, dict) and (
                     result.get("status") in ("denied", "step_up_required", "error") or
@@ -2849,6 +2879,14 @@ ROUTINES:
                     "name": tool_call.function.name,
                     "content": json.dumps(result, default=str)
                 })
+
+            if _auth0_fatal:
+                # Force one final completion so ChatGPT gives a short reply, then stop.
+                response = self._chat_completion(
+                    model=self.model, messages=messages, tools=tools, tool_choice="none"
+                )
+                message = response.choices[0].message
+                break
             
             response = self._chat_completion(
                 model=self.model,
@@ -3069,7 +3107,14 @@ ROUTINES:
                 result = self.browser_executor.execute_navigation(url=url)
             else:
                 return {"status": "error", "message": f"Unknown action type: {action_type}"}
-            
+
+            # If the executor returned an error (e.g. auth0 / backend down),
+            # propagate it directly instead of wrapping it as "allowed".
+            if result.get("status") in ("error", "unauthorized"):
+                risk = result.get("risk_level", "unknown")
+                print(f"   ⚠️  AgentTrust: {result.get('status').upper()} (Risk: {risk})")
+                return result
+
             br = result.get("browser_result") or {}
             executed_ok = br.get("success", False) if br else result.get("executed", False)
             risk = result.get("risk_level", "unknown")
@@ -3195,13 +3240,39 @@ def main():
     headless = os.getenv("HEADLESS_BROWSER", "false").lower() == "true"
     
     agent = ChatGPTAgentWithAgentTrust(enable_browser=enable_browser, headless=headless)
-    
-    # Create a fresh session for this script run
-    session_id = agent.agenttrust.create_session()
+
+    # --- Pre-flight: verify backend + Auth0 connectivity ---
+    check = agent.agenttrust.verify_connectivity()
+    if not check.get("ok"):
+        phase = check.get("phase", "unknown")
+        print("\n" + "!"*70)
+        print(f"  STARTUP FAILED  ({phase})")
+        print("!"*70)
+        print(f"\n  {check['error']}\n")
+        if phase == "backend":
+            print("  Make sure the backend is running:  cd backend && npm start")
+        print()
+        sys.exit(1)
+
+    # --- Create a fresh session (retry up to 3 times) ---
+    session_id = None
+    for attempt in range(1, 4):
+        session_id = agent.agenttrust.create_session()
+        if session_id:
+            break
+        wait = attempt * 2
+        print(f"  Session creation failed (attempt {attempt}/3), retrying in {wait}s...")
+        time.sleep(wait)
+
     if session_id:
         print(f"Session created: {session_id}")
     else:
-        print("Warning: Could not create session")
+        print("\n" + "!"*70)
+        print("  STARTUP FAILED: Could not create a session after 3 attempts.")
+        print("!"*70)
+        print("\n  The agent cannot function without a session.")
+        print("  Check that the backend is running and Auth0 is configured.\n")
+        sys.exit(1)
     
     try:
         import threading, queue as _queue
