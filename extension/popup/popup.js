@@ -629,16 +629,25 @@ async function handleSendCommand(e) {
   }, 15000);
 
   try {
-    await apiFetch('/commands', {
+    const cmdRes = await apiFetch('/commands', {
       method: 'POST',
       body: { content: text, sessionId: activeSessionId }
     });
+    if (!cmdRes.success) {
+      const indicator = $('thinkingIndicator');
+      if (indicator) {
+        const reason = cmdRes.error || 'Unknown error';
+        indicator.innerHTML = `<span class="chat-warning">Command failed: ${esc(reason)}</span>`;
+      }
+      pendingChatMessages = pendingChatMessages.filter(pm => pm.text !== text);
+    }
   } catch (err) {
     console.error('Send command error:', err);
     const indicator = $('thinkingIndicator');
     if (indicator) {
       indicator.innerHTML = '<span class="chat-warning">Failed to send command. Is the backend running?</span>';
     }
+    pendingChatMessages = pendingChatMessages.filter(pm => pm.text !== text);
   } finally {
     btn.disabled = false;
     input.focus();

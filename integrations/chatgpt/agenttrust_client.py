@@ -61,8 +61,8 @@ class AgentTrustClient:
         if not self.dev_mode and not all([self.auth0_domain, self.auth0_client_id, 
                    self.auth0_client_secret, self.auth0_audience]):
             raise ValueError(
-                "Auth0 credentials must be provided or set in environment. "
-                "Or set AGENTTRUST_DEV_MODE=true to run without backend (browser only)."
+                "Auth0 credentials are required. Set these env vars: "
+                "AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE"
             )
     
     def _get_token(self) -> str:

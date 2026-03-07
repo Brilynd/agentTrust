@@ -2535,11 +2535,14 @@ class ChatGPTAgentWithAgentTrust:
             agenttrust_client = AgentTrustClient()
             if agenttrust_client.dev_mode:
                 print("⚠️  AGENTTRUST_DEV_MODE=true: Running without backend (browser automation only)")
+                print("   NOTE: The browser extension chat will NOT work in dev mode.")
+                print("   Terminal input only. To enable extension chat, configure Auth0")
+                print("   and remove AGENTTRUST_DEV_MODE from your .env file.\n")
         except ValueError as e:
             print(f"❌ AgentTrust configuration error: {e}")
-            print("\nOptions:")
+            print("\nYou must configure Auth0 for the agent to work:")
             print("  1. Set Auth0 env vars: AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE")
-            print("  2. Or set AGENTTRUST_DEV_MODE=true in .env to run without backend")
+            print("  2. Create the API identifier in your Auth0 dashboard (see README)")
             sys.exit(1)
         
         # CRITICAL: Create mandatory browser action executor FIRST
@@ -3243,6 +3246,8 @@ def main():
 
     # --- Pre-flight: verify backend + Auth0 connectivity ---
     check = agent.agenttrust.verify_connectivity()
+    is_dev = check.get("note") == "dev_mode"
+
     if not check.get("ok"):
         phase = check.get("phase", "unknown")
         print("\n" + "!"*70)
@@ -3280,7 +3285,10 @@ def main():
         print("="*70)
         print("Interactive Mode")
         print("="*70)
-        print("Tell the agent what to do (terminal or browser extension).")
+        if is_dev:
+            print("DEV MODE: Terminal input only. Extension chat is disabled.")
+        else:
+            print("Tell the agent what to do (terminal or browser extension).")
         print("Type 'quit' to exit.\n")
 
         input_q = _queue.Queue()
