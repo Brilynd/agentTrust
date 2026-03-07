@@ -72,6 +72,22 @@ function bindEvents() {
   // Step-up toggle checkboxes
   $('stepUpHigh').addEventListener('change', handleStepUpToggle);
   $('stepUpMedium').addEventListener('change', handleStepUpToggle);
+
+  // Routines
+  $('newRoutineBtn').addEventListener('click', () => openRoutineEditor(null));
+  $('routineBackBtn').addEventListener('click', showRoutineListView);
+  $('saveRoutineBtn').addEventListener('click', saveRoutine);
+  $('deleteRoutineBtn').addEventListener('click', deleteRoutine);
+  $('routineSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadRoutines(); });
+  $('routineSearch').addEventListener('input', debounce(loadRoutines, 300));
+
+  // Credentials vault
+  $('addCredentialBtn').addEventListener('click', handleAddCredential);
+  ['credDomainInput', 'credUsernameInput', 'credPasswordInput'].forEach(id => {
+    $(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); $('addCredentialBtn').click(); }
+    });
+  });
 }
 
 // ─── Auth ────────────────────────────────────────────
@@ -427,6 +443,7 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   $('monitorPanel').hidden      = (tab !== 'monitor');
   $('chatPanel').hidden         = (tab !== 'chat');
+  $('routinesPanel').hidden     = (tab !== 'routines');
   $('permissionsPanel').hidden  = (tab !== 'permissions');
 
   if (tab === 'chat') {
@@ -436,8 +453,14 @@ function switchTab(tab) {
     stopChatRefresh();
   }
 
+  if (tab === 'routines') {
+    loadRoutines();
+  }
+
   if (tab === 'permissions') {
     loadPolicies();
+    loadCredentials();
+    loadConnections();
   }
 }
 
@@ -528,15 +551,24 @@ async function handleSendCommand(e) {
   if (!text) return;
 
   if (!activeSessionId) {
-    // Try to detect session
     await loadChatHistory();
     if (!activeSessionId) return;
+  }
+
+  // Handle /run command for routines
+  const runMatch = text.match(/^\/run\s+(.+)$/i);
+  if (runMatch) {
+    input.value = '';
+    btn.disabled = true;
+    await handleRunRoutineFromChat(runMatch[1].trim());
+    btn.disabled = false;
+    input.focus();
+    return;
   }
 
   input.value = '';
   btn.disabled = true;
 
-  // Optimistic UI: add user bubble + thinking indicator immediately
   const container = $('chatMessages');
   const emptyState = container.querySelector('.state-empty');
   if (emptyState) emptyState.remove();
@@ -725,6 +757,492 @@ async function respondToApproval(approved) {
   }
 }
 
+// ─── Credentials vault ────────────────────────────────
+async function loadCredentials() {
+  try {
+    const res = await apiFetch('/credentials');
+    if (res.success) {
+      renderCredentials(res.credentials || []);
+    }
+  } catch (err) {
+    console.error('Failed to load credentials:', err);
+  }
+}
+
+function renderCredentials(creds) {
+  const container = $('credentialsList');
+  if (!creds || creds.length === 0) {
+    container.innerHTML = '<div class="cred-empty">No saved logins yet.</div>';
+    return;
+  }
+  container.innerHTML = creds.map(c =>
+    `<div class="cred-row">
+      <span class="cred-domain">${esc(c.domain)}</span>
+      <span class="cred-user">${esc(c.username)}</span>
+      <span class="cred-password">&bull;&bull;&bull;&bull;&bull;&bull;</span>
+      <div class="cred-actions">
+        <button class="cred-delete" data-id="${esc(c.id)}" title="Delete">&times;</button>
+      </div>
+    </div>`
+  ).join('');
+
+  container.querySelectorAll('.cred-delete').forEach(btn => {
+    btn.addEventListener('click', () => deleteCredential(btn.dataset.id));
+  });
+}
+
+async function handleAddCredential() {
+  const domain = $('credDomainInput').value.trim();
+  const username = $('credUsernameInput').value.trim();
+  const password = $('credPasswordInput').value;
+
+  if (!domain || !username || !password) {
+    showPermStatus('All fields are required', 'error');
+    return;
+  }
+
+  try {
+    const res = await apiFetch('/credentials', {
+      method: 'POST',
+      body: { domain, username, password }
+    });
+    console.log('Save credential response:', res);
+    if (res.success) {
+      $('credDomainInput').value = '';
+      $('credUsernameInput').value = '';
+      $('credPasswordInput').value = '';
+      loadCredentials();
+      showPermStatus('Login saved', 'success');
+    } else {
+      showPermStatus(res.error || 'Failed to save', 'error');
+    }
+  } catch (err) {
+    console.error('Save credential error:', err);
+    showPermStatus('Failed to save login: ' + err.message, 'error');
+  }
+}
+
+async function deleteCredential(id) {
+  try {
+    const res = await apiFetch(`/credentials/${id}`, { method: 'DELETE' });
+    if (res.success) {
+      loadCredentials();
+      showPermStatus('Login removed', 'success');
+    }
+  } catch (err) {
+    showPermStatus('Failed to delete', 'error');
+  }
+}
+
+// ─── Connected accounts (Token Vault) ─────────────────
+const PROVIDERS = [
+  { id: 'github', name: 'GitHub', icon: '🐙' },
+  { id: 'google-oauth2', name: 'Google', icon: '🔵' },
+  { id: 'slack', name: 'Slack', icon: '💬' },
+  { id: 'windowslive', name: 'Microsoft', icon: '🟦' }
+];
+
+async function loadConnections() {
+  const container = $('connectionsList');
+  try {
+    const res = await apiFetch('/token-vault/connections');
+    const connected = (res.success && res.connections) ? res.connections : [];
+    const connectedIds = new Set(connected.map(c => c.provider));
+
+    container.innerHTML = PROVIDERS.map(p => {
+      const isConnected = connectedIds.has(p.id);
+      return `<div class="connection-card">
+        <span class="connection-icon">${p.icon}</span>
+        <div class="connection-info">
+          <div class="connection-name">${esc(p.name)}</div>
+          <div class="connection-status ${isConnected ? 'connected' : ''}">${isConnected ? 'Connected' : 'Not connected'}</div>
+        </div>
+        <button class="connection-btn ${isConnected ? 'disconnect' : ''}" data-provider="${esc(p.id)}" data-connected="${isConnected}">
+          ${isConnected ? 'Disconnect' : 'Connect'}
+        </button>
+      </div>`;
+    }).join('');
+
+    container.querySelectorAll('.connection-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.connected === 'true') {
+          disconnectProvider(btn.dataset.provider);
+        } else {
+          connectProvider(btn.dataset.provider);
+        }
+      });
+    });
+  } catch {
+    container.innerHTML = PROVIDERS.map(p =>
+      `<div class="connection-card">
+        <span class="connection-icon">${p.icon}</span>
+        <div class="connection-info">
+          <div class="connection-name">${esc(p.name)}</div>
+          <div class="connection-status">Not connected</div>
+        </div>
+        <button class="connection-btn" data-provider="${esc(p.id)}">Connect</button>
+      </div>`
+    ).join('');
+  }
+}
+
+async function connectProvider(provider) {
+  try {
+    const res = await apiFetch('/token-vault/connect', {
+      method: 'POST',
+      body: { provider }
+    });
+    if (res.success && res.authorizeUrl) {
+      window.open(res.authorizeUrl, '_blank');
+    } else {
+      showPermStatus(res.error || 'Token Vault not configured', 'error');
+    }
+  } catch {
+    showPermStatus('Failed to start connection', 'error');
+  }
+}
+
+async function disconnectProvider(provider) {
+  showPermStatus('Disconnect not yet implemented', 'error');
+}
+
+// ─── Routines ─────────────────────────────────────────
+let editingRoutineId = null;
+let routineSteps = [];
+
+async function loadRoutines() {
+  const search = $('routineSearch') ? $('routineSearch').value.trim() : '';
+  try {
+    const params = search ? `?search=${encodeURIComponent(search)}` : '';
+    const res = await apiFetch(`/routines${params}`);
+    if (res.success) {
+      renderRoutinesList(res.routines || []);
+    }
+  } catch (err) {
+    console.error('Failed to load routines:', err);
+  }
+}
+
+function renderRoutinesList(routines) {
+  const container = $('routinesList');
+  if (!routines || routines.length === 0) {
+    container.innerHTML = '<div class="state-empty" style="padding:24px">No routines yet. Create one from a past session.</div>';
+    return;
+  }
+
+  container.innerHTML = routines.map(r => {
+    const steps = typeof r.steps === 'string' ? JSON.parse(r.steps) : (r.steps || []);
+    const scopeClass = r.scope === 'global' ? 'global' : '';
+    return `<div class="routine-card" data-routine-id="${esc(r.id)}">
+      <div class="routine-card-icon">&#9654;</div>
+      <div class="routine-card-info">
+        <div class="routine-card-name">${esc(r.name)}</div>
+        <div class="routine-card-meta">
+          ${steps.length} step${steps.length !== 1 ? 's' : ''}
+          <span class="routine-scope-badge ${scopeClass}">${esc(r.scope || 'private')}</span>
+          ${r.description ? ' &mdash; ' + esc(truncate(r.description, 40)) : ''}
+        </div>
+      </div>
+      <div class="routine-card-actions">
+        <button class="routine-run-btn" data-id="${esc(r.id)}" title="Run this routine">Run</button>
+        <button class="routine-edit-btn" data-id="${esc(r.id)}" title="Edit">Edit</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('.routine-run-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); runRoutine(btn.dataset.id); });
+  });
+  container.querySelectorAll('.routine-edit-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); openRoutineEditor(btn.dataset.id); });
+  });
+}
+
+async function runRoutine(routineId) {
+  if (!activeSessionId) {
+    const { userToken } = await chrome.storage.local.get(['userToken']);
+    const res = await apiFetch('/sessions?limit=1', { token: userToken });
+    if (res.success && res.sessions && res.sessions.length > 0) {
+      activeSessionId = res.sessions[0].id;
+    }
+  }
+  if (!activeSessionId) {
+    alert('No active session. Start the agent first.');
+    return;
+  }
+
+  try {
+    const res = await apiFetch(`/routines/${routineId}/execute`, {
+      method: 'POST',
+      body: { sessionId: activeSessionId }
+    });
+    if (res.success) {
+      switchTab('chat');
+      const container = $('chatMessages');
+      container.insertAdjacentHTML('beforeend',
+        `<div class="chat-routine-progress">
+          <div class="routine-progress-title">Running Routine: ${esc(res.routineName || 'routine')}</div>
+          <div class="routine-step-item running">Executing ${res.stepCount || '?'} steps&hellip;</div>
+        </div>`
+      );
+      container.scrollTop = container.scrollHeight;
+    } else {
+      alert(res.error || 'Failed to start routine');
+    }
+  } catch (err) {
+    console.error('Run routine error:', err);
+    alert('Failed to run routine');
+  }
+}
+
+async function handleRunRoutineFromChat(name) {
+  const container = $('chatMessages');
+  const emptyState = container.querySelector('.state-empty');
+  if (emptyState) emptyState.remove();
+
+  container.insertAdjacentHTML('beforeend',
+    `<div class="chat-bubble user"><span class="bubble-label">You</span>/run ${esc(name)}</div>`
+  );
+
+  try {
+    const res = await apiFetch(`/routines?search=${encodeURIComponent(name)}`);
+    if (!res.success || !res.routines || res.routines.length === 0) {
+      container.insertAdjacentHTML('beforeend',
+        `<div class="chat-bubble agent"><span class="bubble-label">System</span>No routine found matching "${esc(name)}"</div>`
+      );
+      container.scrollTop = container.scrollHeight;
+      return;
+    }
+
+    const routine = res.routines[0];
+    const steps = typeof routine.steps === 'string' ? JSON.parse(routine.steps) : (routine.steps || []);
+
+    const stepsHtml = steps.map((s, i) =>
+      `<div class="routine-step-item pending-step" id="rtnStep_${i}">&#9723; Step ${i + 1}: ${esc(s.label || s.actionType || 'action')}</div>`
+    ).join('');
+
+    container.insertAdjacentHTML('beforeend',
+      `<div class="chat-routine-progress" id="routineProgressBlock">
+        <div class="routine-progress-title">Running: ${esc(routine.name)}</div>
+        ${stepsHtml}
+      </div>`
+    );
+    container.scrollTop = container.scrollHeight;
+
+    const execRes = await apiFetch(`/routines/${routine.id}/execute`, {
+      method: 'POST',
+      body: { sessionId: activeSessionId }
+    });
+
+    if (!execRes.success) {
+      container.insertAdjacentHTML('beforeend',
+        `<div class="chat-bubble agent"><span class="bubble-label">System</span>Failed: ${esc(execRes.error || 'unknown error')}</div>`
+      );
+    }
+  } catch (err) {
+    container.insertAdjacentHTML('beforeend',
+      `<div class="chat-bubble agent"><span class="bubble-label">System</span>Error running routine: ${esc(err.message)}</div>`
+    );
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+function showRoutineListView() {
+  $('routinesListView').hidden = false;
+  $('routinesEditView').hidden = true;
+  editingRoutineId = null;
+  routineSteps = [];
+}
+
+async function openRoutineEditor(routineId) {
+  editingRoutineId = routineId || null;
+  $('routinesListView').hidden = true;
+  $('routinesEditView').hidden = false;
+  $('routineEditTitle').textContent = routineId ? 'Edit Routine' : 'New Routine';
+  $('deleteRoutineBtn').hidden = !routineId;
+
+  // Reset form
+  $('routineName').value = '';
+  $('routineDesc').value = '';
+  $('routineScope').value = 'private';
+  routineSteps = [];
+
+  if (routineId) {
+    try {
+      const res = await apiFetch(`/routines/${routineId}`);
+      if (res.success && res.routine) {
+        $('routineName').value = res.routine.name || '';
+        $('routineDesc').value = res.routine.description || '';
+        $('routineScope').value = res.routine.scope || 'private';
+        routineSteps = typeof res.routine.steps === 'string' ? JSON.parse(res.routine.steps) : (res.routine.steps || []);
+      }
+    } catch (err) {
+      console.error('Failed to load routine:', err);
+    }
+  }
+
+  renderRoutineSteps();
+  await loadSessionPicker();
+}
+
+function renderRoutineSteps() {
+  $('routineStepCount').textContent = routineSteps.length;
+  const container = $('routineSteps');
+  if (routineSteps.length === 0) {
+    container.innerHTML = '<div style="font-size:11px;color:var(--c-text-3);padding:8px">No steps yet. Import from a session above.</div>';
+    return;
+  }
+
+  container.innerHTML = routineSteps.map((s, i) =>
+    `<div class="routine-step-row" data-idx="${i}">
+      <span class="routine-step-order">${i + 1}</span>
+      <span class="routine-step-label">${esc(s.label || s.actionType || 'Action')}</span>
+      <span class="routine-step-type">${esc(s.actionType || '')}</span>
+      <button class="routine-step-remove" data-idx="${i}" title="Remove">&times;</button>
+    </div>`
+  ).join('');
+
+  container.querySelectorAll('.routine-step-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      routineSteps.splice(parseInt(btn.dataset.idx), 1);
+      renderRoutineSteps();
+    });
+  });
+}
+
+async function loadSessionPicker() {
+  try {
+    const res = await apiFetch('/sessions?limit=10');
+    if (!res.success) return;
+    const select = $('sessionPicker');
+    select.innerHTML = '<option value="">-- Select session --</option>'
+      + (res.sessions || []).map((s, i) => {
+        const title = (s.prompts && s.prompts[0]) ? truncate(s.prompts[0].content, 50) : `Session ${i + 1}`;
+        return `<option value="${esc(s.id)}">${esc(title)} (${(s.actions || []).length} actions)</option>`;
+      }).join('');
+
+    select.onchange = () => loadSessionActions(select.value);
+  } catch (err) {
+    console.error('Failed to load sessions:', err);
+  }
+}
+
+async function loadSessionActions(sessionId) {
+  const container = $('sessionActionsList');
+  if (!sessionId) { container.innerHTML = ''; return; }
+
+  try {
+    const res = await apiFetch(`/sessions?limit=20`);
+    if (!res.success) return;
+    const session = (res.sessions || []).find(s => s.id === sessionId);
+    if (!session) return;
+
+    const actions = (session.actions || []).filter(a => a.status === 'allowed' || a.status === 'approved_override');
+    if (actions.length === 0) {
+      container.innerHTML = '<div style="font-size:11px;color:var(--c-text-3);padding:6px">No allowed actions in this session.</div>';
+      return;
+    }
+
+    container.innerHTML = actions.map(a => {
+      const target = parseTarget(a.target);
+      const desc = a.type === 'navigation' ? (a.url || a.domain || '')
+        : (target?.text || target?.id || a.domain || '');
+      return `<label class="session-action-row">
+        <input type="checkbox" value="${esc(a.id)}" data-action='${esc(JSON.stringify({
+          actionType: a.type,
+          url: a.url,
+          domain: a.domain,
+          target: target,
+          formData: parseTarget(a.form_data),
+          label: `${fmtType(a.type)} — ${truncate(desc, 40)}`
+        }))}'>
+        <span class="action-type-tag">${esc(a.type)}</span>
+        <span class="action-desc">${esc(truncate(desc, 50))}</span>
+      </label>`;
+    }).join('');
+
+    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.addEventListener('change', () => updateStepsFromPicker());
+    });
+  } catch (err) {
+    console.error('Failed to load session actions:', err);
+  }
+}
+
+function updateStepsFromPicker() {
+  const checkboxes = $('sessionActionsList').querySelectorAll('input[type="checkbox"]:checked');
+  const pickedSteps = [];
+  checkboxes.forEach((cb, i) => {
+    try {
+      const data = JSON.parse(cb.dataset.action);
+      pickedSteps.push({ order: i + 1, type: 'action', ...data });
+    } catch {}
+  });
+  routineSteps = pickedSteps;
+  renderRoutineSteps();
+}
+
+async function saveRoutine() {
+  const name = $('routineName').value.trim();
+  const description = $('routineDesc').value.trim();
+  const scope = $('routineScope').value;
+
+  if (!name) {
+    alert('Routine name is required');
+    return;
+  }
+  if (routineSteps.length === 0) {
+    alert('At least one step is required');
+    return;
+  }
+
+  try {
+    if (editingRoutineId) {
+      const res = await apiFetch(`/routines/${editingRoutineId}`, {
+        method: 'PUT',
+        body: { name, description, scope, steps: routineSteps }
+      });
+      if (res.success) {
+        showRoutineListView();
+        loadRoutines();
+      } else {
+        alert(res.error || 'Failed to update');
+      }
+    } else {
+      const res = await apiFetch('/routines', {
+        method: 'POST',
+        body: { name, description, scope, steps: routineSteps }
+      });
+      if (res.success) {
+        showRoutineListView();
+        loadRoutines();
+      } else {
+        alert(res.error || 'Failed to create');
+      }
+    }
+  } catch (err) {
+    console.error('Save routine error:', err);
+    alert('Failed to save routine');
+  }
+}
+
+async function deleteRoutine() {
+  if (!editingRoutineId) return;
+  if (!confirm('Delete this routine?')) return;
+
+  try {
+    const res = await apiFetch(`/routines/${editingRoutineId}`, { method: 'DELETE' });
+    if (res.success) {
+      showRoutineListView();
+      loadRoutines();
+    } else {
+      alert(res.error || 'Failed to delete');
+    }
+  } catch (err) {
+    alert('Failed to delete routine');
+  }
+}
+
 // ─── Utilities ───────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 
@@ -772,4 +1290,9 @@ function parseTarget(val) {
   if (!val) return null;
   if (typeof val === 'object') return val;
   try { return JSON.parse(val); } catch { return null; }
+}
+
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }

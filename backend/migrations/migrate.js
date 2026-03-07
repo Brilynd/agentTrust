@@ -184,6 +184,29 @@ async function migrate() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_prompts_agent_id ON prompts(agent_id)
     `);
+
+    // Create credentials table for stored website logins
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS credentials (
+        id VARCHAR(255) PRIMARY KEY,
+        user_id VARCHAR(255) NOT NULL,
+        domain VARCHAR(255) NOT NULL,
+        username VARCHAR(255) NOT NULL,
+        password_encrypted TEXT NOT NULL,
+        iv VARCHAR(64) NOT NULL,
+        label VARCHAR(255),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_credentials_domain ON credentials(domain)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)
+    `);
     
     console.log('Migrations completed successfully!');
     

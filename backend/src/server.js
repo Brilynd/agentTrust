@@ -40,7 +40,7 @@ app.use(cors(corsOptions));
 // Rate Limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 10000,
   message: {
     success: false,
     error: 'Too many requests from this IP, please try again later.'
@@ -87,6 +87,10 @@ app.use('/api/audit', require('./routes/audit'));
 app.use('/api/prompts', require('./routes/prompts'));
 app.use('/api/commands', require('./routes/commands'));
 app.use('/api/approvals', require('./routes/approvals'));
+app.use('/api/credentials', require('./routes/credentials'));
+app.use('/api/token-vault', require('./routes/token-vault'));
+app.use('/api/external', require('./routes/external-api'));
+app.use('/api/routines', require('./routes/routines'));
 
 // Health check
 app.get('/health', (req, res) => {

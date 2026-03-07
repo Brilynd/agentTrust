@@ -970,10 +970,12 @@ body.popout .feed-body {
 .permissions-panel {
   padding: 14px 16px 20px;
   overflow-y: auto;
-  max-height: calc(100vh - 130px);
+  height: 515px;
+  max-height: 515px;
 }
 
 body.popout .permissions-panel {
+  height: calc(100vh - 85px);
   max-height: none;
 }
 
@@ -1127,3 +1129,449 @@ body.popout .permissions-panel {
 
 .perm-status.success { color: var(--c-success); }
 .perm-status.error { color: var(--c-danger); }
+
+/* ═══════════════════════════
+   Saved Logins (Credential Vault)
+   ═══════════════════════════ */
+.credentials-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.cred-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.cred-domain {
+  font-weight: 600;
+  color: var(--c-text);
+  min-width: 100px;
+}
+
+.cred-user {
+  color: var(--c-text-2);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cred-password {
+  color: var(--c-text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+}
+
+.cred-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.cred-actions button {
+  background: none;
+  border: none;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background var(--transition), color var(--transition);
+}
+
+.cred-delete { color: var(--c-danger); }
+.cred-delete:hover { background: var(--c-danger-bg); }
+
+.cred-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.cred-add-form .chip-input {
+  flex: 1;
+  min-width: 100px;
+}
+
+.cred-empty {
+  font-size: 11px;
+  color: var(--c-text-3);
+  padding: 8px 0;
+}
+
+/* ═══════════════════════════
+   Connected Accounts (Token Vault)
+   ═══════════════════════════ */
+.connections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.connection-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+}
+
+.connection-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.connection-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.connection-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.connection-status {
+  font-size: 10px;
+  color: var(--c-text-3);
+}
+
+.connection-status.connected { color: var(--c-success); }
+
+.connection-btn {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--c-border);
+  background: var(--c-bg);
+  color: var(--c-text-2);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  flex-shrink: 0;
+}
+
+.connection-btn:hover { background: var(--c-primary-bg); color: var(--c-primary); }
+.connection-btn.disconnect { color: var(--c-danger); }
+.connection-btn.disconnect:hover { background: var(--c-danger-bg); }
+
+/* ═══════════════════════════
+   Routines panel
+   ═══════════════════════════ */
+.routines-panel {
+  padding: 14px 16px 20px;
+  overflow-y: auto;
+  height: 515px;
+  max-height: 515px;
+}
+
+body.popout .routines-panel {
+  height: calc(100vh - 85px);
+  max-height: none;
+}
+
+.routines-toolbar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.routines-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.routine-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+
+.routine-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--c-primary);
+}
+
+.routine-card-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--c-primary-bg);
+  color: var(--c-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.routine-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.routine-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routine-card-meta {
+  font-size: 10px;
+  color: var(--c-text-3);
+  margin-top: 1px;
+}
+
+.routine-card-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.routine-run-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--c-success);
+  color: #fff;
+  cursor: pointer;
+  transition: background var(--transition), transform .1s;
+}
+
+.routine-run-btn:hover { background: #059669; }
+.routine-run-btn:active { transform: scale(.96); }
+
+.routine-edit-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  background: var(--c-bg);
+  color: var(--c-text-2);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.routine-edit-btn:hover { background: var(--c-primary-bg); color: var(--c-primary); }
+
+.routine-scope-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  padding: 1px 6px;
+  border-radius: 20px;
+  background: var(--c-purple-bg);
+  color: var(--c-purple);
+}
+
+.routine-scope-badge.global {
+  background: var(--c-success-bg);
+  color: var(--c-success);
+}
+
+/* Routines edit view */
+.routines-edit-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.routines-edit-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+
+.field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-text-2);
+  margin-bottom: 3px;
+}
+
+.routines-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* Session action picker */
+.session-actions-picker {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.session-action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 11.5px;
+  border-radius: var(--radius-sm);
+  background: var(--c-bg);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.session-action-row:hover { background: var(--c-primary-bg); }
+
+.session-action-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--c-primary);
+  flex-shrink: 0;
+}
+
+.session-action-row .action-type-tag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--c-primary);
+  flex-shrink: 0;
+  min-width: 50px;
+}
+
+.session-action-row .action-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-text-2);
+}
+
+/* Routine steps list */
+.routine-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.routine-step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+}
+
+.routine-step-order {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--c-primary);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.routine-step-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-text);
+}
+
+.routine-step-type {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--c-text-3);
+  flex-shrink: 0;
+}
+
+.routine-step-remove {
+  background: none;
+  border: none;
+  font-size: 13px;
+  color: var(--c-text-3);
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color var(--transition);
+}
+
+.routine-step-remove:hover { color: var(--c-danger); }
+
+/* Routine running progress in chat */
+.chat-routine-progress {
+  align-self: flex-start;
+  padding: 10px 12px;
+  background: var(--c-success-bg);
+  border-left: 3px solid var(--c-success);
+  border-radius: var(--radius-md);
+  border-bottom-left-radius: 4px;
+  max-width: 85%;
+  font-size: 12px;
+}
+
+.chat-routine-progress .routine-progress-title {
+  font-weight: 700;
+  color: var(--c-success);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  margin-bottom: 4px;
+}
+
+.chat-routine-progress .routine-step-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 11.5px;
+  color: var(--c-text-2);
+}
+
+.chat-routine-progress .routine-step-item.done { color: var(--c-success); }
+.chat-routine-progress .routine-step-item.running { color: var(--c-primary); font-weight: 600; }
+.chat-routine-progress .routine-step-item.pending-step { color: var(--c-text-3); }

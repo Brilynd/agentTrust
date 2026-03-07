@@ -389,33 +389,27 @@ class AgentTrustClient:
     
     def _update_action_screenshot(self, action_id: str, screenshot: str) -> None:
         """
-        Update an action with a screenshot (internal method)
-        
-        Args:
-            action_id: ID of the action to update
-            screenshot: Base64 encoded screenshot
+        Update an action with a screenshot. Runs in a background thread so the
+        main agent loop is never blocked waiting for the upload to finish.
         """
         if self.dev_mode:
             return
-        try:
-            token = self._get_token()
-            response = requests.patch(
-                f"{self.api_url}/actions/{action_id}",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json"
-                },
-                json={"screenshot": screenshot}
-            )
-            if response.status_code != 200:
-                detail = ""
-                try:
-                    detail = f" - {response.json().get('error', response.text[:200])}"
-                except Exception:
-                    pass
-                print(f"⚠️  Failed to update action with screenshot: {response.status_code}{detail}")
-        except Exception as e:
-            print(f"⚠️  Error updating screenshot: {e}")
+        import threading
+        def _upload():
+            try:
+                token = self._get_token()
+                requests.patch(
+                    f"{self.api_url}/actions/{action_id}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    json={"screenshot": screenshot},
+                    timeout=10
+                )
+            except Exception:
+                pass
+        threading.Thread(target=_upload, daemon=True).start()
     
     def store_prompt(self, content: str, session_id: Optional[str] = None) -> Optional[str]:
         """Store a user prompt and return the prompt ID."""
@@ -487,6 +481,91 @@ class AgentTrustClient:
         except Exception as e:
             print(f"⚠️  Command poll error: {e}")
         return None
+
+    @staticmethod
+    def _normalize_domain(domain: str) -> str:
+        """Strip protocol, www, path, query, port from a domain string."""
+        d = domain.strip().lower()
+        for prefix in ('https://', 'http://'):
+            if d.startswith(prefix):
+                d = d[len(prefix):]
+        if d.startswith('www.'):
+            d = d[4:]
+        d = d.split('/')[0].split('?')[0].split(':')[0]
+        return d
+
+    def get_credentials(self, domain: str) -> Optional[Dict]:
+        """Look up saved credentials for a domain.
+        
+        Returns:
+            Dict with 'username' and 'password', or None if not found.
+        """
+        if self.dev_mode:
+            return None
+        try:
+            normalized = self._normalize_domain(domain)
+            token = self._get_token()
+            response = requests.get(
+                f"{self.api_url}/credentials/lookup",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"domain": normalized},
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                cred = data.get("credential")
+                if cred:
+                    return {"username": cred["username"], "password": cred["password"]}
+        except Exception as e:
+            print(f"⚠️  Credential lookup error: {e}")
+        return None
+
+    def call_external_api(
+        self,
+        provider: str,
+        method: str,
+        endpoint: str,
+        body: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Call an external provider API via the backend Token Vault proxy.
+        
+        Args:
+            provider: Provider name (github, google, slack, etc.)
+            method: HTTP method (GET, POST, PUT, DELETE)
+            endpoint: Full API URL (e.g. https://api.github.com/user/repos)
+            body: Optional request body for POST/PUT
+            
+        Returns:
+            Dict with the API response data or error
+        """
+        if self.dev_mode:
+            return {"success": False, "error": "Dev mode - external API not available"}
+        try:
+            token = self._get_token()
+            payload = {
+                "provider": provider,
+                "method": method.upper(),
+                "url": endpoint,
+            }
+            if body:
+                payload["body"] = body
+            if self.current_session_id:
+                payload["sessionId"] = self.current_session_id
+            if self.current_prompt_id:
+                payload["promptId"] = self.current_prompt_id
+
+            response = requests.post(
+                f"{self.api_url}/external/call",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=30
+            )
+            return response.json()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def get_audit_log(
         self,

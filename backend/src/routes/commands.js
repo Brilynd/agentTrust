@@ -89,4 +89,7 @@ router.get('/pending', validateAction, (req, res) => {
   });
 });
 
+router.__queues = queues;
+router.__waiters = waiters;
+
 module.exports = router;

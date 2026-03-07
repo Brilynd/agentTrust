@@ -25,6 +25,7 @@ import json
 import sys
 import base64
 import io
+import time
 
 # Fix emoji output on Windows terminals that use cp1252
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -372,8 +373,29 @@ class BrowserController:
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-blink-features=AutomationControlled')
+        # Disable passkey / WebAuthn / Google Password Manager prompts
+        options.add_argument('--disable-features='
+                             'WebAuthentication,'
+                             'WebAuthenticationConditionalUI,'
+                             'PasswordManagerOnboarding,'
+                             'PasswordManagerSetting,'
+                             'ChromePasswordManagerUI,'
+                             'IdentityCredentialAutoReauthn')
+        options.add_argument('--disable-component-update')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        options.add_experimental_option("prefs", {
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False,
+            "profile.password_manager_leak_detection": False,
+            "profile.default_content_setting_values.notifications": 2,
+            "autofill.profile_enabled": False,
+            "autofill.credit_card_enabled": False,
+            "password_manager.enabled": False,
+            "password_manager.leak_detection": False,
+            "password_manager.auto_signin.enabled": False,
+            "webauthn.allow_virtual_authenticator": False,
+        })
         
         if load_ext:
             options.add_argument(f'--load-extension={extension_path}')
@@ -385,7 +407,44 @@ class BrowserController:
         actual_driver = webdriver.Chrome(options=options)
         if load_ext:
             print("✅ AgentTrust extension installed")
-        actual_driver.implicitly_wait(5)
+        actual_driver.implicitly_wait(2)
+        
+        # Suppress the native passkey / WebAuthn dialog via DevTools Protocol
+        try:
+            actual_driver.execute_cdp_cmd('WebAuthn.enable', {'enableUI': False})
+            actual_driver.execute_cdp_cmd('WebAuthn.addVirtualAuthenticator', {
+                'options': {
+                    'protocol': 'ctap2',
+                    'transport': 'internal',
+                    'hasResidentKey': False,
+                    'hasUserVerification': False,
+                    'isUserVerified': False,
+                }
+            })
+        except Exception:
+            pass
+        
+        # Inject JS on every page to neutralize navigator.credentials
+        try:
+            actual_driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    if (navigator.credentials) {
+                        navigator.credentials.get = () => Promise.reject(new Error('disabled'));
+                        navigator.credentials.create = () => Promise.reject(new Error('disabled'));
+                        if (navigator.credentials.conditionalMediationSupported) {
+                            navigator.credentials.conditionalMediationSupported = () => Promise.resolve(false);
+                        }
+                    }
+                    if (window.PublicKeyCredential) {
+                        window.PublicKeyCredential.isConditionalMediationAvailable =
+                            () => Promise.resolve(false);
+                        window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable =
+                            () => Promise.resolve(false);
+                    }
+                '''
+            })
+        except Exception:
+            pass
         
         # CRITICAL: Wrap driver with interception layer
         # This ensures NO action can bypass AgentTrust validation
@@ -451,19 +510,19 @@ class BrowserController:
             print(f"⚠️  Extension credential injection failed: {e}")
     
     def navigate(self, url: str):
-        """Navigate to URL"""
-        self.driver.get(url)
-        self.current_url = self.driver.current_url
+        """Navigate to URL — validation already done by BrowserActionExecutor."""
+        self._actual_driver.get(url)
+        self.current_url = self._actual_driver.current_url
         return {"success": True, "url": self.current_url}
     
     def get_current_url(self) -> str:
         """Get current page URL"""
-        self.current_url = self.driver.current_url
+        self.current_url = self._actual_driver.current_url
         return self.current_url
     
     def get_page_title(self) -> str:
         """Get page title"""
-        return self.driver.title
+        return self._actual_driver.title
     
     def get_page_content(self, include_html: bool = False) -> Dict[str, Any]:
         """
@@ -472,14 +531,15 @@ class BrowserController:
         Returns:
             dict with text content, title, url, and optionally html
         """
+        drv = self._actual_driver
         content = {
-            "url": self.driver.current_url,
-            "title": self.driver.title,
-            "text": self.driver.find_element(By.TAG_NAME, "body").text[:5000]  # Limit to 5000 chars
+            "url": drv.current_url,
+            "title": drv.title,
+            "text": drv.find_element(By.TAG_NAME, "body").text[:5000]
         }
         
         if include_html:
-            content["html"] = self.driver.page_source[:10000]  # Limit to 10000 chars
+            content["html"] = drv.page_source[:10000]
         
         return content
     
@@ -489,72 +549,137 @@ class BrowserController:
         
         Returns indexed elements with aria-labels, roles, and other useful
         attributes so the LLM can pick the right element on the first try.
+        Stale-element-safe: individual element failures are skipped.
         """
         elements = []
         idx = 0
-        
+
+        def _attr(el, name):
+            try:
+                return (el.get_attribute(name) or "").strip()
+            except Exception:
+                return ""
+
+        def _visible(el):
+            try:
+                return el.is_displayed()
+            except Exception:
+                return False
+
         try:
+            drv = self._actual_driver
             if not element_type or element_type == 'button':
-                buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                for btn in buttons[:30]:
-                    if btn.is_displayed():
-                        elements.append({
-                            "index": idx,
-                            "type": "button",
-                            "text": (btn.text or "")[:120].strip(),
-                            "id": btn.get_attribute("id") or "",
-                            "class": btn.get_attribute("class") or "",
-                            "aria_label": btn.get_attribute("aria-label") or "",
-                            "role": btn.get_attribute("role") or "",
-                            "data_testid": btn.get_attribute("data-testid") or "",
-                        })
-                        idx += 1
+                try:
+                    buttons = drv.find_elements(By.TAG_NAME, "button")
+                    for btn in buttons[:30]:
+                        try:
+                            if _visible(btn):
+                                elements.append({
+                                    "index": idx, "type": "button",
+                                    "text": (btn.text or "")[:120].strip(),
+                                    "id": _attr(btn, "id"), "class": _attr(btn, "class"),
+                                    "aria_label": _attr(btn, "aria-label"),
+                                    "role": _attr(btn, "role"),
+                                    "data_testid": _attr(btn, "data-testid"),
+                                })
+                                idx += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
             
             if not element_type or element_type == 'link':
-                links = self.driver.find_elements(By.TAG_NAME, "a")
-                for link in links[:30]:
-                    if link.is_displayed():
-                        elements.append({
-                            "index": idx,
-                            "type": "link",
-                            "text": (link.text or "")[:120].strip(),
-                            "href": link.get_attribute("href") or "",
-                            "id": link.get_attribute("id") or "",
-                            "aria_label": link.get_attribute("aria-label") or "",
-                        })
-                        idx += 1
+                try:
+                    links = drv.find_elements(By.TAG_NAME, "a")
+                    for link in links[:30]:
+                        try:
+                            if _visible(link):
+                                elements.append({
+                                    "index": idx, "type": "link",
+                                    "text": (link.text or "")[:120].strip(),
+                                    "href": _attr(link, "href"), "id": _attr(link, "id"),
+                                    "aria_label": _attr(link, "aria-label"),
+                                })
+                                idx += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
             
             if not element_type or element_type == 'input':
-                inputs = self.driver.find_elements(By.TAG_NAME, "input")
-                for inp in inputs[:20]:
-                    if inp.is_displayed():
-                        elements.append({
-                            "index": idx,
-                            "type": "input",
-                            "input_type": inp.get_attribute("type") or "",
-                            "name": inp.get_attribute("name") or "",
-                            "id": inp.get_attribute("id") or "",
-                            "placeholder": inp.get_attribute("placeholder") or "",
-                            "aria_label": inp.get_attribute("aria-label") or "",
-                            "value": (inp.get_attribute("value") or "")[:60],
-                        })
-                        idx += 1
+                try:
+                    inputs = drv.find_elements(By.TAG_NAME, "input")
+                    for inp in inputs[:20]:
+                        try:
+                            if _visible(inp):
+                                elements.append({
+                                    "index": idx, "type": "input",
+                                    "input_type": _attr(inp, "type"),
+                                    "name": _attr(inp, "name"), "id": _attr(inp, "id"),
+                                    "placeholder": _attr(inp, "placeholder"),
+                                    "aria_label": _attr(inp, "aria-label"),
+                                    "value": _attr(inp, "value")[:60],
+                                })
+                                idx += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            if not element_type or element_type == 'input':
+                try:
+                    selects = drv.find_elements(By.TAG_NAME, "select")
+                    for sel in selects[:10]:
+                        try:
+                            if _visible(sel):
+                                elements.append({
+                                    "index": idx, "type": "select",
+                                    "name": _attr(sel, "name"), "id": _attr(sel, "id"),
+                                    "aria_label": _attr(sel, "aria-label"),
+                                })
+                                idx += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
             
-            # Also grab elements with role="button" that aren't <button>
             if not element_type or element_type == 'button':
-                role_btns = self.driver.find_elements(By.CSS_SELECTOR, "[role='button']:not(button)")
-                for rb in role_btns[:15]:
-                    if rb.is_displayed():
-                        elements.append({
-                            "index": idx,
-                            "type": "role_button",
-                            "text": (rb.text or "")[:120].strip(),
-                            "id": rb.get_attribute("id") or "",
-                            "class": rb.get_attribute("class") or "",
-                            "aria_label": rb.get_attribute("aria-label") or "",
-                            "tagName": rb.tag_name,
-                        })
-                        idx += 1
+                try:
+                    role_btns = drv.find_elements(By.CSS_SELECTOR, "[role='button']:not(button)")
+                    for rb in role_btns[:15]:
+                        try:
+                            if _visible(rb):
+                                elements.append({
+                                    "index": idx, "type": "role_button",
+                                    "text": (rb.text or "")[:120].strip(),
+                                    "id": _attr(rb, "id"), "class": _attr(rb, "class"),
+                                    "aria_label": _attr(rb, "aria-label"),
+                                    "tagName": rb.tag_name,
+                                })
+                                idx += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            # Also grab submit-type inputs (Amazon uses <input type="submit">)
+            if not element_type or element_type == 'button':
+                try:
+                    submits = drv.find_elements(By.CSS_SELECTOR, "input[type='submit']")
+                    for sub in submits[:10]:
+                        try:
+                            if _visible(sub):
+                                elements.append({
+                                    "index": idx, "type": "submit_input",
+                                    "value": _attr(sub, "value"),
+                                    "id": _attr(sub, "id"), "name": _attr(sub, "name"),
+                                    "aria_label": _attr(sub, "aria-label"),
+                                })
+                                idx += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
         
         except Exception as e:
             print(f"⚠️  Error getting elements: {e}")
@@ -573,47 +698,38 @@ class BrowserController:
     
     def click_element(self, target: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Click an element based on target information
-        
-        Args:
-            target: dict with id, text, class, href, tagName, or other identifiers
-        
-        Returns:
-            dict with success status
+        Click an element based on target information.
+        Uses _actual_driver directly — validation is handled by BrowserActionExecutor.
         """
         import time
+        drv = self._actual_driver
         try:
             element = None
             text_safe = (target.get("text") or "")[:80].strip()
-            # XPath-safe text: escape single quote as '' in XPath
             text_xpath = text_safe.replace("'", "''") if text_safe else ""
             
-            # Try to find by ID first
             if target.get("id"):
                 try:
-                    element = self.driver.find_element(By.ID, target["id"])
+                    element = drv.find_element(By.ID, target["id"])
                 except NoSuchElementException:
                     pass
             
-            # Try by href (for links)
             if not element and target.get("href"):
                 href = str(target["href"])[:200].replace("'", "''")
                 try:
-                    element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
+                    element = drv.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
                 except NoSuchElementException:
                     pass
             
-            # Try by tag name + text (buttons, links - use contains(., ) for nested elements)
             if not element and target.get("tagName") and text_safe:
                 tag = str(target["tagName"]).upper().replace("HTML", "*")
                 if tag == "*":
                     tag = "*"
                 try:
-                    element = self.driver.find_element(By.XPATH, f"//{tag}[contains(., '{text_xpath}')]")
+                    element = drv.find_element(By.XPATH, f"//{tag}[contains(., '{text_xpath}')]")
                 except NoSuchElementException:
                     pass
             
-            # Try by text content (any element - contains(., ) matches nested text)
             if not element and text_safe:
                 for xpath in [
                     f"//a[contains(., '{text_xpath}')]",
@@ -622,7 +738,7 @@ class BrowserController:
                     f"//*[contains(., '{text_xpath}')]",
                 ]:
                     try:
-                        elements = self.driver.find_elements(By.XPATH, xpath)
+                        elements = drv.find_elements(By.XPATH, xpath)
                         for el in elements:
                             if el.is_displayed() and el.is_enabled():
                                 element = el
@@ -632,64 +748,57 @@ class BrowserController:
                     except NoSuchElementException:
                         continue
             
-            # Try by class name
             if not element and target.get("className"):
                 try:
-                    element = self.driver.find_element(By.CLASS_NAME, target["className"])
+                    element = drv.find_element(By.CLASS_NAME, target["className"])
                 except NoSuchElementException:
                     pass
             
-            # Try by CSS selector if provided
             if not element and target.get("selector"):
                 try:
-                    element = self.driver.find_element(By.CSS_SELECTOR, target["selector"])
+                    element = drv.find_element(By.CSS_SELECTOR, target["selector"])
                 except NoSuchElementException:
                     pass
             
             if not element:
                 return {"success": False, "message": "Element not found with provided identifiers"}
             
-            # Get actual Selenium element (unwrap InterceptedWebElement for scripts)
-            actual = self._unwrap_element(element)
-            
             # Scroll into view
             try:
-                self._actual_driver.execute_script(
+                drv.execute_script(
                     "arguments[0].scrollIntoView({behavior: 'instant', block: 'center', inline: 'center'});",
-                    actual
+                    element
                 )
             except Exception:
                 pass
-            time.sleep(0.2)
+            time.sleep(0.1)
             
-            # Wait for element to be clickable (use actual element for WebDriverWait)
             try:
-                WebDriverWait(self._actual_driver, 5).until(EC.element_to_be_clickable(actual))
+                WebDriverWait(drv, 5).until(EC.element_to_be_clickable(element))
             except TimeoutException:
                 return {"success": False, "message": "Element not clickable within timeout"}
             
             if not element.is_displayed():
                 return {"success": False, "message": "Element found but not visible"}
             
-            # Try click: native first, then JS, then ActionChains
             clicked = False
             try:
                 element.click()
                 clicked = True
             except Exception:
                 try:
-                    self._actual_driver.execute_script("arguments[0].click();", actual)
+                    drv.execute_script("arguments[0].click();", element)
                     clicked = True
                 except Exception:
                     try:
-                        ActionChains(self._actual_driver).move_to_element(actual).click().perform()
+                        ActionChains(drv).move_to_element(element).click().perform()
                         clicked = True
                     except Exception:
                         pass
             
             if clicked:
-                time.sleep(0.5)
-                return {"success": True, "message": "Element clicked successfully", "new_url": self.driver.current_url}
+                time.sleep(0.3)
+                return {"success": True, "message": "Element clicked successfully", "new_url": drv.current_url}
             return {"success": False, "message": "Click failed (element may be obscured or not interactable)"}
         
         except TimeoutException:
@@ -708,23 +817,21 @@ class BrowserController:
             dict with success status
         """
         try:
-            # Find form fields and fill them
+            drv = self._actual_driver
             for field_name, field_value in form_data.items():
                 try:
-                    field = self.driver.find_element(By.NAME, field_name)
+                    field = drv.find_element(By.NAME, field_name)
                     field.clear()
                     field.send_keys(str(field_value))
                 except NoSuchElementException:
-                    # Try by ID
                     try:
-                        field = self.driver.find_element(By.ID, field_name)
+                        field = drv.find_element(By.ID, field_name)
                         field.clear()
                         field.send_keys(str(field_value))
                     except NoSuchElementException:
                         print(f"⚠️  Form field '{field_name}' not found")
             
-            # Submit form
-            submit_button = self.driver.find_element(By.XPATH, "//input[@type='submit'] | //button[@type='submit']")
+            submit_button = drv.find_element(By.XPATH, "//input[@type='submit'] | //button[@type='submit']")
             submit_button.click()
             
             return {"success": True, "message": "Form submitted successfully"}
@@ -747,26 +854,24 @@ class BrowserController:
         try:
             element = None
             
-            # Find by index
+            drv = self._actual_driver
             if link_index is not None:
-                links = self.driver.find_elements(By.TAG_NAME, "a")
+                links = drv.find_elements(By.TAG_NAME, "a")
                 visible_links = [link for link in links if link.is_displayed()]
                 if 0 <= link_index < len(visible_links):
                     element = visible_links[link_index]
             
-            # Find by href (partial match - handles different domain/path formats)
             if not element and href:
-                href_esc = str(href)[:200].replace("'", "''")  # XPath: '' escapes '
+                href_esc = str(href)[:200].replace("'", "''")
                 try:
-                    element = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{href_esc}')]")
+                    element = drv.find_element(By.XPATH, f"//a[contains(@href, '{href_esc}')]")
                 except NoSuchElementException:
                     pass
             
-            # Find by text (use contains(., ) for nested elements like <a><span>text</span></a>)
             if not element and link_text:
-                text_esc = str(link_text)[:50].replace("'", "''")  # XPath: '' escapes '
+                text_esc = str(link_text)[:50].replace("'", "''")
                 try:
-                    links = self.driver.find_elements(By.XPATH, f"//a[contains(., '{text_esc}')]")
+                    links = drv.find_elements(By.XPATH, f"//a[contains(., '{text_esc}')]")
                     for link in links:
                         if link.is_displayed():
                             element = link
@@ -775,35 +880,31 @@ class BrowserController:
                     pass
             
             if element and element.is_displayed():
-                # Get the href before clicking
                 link_href = element.get_attribute("href")
-                actual = self._unwrap_element(element)
                 
-                # Scroll into view and click
                 try:
-                    self._actual_driver.execute_script(
+                    drv.execute_script(
                         "arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});",
-                        actual
+                        element
                     )
                 except Exception:
                     pass
                 import time
-                time.sleep(0.2)
-                WebDriverWait(self._actual_driver, 5).until(EC.element_to_be_clickable(actual))
+                time.sleep(0.1)
+                WebDriverWait(drv, 5).until(EC.element_to_be_clickable(element))
                 try:
                     element.click()
                 except Exception:
-                    self._actual_driver.execute_script("arguments[0].click();", actual)
+                    drv.execute_script("arguments[0].click();", element)
                 
-                # Wait for navigation
                 import time
-                time.sleep(1)
+                time.sleep(0.5)
                 
                 return {
                     "success": True,
                     "message": "Link opened successfully",
                     "href": link_href,
-                    "new_url": self.driver.current_url
+                    "new_url": drv.current_url
                 }
             else:
                 return {"success": False, "message": "Link not found or not visible"}
@@ -822,34 +923,31 @@ class BrowserController:
         Returns:
             dict with success status
         """
+        drv = self._actual_driver
         try:
             element = None
             
-            # Try by ID
             if target.get("id"):
                 try:
-                    element = self.driver.find_element(By.ID, target["id"])
+                    element = drv.find_element(By.ID, target["id"])
                 except NoSuchElementException:
                     pass
             
-            # Try by name
             if not element and target.get("name"):
                 try:
-                    element = self.driver.find_element(By.NAME, target["name"])
+                    element = drv.find_element(By.NAME, target["name"])
                 except NoSuchElementException:
                     pass
             
-            # Try by placeholder
             if not element and target.get("placeholder"):
                 try:
-                    element = self.driver.find_element(By.XPATH, f"//input[@placeholder='{target['placeholder']}']")
+                    element = drv.find_element(By.XPATH, f"//input[@placeholder='{target['placeholder']}']")
                 except NoSuchElementException:
                     pass
             
-            # Try by CSS selector
             if not element and target.get("selector"):
                 try:
-                    element = self.driver.find_element(By.CSS_SELECTOR, target["selector"])
+                    element = drv.find_element(By.CSS_SELECTOR, target["selector"])
                 except NoSuchElementException:
                     pass
             
@@ -864,30 +962,22 @@ class BrowserController:
             return {"success": False, "message": f"Error typing text: {str(e)}"}
     
     def scroll_page(self, direction: str = "down", amount: int = 3) -> Dict[str, Any]:
-        """
-        Scroll the page
-        
-        Args:
-            direction: "down", "up", "top", or "bottom"
-            amount: Number of scroll steps (for down/up)
-        
-        Returns:
-            dict with success status
-        """
+        """Scroll the page."""
+        drv = self._actual_driver
         try:
             if direction == "down":
                 for _ in range(amount):
-                    self.driver.execute_script("window.scrollBy(0, 500);")
+                    drv.execute_script("window.scrollBy(0, 500);")
             elif direction == "up":
                 for _ in range(amount):
-                    self.driver.execute_script("window.scrollBy(0, -500);")
+                    drv.execute_script("window.scrollBy(0, -500);")
             elif direction == "top":
-                self.driver.execute_script("window.scrollTo(0, 0);")
+                drv.execute_script("window.scrollTo(0, 0);")
             elif direction == "bottom":
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                drv.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             
             import time
-            time.sleep(0.3)
+            time.sleep(0.2)
             
             return {"success": True, "message": f"Page scrolled {direction}"}
         except Exception as e:
@@ -895,21 +985,23 @@ class BrowserController:
     
     def go_back(self) -> Dict[str, Any]:
         """Go back in browser history"""
+        drv = self._actual_driver
         try:
-            self.driver.back()
+            drv.back()
             import time
-            time.sleep(0.5)
-            return {"success": True, "message": "Navigated back", "url": self.driver.current_url}
+            time.sleep(0.3)
+            return {"success": True, "message": "Navigated back", "url": drv.current_url}
         except Exception as e:
             return {"success": False, "message": f"Error going back: {str(e)}"}
     
     def go_forward(self) -> Dict[str, Any]:
         """Go forward in browser history"""
+        drv = self._actual_driver
         try:
-            self.driver.forward()
+            drv.forward()
             import time
-            time.sleep(0.5)
-            return {"success": True, "message": "Navigated forward", "url": self.driver.current_url}
+            time.sleep(0.3)
+            return {"success": True, "message": "Navigated forward", "url": drv.current_url}
         except Exception as e:
             return {"success": False, "message": f"Error going forward: {str(e)}"}
     
@@ -924,19 +1016,20 @@ class BrowserController:
         Returns:
             dict with success status
         """
+        drv = self._actual_driver
         try:
             element = None
             
             if target.get("id"):
-                element = WebDriverWait(self.driver, timeout).until(
+                element = WebDriverWait(drv, timeout).until(
                     EC.presence_of_element_located((By.ID, target["id"]))
                 )
             elif target.get("class"):
-                element = WebDriverWait(self.driver, timeout).until(
+                element = WebDriverWait(drv, timeout).until(
                     EC.presence_of_element_located((By.CLASS_NAME, target["class"]))
                 )
             elif target.get("text"):
-                element = WebDriverWait(self.driver, timeout).until(
+                element = WebDriverWait(drv, timeout).until(
                     EC.presence_of_element_located((By.XPATH, f"//*[contains(text(), '{target['text'][:50]}')]"))
                 )
             
@@ -961,17 +1054,16 @@ class BrowserController:
             Base64 encoded screenshot or file path
         """
         if save_path:
-            self.driver.save_screenshot(save_path)
+            self._actual_driver.save_screenshot(save_path)
             return save_path
         else:
-            # Return base64 encoded screenshot
-            screenshot = self.driver.get_screenshot_as_base64()
+            screenshot = self._actual_driver.get_screenshot_as_base64()
             return screenshot
     
     def close(self):
         """Close the browser."""
-        if self.driver:
-            self.driver.quit()
+        if self._actual_driver:
+            self._actual_driver.quit()
 
 
 class BrowserActionExecutor:
@@ -1080,14 +1172,19 @@ class BrowserActionExecutor:
             )
         
         if status not in ("allowed", "denied", "step_up_required"):
+            error_msg = result.get("message", f"Validation returned status: {status}")
+            print(f"   ⚠️  AgentTrust error: {error_msg}")
             self.action_history.append({
                 "action": "click", "url": url,
                 "status": status or "error",
-                "reason": result.get("message")
+                "reason": error_msg
             })
-            self._notify_extension("click", url, "error",
-                                   target=target)
-            raise ValueError(f"AgentTrust validation failed with status: {status}")
+            self._notify_extension("click", url, "error", target=target)
+            return {
+                "status": "error",
+                "message": f"AgentTrust validation error: {error_msg}. Try again.",
+                "browser_result": {"success": False, "message": error_msg}
+            }
         
         # Action is allowed - log and return
         self.action_history.append({
@@ -1103,18 +1200,16 @@ class BrowserActionExecutor:
         screenshot = None
         if self.browser and target:
             browser_result = self.browser.click_element(target)
-            # Capture screenshot AFTER action (to see result)
             if browser_result and browser_result.get("success"):
                 try:
                     import time
-                    time.sleep(0.5)  # Wait for page to update
+                    time.sleep(0.15)
                     screenshot = self.browser.take_screenshot()
-                    # Update action with screenshot via API
                     if screenshot and result.get("action_id"):
                         try:
                             self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
                         except:
-                            pass  # Non-critical
+                            pass
                 except Exception as e:
                     print(f"⚠️  Failed to capture screenshot: {e}")
         
@@ -1179,14 +1274,19 @@ class BrowserActionExecutor:
             )
         
         if status not in ("allowed", "denied", "step_up_required"):
+            error_msg = result.get("message", f"Validation returned status: {status}")
+            print(f"   ⚠️  AgentTrust error: {error_msg}")
             self.action_history.append({
                 "action": "form_submit", "url": url,
                 "status": status or "error",
-                "reason": result.get("message")
+                "reason": error_msg
             })
-            self._notify_extension("form_submit", url, "error",
-                                   form_data=form_data)
-            raise ValueError(f"AgentTrust validation failed with status: {status}")
+            self._notify_extension("form_submit", url, "error", form_data=form_data)
+            return {
+                "status": "error",
+                "message": f"AgentTrust validation error: {error_msg}. Try again.",
+                "browser_result": {"success": False, "message": error_msg}
+            }
         
         # Action is allowed - log and return
         self.action_history.append({
@@ -1202,13 +1302,11 @@ class BrowserActionExecutor:
         screenshot = None
         if self.browser and form_data:
             browser_result = self.browser.submit_form(form_data)
-            # Capture screenshot AFTER action (to see result)
             if browser_result and browser_result.get("success"):
                 try:
                     import time
-                    time.sleep(1)  # Wait for form submission to complete
+                    time.sleep(0.3)
                     screenshot = self.browser.take_screenshot()
-                    # Update action with screenshot
                     if screenshot and result.get("action_id"):
                         try:
                             self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
@@ -1277,13 +1375,20 @@ class BrowserActionExecutor:
             )
         
         if status not in ("allowed", "denied", "step_up_required"):
+            error_msg = result.get("message", f"Validation returned status: {status}")
+            print(f"   ⚠️  AgentTrust error: {error_msg}")
             self.action_history.append({
                 "action": "navigation", "url": url,
                 "status": status or "error",
-                "reason": result.get("message")
+                "reason": error_msg
             })
             self._notify_extension("navigation", url, "error")
-            raise ValueError(f"AgentTrust validation failed with status: {status}")
+            return {
+                "status": "error",
+                "message": f"AgentTrust validation error: {error_msg}. "
+                           "This may be a temporary issue — try again or navigate to a different page.",
+                "browser_result": {"success": False, "message": error_msg}
+            }
         
         # Action is allowed - log and return
         self.action_history.append({
@@ -1297,15 +1402,42 @@ class BrowserActionExecutor:
         # Actually perform the navigation if browser is available
         browser_result = None
         screenshot = None
+        page_error = None
         if self.browser:
             browser_result = self.browser.navigate(url)
-            # Capture screenshot AFTER navigation (to see new page)
             if browser_result and browser_result.get("success"):
                 try:
-                    import time
-                    time.sleep(1.5)  # Wait for page to load
+                    driver = self.browser._actual_driver
+                    try:
+                        WebDriverWait(driver, 5).until(
+                            lambda d: d.execute_script("return document.readyState") == "complete"
+                        )
+                    except Exception:
+                        pass
+                    actual_url = driver.current_url
+                    title = (driver.title or "").lower()
+                    body_text = ""
+                    try:
+                        body_text = driver.find_element(
+                            __import__('selenium.webdriver.common.by', fromlist=['By']).By.TAG_NAME,
+                            "body"
+                        ).text[:500].lower()
+                    except Exception:
+                        pass
+
+                    error_signals = [
+                        "404", "not found", "page not found", "page isn't working",
+                        "this site can't be reached", "err_connection",
+                        "err_name_not_resolved", "http error", "server error",
+                        "access denied", "403 forbidden", "502 bad gateway",
+                        "503 service", "this page isn't working",
+                    ]
+                    for sig in error_signals:
+                        if sig in title or sig in body_text or sig in actual_url.lower():
+                            page_error = f"Page load error detected: '{sig}' found. The URL may be wrong or the page is unavailable."
+                            break
+
                     screenshot = self.browser.take_screenshot()
-                    # Update action with screenshot
                     if screenshot and result.get("action_id"):
                         try:
                             self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
@@ -1318,7 +1450,7 @@ class BrowserActionExecutor:
                                risk_level=result.get("risk_level"),
                                action_id=result.get("action_id"))
         
-        return {
+        resp = {
             "status": "allowed",
             "action_id": result.get("action_id"),
             "risk_level": result.get("risk_level"),
@@ -1327,6 +1459,13 @@ class BrowserActionExecutor:
             "browser_result": browser_result,
             "screenshot": screenshot
         }
+        if page_error:
+            resp["page_error"] = page_error
+            resp["message"] = (
+                f"Navigation allowed but the page failed to load properly: {page_error} "
+                "Try navigating to the site's homepage instead and find the correct link."
+            )
+        return resp
     
     def get_page_content(self, include_html: bool = False) -> Dict[str, Any]:
         """
@@ -1427,12 +1566,11 @@ class BrowserActionExecutor:
             
             if result.get("status") == "allowed":
                 type_result = self.browser.type_text(target, text)
-                # Capture screenshot after typing
                 screenshot = None
                 if type_result.get("success"):
                     try:
                         import time
-                        time.sleep(0.3)
+                        time.sleep(0.1)
                         screenshot = self.browser.take_screenshot()
                         if screenshot and result.get("action_id"):
                             try:
@@ -1524,6 +1662,750 @@ class BrowserActionExecutor:
         
         return self.browser.take_screenshot()
 
+    def auto_login(self, url: str, username: str, password: str):
+        """
+        Perform a full login flow that handles multi-step forms, QR code
+        popups, stale-element recovery, and password-only pages.
+        All mutating steps go through AgentTrust validation.
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import (
+            StaleElementReferenceException, NoSuchElementException,
+            ElementNotInteractableException, TimeoutException
+        )
+
+        if not self.browser:
+            return {"success": False, "message": "Browser not initialized"}
+
+        driver = self.browser._actual_driver
+        steps_log = []
+
+        # ── Helpers ──────────────────────────────────────────────
+
+        def _wait_ready(seconds=0.3):
+            """Wait for DOM to be ready, then a short settle time."""
+            try:
+                WebDriverWait(driver, 5).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+            except Exception:
+                pass
+            if seconds > 0:
+                time.sleep(seconds)
+
+        def _safe_attr(el, attr):
+            """Get an attribute, returning '' on stale ref."""
+            try:
+                return (el.get_attribute(attr) or "").strip().lower()
+            except (StaleElementReferenceException, Exception):
+                return ""
+
+        def _find_input(field_type, retries=2):
+            """Find a visible username or password input, retrying on stale DOM."""
+            username_selectors = [
+                "input[type='email']",
+                "input[name='email']", "input[name='username']",
+                "input[name='login_field']", "input[name='identifier']",
+                "input[id='identifierId']", "input[id='ap_email']",
+                "input[id='ap_email_login']", "input[id='login']",
+                "input[autocomplete='username']", "input[autocomplete='email']",
+                "input[type='text'][name*='mail']",
+                "input[type='text'][name*='user']",
+                "input[type='text'][name*='login']",
+                "input[id*='mail']", "input[id*='user']",
+                "input[type='text']",
+            ]
+            password_selectors = [
+                "input[type='password']",
+                "input[name='password']", "input[name='passwd']",
+                "input[id='password']", "input[id='ap_password']",
+                "input[autocomplete='current-password']",
+            ]
+            selectors = username_selectors if field_type == "username" else password_selectors
+
+            for attempt in range(retries):
+                for sel in selectors:
+                    try:
+                        els = driver.find_elements(By.CSS_SELECTOR, sel)
+                        for el in els:
+                            try:
+                                if el.is_displayed() and el.is_enabled():
+                                    return el
+                            except StaleElementReferenceException:
+                                continue
+                    except Exception:
+                        continue
+                if attempt < retries - 1:
+                    time.sleep(0.5)
+            return None
+
+        def _find_continue_button(retries=2):
+            """Scan for continue/next/sign-in buttons, skipping passkey/biometric buttons."""
+            keywords = [
+                "continue", "next", "sign in", "signin", "log in", "login",
+                "submit", "proceed", "verify", "let's go"
+            ]
+            skip_keywords = [
+                "passkey", "biometric", "fingerprint", "face id", "fido",
+                "webauthn", "security key", "authenticator", "qr code",
+                "sign in with a", "sign in with", "sign in using",
+                "use a passkey", "create passkey", "windows hello",
+                "try another way",
+            ]
+            fallback_ids = [
+                "identifierNext", "passwordNext", "signIn", "continue",
+                "next", "submitBtn", "login-submit", "auth-submit-btn",
+                "a-autoid-0-announce", "auth-signin-button",
+            ]
+
+            def _is_passkey_button(el):
+                """Check all text sources for passkey/biometric references."""
+                texts = []
+                try:
+                    texts.append((_safe_attr(el, 'textContent') or ""))
+                except Exception:
+                    pass
+                try:
+                    texts.append((_safe_attr(el, 'value') or ""))
+                except Exception:
+                    pass
+                try:
+                    texts.append((_safe_attr(el, 'aria-label') or ""))
+                except Exception:
+                    pass
+                try:
+                    texts.append((el.text or "").strip().lower())
+                except Exception:
+                    pass
+                try:
+                    texts.append((_safe_attr(el, 'id') or ""))
+                except Exception:
+                    pass
+                try:
+                    texts.append((_safe_attr(el, 'class') or ""))
+                except Exception:
+                    pass
+                full = " ".join(texts)
+                return any(skip in full for skip in skip_keywords)
+
+            for attempt in range(retries):
+                try:
+                    candidates = driver.find_elements(By.CSS_SELECTOR,
+                        "button, input[type='submit'], input[type='button'], "
+                        "a[role='button'], div[role='button'], span[role='button']")
+                    for el in candidates:
+                        try:
+                            if not el.is_displayed():
+                                continue
+                            if _is_passkey_button(el):
+                                continue
+                            combined = f"{_safe_attr(el, 'textContent')} {_safe_attr(el, 'value')} {_safe_attr(el, 'aria-label')}"
+                            if not combined.strip():
+                                combined = (el.text or "").strip().lower()
+                            for kw in keywords:
+                                if kw in combined:
+                                    return el
+                        except StaleElementReferenceException:
+                            continue
+                except Exception:
+                    pass
+                for bid in fallback_ids:
+                    try:
+                        el = driver.find_element(By.ID, bid)
+                        if el.is_displayed() and not _is_passkey_button(el):
+                            return el
+                    except Exception:
+                        continue
+                if attempt < retries - 1:
+                    time.sleep(0.5)
+            return None
+
+        def _dismiss_overlays():
+            """Close QR-code dialogs, cookie banners, or other overlays. Fast path."""
+            dismiss_selectors = [
+                "a[data-action='a-modal-close']",
+                "button[data-action='a-modal-close']",
+                "button.a-modal-close", "a.a-modal-close",
+                "#ap-account-fixup-phone-skip-link",
+                "button[id*='passkey-cancel']", "button[id*='passkey-close']",
+                "a[id*='passkey-cancel']",
+                "#credential_picker_close", "#credential_picker_cancel",
+                "button[aria-label='Close']", "button[aria-label='Dismiss']",
+                "[data-dismiss='modal']",
+                "button.modal-close", "a.skip-link", "button.skip",
+            ]
+            dismissed = False
+
+            for sel in dismiss_selectors:
+                try:
+                    els = driver.find_elements(By.CSS_SELECTOR, sel)
+                    for el in els:
+                        try:
+                            if el.is_displayed():
+                                el.click()
+                                dismissed = True
+                                time.sleep(0.2)
+                        except (StaleElementReferenceException, ElementNotInteractableException):
+                            continue
+                except Exception:
+                    continue
+
+            if not dismissed:
+                try:
+                    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+
+            return dismissed
+
+        def _safe_click(el):
+            """Click with JS fallback if normal click fails."""
+            try:
+                el.click()
+            except (ElementNotInteractableException, StaleElementReferenceException):
+                try:
+                    driver.execute_script("arguments[0].click();", el)
+                except Exception:
+                    raise
+
+        def _safe_type(el, text):
+            """Clear and type into an input, with JS fallback."""
+            try:
+                el.click()
+                time.sleep(0.05)
+            except Exception:
+                try:
+                    driver.execute_script("arguments[0].focus();", el)
+                except Exception:
+                    pass
+            try:
+                el.clear()
+            except Exception:
+                try:
+                    driver.execute_script("arguments[0].value = '';", el)
+                except Exception:
+                    pass
+            try:
+                el.send_keys(text)
+            except StaleElementReferenceException:
+                raise
+            except Exception:
+                driver.execute_script(
+                    "arguments[0].value = arguments[1]; "
+                    "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));",
+                    el, text)
+
+        # ── Main flow ────────────────────────────────────────────
+
+        try:
+            # Step 0: Validate the login action with AgentTrust
+            form_data = {"action": "auto_login", "fields": {"username": "***", "password": "***"}}
+            result = self.agenttrust.execute_action(
+                action_type="form_submit", url=url, form_data=form_data
+            )
+            status = result.get("status")
+            if status == "denied":
+                self._notify_extension("form_submit", url, "denied", form_data=form_data)
+                return {"success": False, "status": "denied",
+                        "message": result.get("message", "Login denied by policy")}
+            if status == "step_up_required":
+                self._notify_extension("form_submit", url, "step_up_required", form_data=form_data)
+                return {"success": False, "status": "step_up_required",
+                        "message": "Login requires user approval",
+                        "requires_user_approval": True}
+
+            action_id = result.get("action_id")
+
+            # Step 1: Dismiss any overlays (QR code, cookie banners, etc.)
+            _wait_ready(0.1)
+            if _dismiss_overlays():
+                steps_log.append("Dismissed overlay/popup")
+                _wait_ready(0.1)
+
+            # Step 2: Detect current login state
+            password_el = _find_input("password")
+            username_el = _find_input("username")
+
+            if password_el and not username_el:
+                _safe_type(password_el, password)
+                steps_log.append("Entered password (password-only page)")
+            elif password_el and username_el:
+                _safe_type(username_el, username)
+                steps_log.append("Entered username/email")
+                password_el = _find_input("password")
+                if password_el:
+                    _safe_type(password_el, password)
+                    steps_log.append("Entered password (single-step form)")
+            elif username_el:
+                _safe_type(username_el, username)
+                steps_log.append("Entered username/email")
+                _wait_ready(0.1)
+
+                continue_btn = _find_continue_button()
+                if continue_btn:
+                    btn_text = ""
+                    try:
+                        btn_text = (continue_btn.text or "").strip()[:30]
+                    except StaleElementReferenceException:
+                        pass
+                    _safe_click(continue_btn)
+                    steps_log.append(f"Clicked continue/next: '{btn_text}'")
+                else:
+                    try:
+                        username_el.send_keys(Keys.RETURN)
+                    except StaleElementReferenceException:
+                        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.RETURN)
+                    steps_log.append("Pressed Enter after username")
+
+                # Wait for password field — use WebDriverWait instead of fixed sleeps
+                password_el = None
+                try:
+                    WebDriverWait(driver, 5).until(
+                        lambda d: _find_input("password") is not None
+                    )
+                    password_el = _find_input("password")
+                except TimeoutException:
+                    pass
+
+                if not password_el:
+                    _dismiss_overlays()
+                    _wait_ready(0.1)
+                    password_el = _find_input("password")
+
+                if password_el:
+                    _safe_type(password_el, password)
+                    steps_log.append("Entered password (after continue)")
+                else:
+                    screenshot = self.take_screenshot()
+                    if screenshot and action_id:
+                        try:
+                            self.agenttrust._update_action_screenshot(action_id, screenshot)
+                        except Exception:
+                            pass
+                    return {"success": False,
+                            "message": "Password field did not appear after clicking continue. "
+                                       "There may be a CAPTCHA or additional verification step.",
+                            "steps_completed": steps_log}
+            else:
+                _dismiss_overlays()
+                _wait_ready(0.1)
+                username_el = _find_input("username")
+                password_el = _find_input("password")
+                if password_el:
+                    _safe_type(password_el, password)
+                    steps_log.append("Entered password (after overlay dismiss)")
+                elif username_el:
+                    _safe_type(username_el, username)
+                    steps_log.append("Entered username (after overlay dismiss)")
+                else:
+                    screenshot = self.take_screenshot()
+                    if screenshot and action_id:
+                        try:
+                            self.agenttrust._update_action_screenshot(action_id, screenshot)
+                        except Exception:
+                            pass
+                    return {"success": False,
+                            "message": "No login input fields found. The page may not be a login page, "
+                                       "or there may be a CAPTCHA/overlay blocking the form.",
+                            "steps_completed": steps_log,
+                            "current_url": driver.current_url}
+
+            # Step 3: Submit the login form — prefer Enter on password field
+            # (avoids accidentally clicking passkey / secondary auth buttons)
+            _wait_ready(0.1)
+            pw_for_submit = _find_input("password")
+            if pw_for_submit:
+                try:
+                    pw_for_submit.send_keys(Keys.RETURN)
+                    steps_log.append("Pressed Enter on password field to submit")
+                except StaleElementReferenceException:
+                    submit_btn = _find_continue_button()
+                    if submit_btn:
+                        btn_text = ""
+                        try:
+                            btn_text = (submit_btn.text or "").strip()[:30]
+                        except StaleElementReferenceException:
+                            pass
+                        _safe_click(submit_btn)
+                        steps_log.append(f"Clicked submit: '{btn_text}'")
+                    else:
+                        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.RETURN)
+                        steps_log.append("Pressed Enter to submit")
+            else:
+                submit_btn = _find_continue_button()
+                if submit_btn:
+                    btn_text = ""
+                    try:
+                        btn_text = (submit_btn.text or "").strip()[:30]
+                    except StaleElementReferenceException:
+                        pass
+                    _safe_click(submit_btn)
+                    steps_log.append(f"Clicked submit: '{btn_text}'")
+                else:
+                    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.RETURN)
+                    steps_log.append("Pressed Enter to submit")
+
+            # Step 4: Wait for navigation / page load
+            _wait_ready(0.5)
+
+            # Dismiss any post-login overlays (e.g. "stay signed in?" prompts)
+            if _dismiss_overlays():
+                steps_log.append("Dismissed post-login overlay")
+
+            new_url = driver.current_url
+            steps_log.append(f"Page after login: {new_url}")
+
+            # Capture final screenshot
+            screenshot = self.take_screenshot()
+            if screenshot and action_id:
+                try:
+                    self.agenttrust._update_action_screenshot(action_id, screenshot)
+                except Exception:
+                    pass
+
+            self._notify_extension("form_submit", url, "allowed",
+                                   risk_level=result.get("risk_level"),
+                                   action_id=action_id,
+                                   form_data={"action": "auto_login"})
+
+            return {
+                "success": True, "status": "allowed",
+                "action_id": action_id,
+                "risk_level": result.get("risk_level"),
+                "new_url": new_url,
+                "steps_completed": steps_log,
+                "message": "Login flow completed"
+            }
+
+        except PermissionError as e:
+            return {"success": False, "status": "denied", "message": str(e)}
+        except Exception as e:
+            return {"success": False, "message": f"Login flow error: {str(e)}",
+                    "steps_completed": steps_log}
+
+    def _wait_page_ready(self, timeout: int = 15):
+        """Wait until the page is fully loaded (document.readyState === 'complete')."""
+        if not self.browser:
+            return
+        driver = self.browser._actual_driver
+        from selenium.webdriver.support.ui import WebDriverWait
+        try:
+            WebDriverWait(driver, timeout).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    def _wait_for_target(self, target: dict, timeout: int = 10) -> bool:
+        """
+        Wait until the target element is present and visible on the page.
+        Returns True if found, False on timeout.
+        """
+        if not self.browser or not target:
+            return False
+        driver = self.browser._actual_driver
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.common.by import By
+
+        def _find(d):
+            if target.get("id"):
+                try:
+                    el = d.find_element(By.ID, target["id"])
+                    if el.is_displayed():
+                        return True
+                except Exception:
+                    pass
+            text = (target.get("text") or "")[:80].strip()
+            if text:
+                text_xpath = text.replace("'", "''")
+                for xpath in [
+                    f"//a[contains(., '{text_xpath}')]",
+                    f"//button[contains(., '{text_xpath}')]",
+                    f"//*[contains(., '{text_xpath}')]",
+                ]:
+                    try:
+                        els = d.find_elements(By.XPATH, xpath)
+                        for el in els:
+                            if el.is_displayed():
+                                return True
+                    except Exception:
+                        continue
+            if target.get("selector"):
+                try:
+                    el = d.find_element(By.CSS_SELECTOR, target["selector"])
+                    if el.is_displayed():
+                        return True
+                except Exception:
+                    pass
+            if target.get("href"):
+                href = str(target["href"])[:200].replace("'", "''")
+                try:
+                    el = d.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
+                    if el.is_displayed():
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        try:
+            WebDriverWait(driver, timeout).until(_find)
+            return True
+        except Exception:
+            return False
+
+    def _resolve_credentials(self, domain: str) -> tuple:
+        """
+        Look up saved credentials for a domain from the credential vault.
+        Returns (username, password) or (None, None) if not found.
+        """
+        try:
+            creds = self.agenttrust.get_credentials(domain)
+            if creds:
+                return creds.get("username"), creds.get("password")
+        except Exception as e:
+            print(f"           Credential lookup error: {e}")
+        return None, None
+
+    def _validate_global_routine_once(self, steps: list) -> str:
+        """
+        One-time validation for a global routine the user doesn't own.
+        Checks all unique domains against the policy engine.
+        Returns None if OK, or an error string if blocked.
+        """
+        domains = set()
+        for s in steps:
+            d = s.get("domain", "")
+            u = s.get("url", "")
+            if d:
+                domains.add(d)
+            elif u:
+                try:
+                    from urllib.parse import urlparse
+                    domains.add(urlparse(u).hostname or "")
+                except Exception:
+                    pass
+        domains.discard("")
+
+        for domain in domains:
+            try:
+                result = self.agenttrust.execute_action(
+                    action_type="navigation",
+                    url=f"https://{domain}"
+                )
+                status = result.get("status", "")
+                if status == "denied":
+                    return f"Domain {domain} is blocked by your policy"
+                if status == "step_up_required":
+                    return f"Domain {domain} requires step-up approval — approve it first, then re-run"
+            except PermissionError as e:
+                return str(e)
+            except Exception:
+                pass
+        return None
+
+    def _exec_browser_navigate(self, url: str) -> dict:
+        """Navigate directly via browser controller, bypassing AgentTrust validation."""
+        if not self.browser:
+            return {"success": False, "message": "Browser not available"}
+        result = self.browser.navigate(url)
+        self._wait_page_ready(timeout=15)
+        actual = self.browser.get_current_url()
+        return {"success": True, "status": "allowed", "new_url": actual, **(result or {})}
+
+    def _exec_browser_click(self, target: dict) -> dict:
+        """Click directly via browser controller, bypassing AgentTrust validation."""
+        if not self.browser:
+            return {"success": False, "message": "Browser not available"}
+        self._wait_page_ready(timeout=10)
+        found = self._wait_for_target(target, timeout=10)
+        if not found:
+            time.sleep(0.5)
+            found = self._wait_for_target(target, timeout=5)
+        if not found:
+            print(f"           WARNING: Target element not found, attempting click anyway")
+        result = self.browser.click_element(target)
+        self._wait_page_ready(timeout=10)
+        return {"status": "allowed", **(result or {})}
+
+    def _exec_browser_form_submit(self, form_data: dict) -> dict:
+        """Submit form directly via browser controller, bypassing AgentTrust validation."""
+        if not self.browser:
+            return {"success": False, "message": "Browser not available"}
+        self._wait_page_ready(timeout=10)
+        result = self.browser.submit_form(form_data)
+        self._wait_page_ready(timeout=10)
+        return {"status": "allowed", **(result or {})}
+
+    def replay_routine(self, steps: list, routine_name: str = "routine",
+                       scope: str = "private", is_owner: bool = True) -> dict:
+        """
+        Deterministically replay a sequence of recorded browser actions
+        without involving ChatGPT.
+
+        Trust model:
+        - Private routines (or global routines run by their owner):
+          Actions are TRUSTED and execute directly on the browser without
+          AgentTrust policy checks. The user already approved these actions
+          when they recorded/saved the routine.
+        - Global routines run by a non-owner:
+          A single upfront validation checks all domains against the user's
+          policy. If all pass, the rest executes in trusted mode. This means
+          the user only validates once, not per-step.
+
+        Key behaviors:
+        - Waits for document.readyState === 'complete' after every navigation
+        - Waits for target elements to appear before clicking
+        - Resolves credentials from the vault for auto_login steps
+        - Retries element-finding once on failure after a short delay
+        """
+        results = []
+        total = len(steps)
+        trusted = (scope == "private") or is_owner
+
+        print(f"\n{'='*50}")
+        print(f"  ROUTINE: {routine_name} ({total} steps)")
+        print(f"  Mode: {'TRUSTED (skip validation)' if trusted else 'VALIDATED (one-time check)'}")
+        print(f"{'='*50}")
+
+        if not trusted:
+            print("  Validating routine domains...")
+            err = self._validate_global_routine_once(steps)
+            if err:
+                print(f"  BLOCKED: {err}")
+                return {
+                    "success": False, "routine": routine_name,
+                    "steps_total": total, "steps_completed": 0,
+                    "results": [{"step": 0, "status": "denied", "error": err}]
+                }
+            print("  All domains OK — proceeding in trusted mode")
+            trusted = True
+
+        for i, step in enumerate(steps, 1):
+            action_type = step.get("actionType", step.get("type", ""))
+            url = step.get("url", "")
+            domain = step.get("domain", "")
+            target = step.get("target")
+            form_data = step.get("formData")
+            label = step.get("label", f"Step {i}")
+
+            print(f"  [{i}/{total}] {label}")
+
+            try:
+                if action_type == "navigation":
+                    nav_url = url or (f"https://{domain}" if domain else "")
+                    if not nav_url:
+                        results.append({"step": i, "status": "skipped", "reason": "no url"})
+                        continue
+                    if trusted:
+                        result = self._exec_browser_navigate(nav_url)
+                    else:
+                        result = self.execute_navigation(url=nav_url)
+                        self._wait_page_ready(timeout=15)
+                    print(f"           Page loaded: {self.browser.get_current_url() if self.browser else nav_url}")
+
+                elif action_type == "click":
+                    if not target:
+                        results.append({"step": i, "status": "skipped", "reason": "no target"})
+                        continue
+                    if trusted:
+                        result = self._exec_browser_click(target)
+                    else:
+                        self._wait_page_ready(timeout=10)
+                        click_url = url or (self.browser.get_current_url() if self.browser else "")
+                        found = self._wait_for_target(target, timeout=10)
+                        if not found:
+                            time.sleep(0.5)
+                            found = self._wait_for_target(target, timeout=5)
+                        if not found:
+                            print(f"           WARNING: Target element not found, attempting click anyway")
+                        result = self.execute_click(url=click_url, target=target)
+                        self._wait_page_ready(timeout=10)
+
+                elif action_type == "form_submit":
+                    if not form_data:
+                        results.append({"step": i, "status": "skipped", "reason": "no form_data"})
+                        continue
+                    if trusted:
+                        result = self._exec_browser_form_submit(form_data)
+                    else:
+                        form_url = url or (self.browser.get_current_url() if self.browser else "")
+                        self._wait_page_ready(timeout=10)
+                        result = self.execute_form_submit(url=form_url, form_data=form_data)
+                        self._wait_page_ready(timeout=10)
+
+                elif action_type == "auto_login":
+                    self._wait_page_ready(timeout=10)
+                    login_url = url or (self.browser.get_current_url() if self.browser else "")
+                    username = (form_data or {}).get("username", "")
+                    password = (form_data or {}).get("password", "")
+                    if not username or not password:
+                        lookup_domain = domain or ""
+                        if not lookup_domain and login_url:
+                            try:
+                                from urllib.parse import urlparse
+                                lookup_domain = urlparse(login_url).hostname or ""
+                            except Exception:
+                                pass
+                        if lookup_domain:
+                            print(f"           Looking up credentials for {lookup_domain}...")
+                            username, password = self._resolve_credentials(lookup_domain)
+                    if username and password:
+                        print(f"           Logging in as {username}")
+                        result = self.auto_login(url=login_url, username=username, password=password)
+                        self._wait_page_ready(timeout=15)
+                    else:
+                        print(f"           No credentials available for {domain or login_url}")
+                        results.append({"step": i, "status": "skipped",
+                                        "reason": f"No credentials found for {domain or login_url}"})
+                        continue
+                else:
+                    results.append({"step": i, "status": "skipped", "reason": f"unknown type: {action_type}"})
+                    continue
+
+                status = result.get("status", "allowed")
+                success_flag = result.get("success", True) if "success" in result else True
+                ok = status in ("allowed", "success") and success_flag is not False
+                results.append({"step": i, "label": label, "status": status, "success": ok})
+                symbol = "OK" if ok else "FAIL"
+                print(f"           -> {symbol} ({status})")
+
+                if not ok and status in ("denied", "step_up_required"):
+                    print(f"           Routine halted: {result.get('message', status)}")
+                    break
+
+                if not ok:
+                    err_msg = result.get("message", "")
+                    br = result.get("browser_result", {})
+                    br_msg = br.get("message", "") if isinstance(br, dict) else ""
+                    print(f"           Issue: {err_msg or br_msg or 'check browser'}")
+
+                time.sleep(0.3)
+
+            except PermissionError as e:
+                print(f"           -> DENIED: {e}")
+                results.append({"step": i, "label": label, "status": "denied", "error": str(e)})
+                break
+            except Exception as e:
+                print(f"           -> ERROR: {e}")
+                results.append({"step": i, "label": label, "status": "error", "error": str(e)})
+
+        completed = sum(1 for r in results if r.get("success"))
+        print(f"\n  Routine finished: {completed}/{total} steps completed")
+        print(f"{'='*50}\n")
+
+        return {
+            "success": completed == total,
+            "routine": routine_name,
+            "steps_total": total,
+            "steps_completed": completed,
+            "results": results
+        }
+
 
 class ChatGPTAgentWithAgentTrust:
     """
@@ -1608,6 +2490,13 @@ class ChatGPTAgentWithAgentTrust:
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
     
     # ------------------------------------------------------------------ #
+    # Rate-limit-aware API call wrapper
+    # ------------------------------------------------------------------ #
+    def _chat_completion(self, **kwargs):
+        """Call OpenAI chat completions."""
+        return self.openai.chat.completions.create(**kwargs)
+
+    # ------------------------------------------------------------------ #
     # Tool definitions (built once, reused every turn)
     # ------------------------------------------------------------------ #
     def _build_tools(self) -> list:
@@ -1684,6 +2573,31 @@ class ChatGPTAgentWithAgentTrust:
                     "timeout": {"type": "integer", "description": "Max seconds (default 10)"}
                 }}
             }},
+            {"type": "function", "function": {
+                "name": "get_saved_credentials",
+                "description": "Look up saved login credentials for a domain. Call this BEFORE asking the user for login credentials. If credentials exist, use them with auto_login.",
+                "parameters": {"type": "object", "properties": {
+                    "domain": {"type": "string", "description": "Domain to look up (e.g. github.com, amazon.com)"}
+                }, "required": ["domain"]}
+            }},
+            {"type": "function", "function": {
+                "name": "auto_login",
+                "description": "Perform a complete login flow on the CURRENT page. IMPORTANT: Navigate to the website's login/sign-in page FIRST before calling this. Handles multi-step login forms (Google, Microsoft, Amazon) that show a continue/next button between username and password. Dismisses QR-code popups and overlays automatically. Use after get_saved_credentials or after the user provides credentials.",
+                "parameters": {"type": "object", "properties": {
+                    "username": {"type": "string", "description": "Username or email to enter"},
+                    "password": {"type": "string", "description": "Password to enter"}
+                }, "required": ["username", "password"]}
+            }},
+            {"type": "function", "function": {
+                "name": "call_external_api",
+                "description": "Call an external provider API (GitHub, Google, Slack, etc.) using Token Vault. Prefer this over browser automation for supported providers when performing API-level tasks like creating issues, reading repos, sending messages.",
+                "parameters": {"type": "object", "properties": {
+                    "provider": {"type": "string", "description": "Provider name: github, google, slack, microsoft"},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "description": "HTTP method"},
+                    "endpoint": {"type": "string", "description": "Full API URL (e.g. https://api.github.com/user/repos)"},
+                    "body": {"type": "object", "description": "Request body for POST/PUT/PATCH (optional)"}
+                }, "required": ["provider", "method", "endpoint"]}
+            }},
         ])
         return tools
     
@@ -1728,14 +2642,37 @@ WORKFLOW for every request:
 
 RULES:
 - ALWAYS start by using tools. Never skip straight to a text answer.
-- If a page requires login credentials you don't have, navigate to the
-  login page, then ASK the user for their credentials so you can type
-  them in. Do NOT give up.
+- NEVER guess deep URLs (e.g. /ap/signin, /login/oauth). Always navigate
+  to the site's HOMEPAGE first (e.g. https://www.amazon.com), then find
+  and click the sign-in link on the page. Deep login URLs often fail.
+- If a navigation returns a page_error in the response, the page failed
+  to load (404, connection error, etc.). Do NOT keep retrying the same
+  URL. Go to the homepage and find the correct link instead.
+- If a page requires login:
+  1. Navigate to the site's homepage first.
+  2. Find and click the sign-in / login link on the page.
+  3. Call get_saved_credentials with the domain.
+  4. If credentials found, call auto_login (it handles multi-step forms,
+     QR-code popups, and continue/next buttons automatically).
+  5. Only ASK the user if no saved credentials exist.
+  6. If the user gives credentials, navigate to the login page then auto_login.
+- For tasks on GitHub, Google, Slack, or Microsoft services, prefer
+  call_external_api over browser automation when possible (faster and
+  more reliable). Use browser automation as fallback.
 - If AgentTrust blocks an action (denied / step-up required), explain
   the policy decision and ask the user how they'd like to proceed.
 - If the same action fails 3 times, STOP and tell the user what is
   happening.
-- Keep text replies short and action-oriented."""
+- Keep text replies short and action-oriented.
+
+ROUTINES:
+- Users can save reusable sequences of browser actions as "routines" and
+  replay them deterministically without involving you (ChatGPT).
+- Routines are triggered via /run commands from the browser extension or
+  the Routines tab. When a routine runs, the agent executes each recorded
+  step directly — you will NOT be called for those steps.
+- After a routine finishes, the user may send follow-up messages to you
+  from the state the routine left the browser in. Continue normally."""
         
         messages = [
             {"role": "system", "content": system_prompt}
@@ -1753,7 +2690,7 @@ RULES:
         # use "auto" so it can finish with a text summary.
         first_call = True
         
-        response = self.openai.chat.completions.create(
+        response = self._chat_completion(
             model=self.model,
             messages=messages,
             tools=tools,
@@ -1800,7 +2737,7 @@ RULES:
                     "content": json.dumps(result, default=str)
                 })
             
-            response = self.openai.chat.completions.create(
+            response = self._chat_completion(
                 model=self.model,
                 messages=messages,
                 tools=tools,
@@ -1820,6 +2757,11 @@ RULES:
         
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": response_text})
+
+        # Keep conversation history bounded to avoid exceeding token limits
+        MAX_HISTORY_TURNS = 10  # 10 user+assistant pairs = 20 messages
+        if len(self.conversation_history) > MAX_HISTORY_TURNS * 2:
+            self.conversation_history = self.conversation_history[-(MAX_HISTORY_TURNS * 2):]
         
         return response_text
     
@@ -1907,6 +2849,56 @@ RULES:
                 print(f"⏳ Element appeared")
             return result
         
+        elif function_name == "get_saved_credentials":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            domain = args.get("domain", "")
+            creds = self.agenttrust.get_credentials(domain)
+            if creds:
+                print(f"🔑 Found saved credentials for {domain}")
+                return {"found": True, "domain": domain, "username": creds["username"], "password": creds["password"],
+                        "hint": "Use auto_login tool to fill in the login form. It handles multi-step forms automatically."}
+            else:
+                print(f"🔑 No saved credentials for {domain}")
+                return {"found": False, "domain": domain, "message": "No saved credentials. Ask the user for login details."}
+
+        elif function_name == "auto_login":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            username = args.get("username", "")
+            password = args.get("password", "")
+            if not username or not password:
+                return {"success": False, "message": "Both username and password are required"}
+            current_url = self.browser_executor.browser.get_current_url() if self.browser_executor.browser else ""
+            # Guard: don't attempt login on non-login pages
+            if current_url and ("localhost" in current_url or "about:blank" in current_url
+                                or "/health" in current_url or "chrome://" in current_url):
+                return {
+                    "success": False,
+                    "message": f"Current page ({current_url}) is not a login page. "
+                               "Navigate to the website's login page FIRST, then call auto_login."
+                }
+            print(f"🔐 Auto-login on {current_url}")
+            result = self.browser_executor.auto_login(url=current_url, username=username, password=password)
+            if result.get("success"):
+                print(f"   ✅ Login completed: {', '.join(result.get('steps_completed', []))}")
+            else:
+                print(f"   ⚠️  Login issue: {result.get('message', 'unknown')}")
+            return result
+
+        elif function_name == "call_external_api":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.agenttrust.call_external_api(
+                provider=args.get("provider", ""),
+                method=args.get("method", "GET"),
+                endpoint=args.get("endpoint", ""),
+                body=args.get("body")
+            )
+            provider = args.get("provider", "unknown")
+            if result.get("success"):
+                print(f"🌐 External API call to {provider} succeeded")
+            else:
+                print(f"⚠️  External API call to {provider}: {result.get('error', 'unknown error')}")
+            return result
+
         # Handle browser action function (requires AgentTrust validation)
         elif function_name == "agenttrust_browser_action":
             return self.handle_agenttrust_function(function_call)
@@ -2002,17 +2994,20 @@ RULES:
                 }
         
         except Exception as e:
-            print(f"   ❌ AgentTrust validation error: {e}")
+            error_msg = str(e)
+            print(f"   ❌ AgentTrust error: {error_msg}")
             self.actions_blocked.append({
                 "type": action_type, "url": url,
-                "reason": str(e)
+                "reason": error_msg
             })
             self.browser_executor._notify_extension(
                 action_type, url, "error",
                 target=target, form_data=form_data)
             return {
                 "status": "error",
-                "message": f"AgentTrust validation failed: {str(e)}"
+                "message": f"Action failed: {error_msg}. "
+                           "This may be a temporary backend/auth issue. "
+                           "Try the action again, or try a different approach."
             }
     
     def print_summary(self):
@@ -2114,8 +3109,22 @@ def main():
             # No terminal input — long-poll the backend for browser commands
             cmd = agent.agenttrust.poll_command(timeout=5)
             if cmd:
-                print(f"\n📨 Browser command: {cmd['content']}")
-                agent.chat(cmd["content"])
+                if cmd.get("type") == "run_routine":
+                    routine_name = cmd.get("routineName", "routine")
+                    steps = cmd.get("steps", [])
+                    scope = cmd.get("scope", "private")
+                    is_owner = cmd.get("isOwner", True)
+                    print(f"\n📨 Routine command: {routine_name} ({len(steps)} steps, {scope})")
+                    result = agent.browser_executor.replay_routine(
+                        steps, routine_name, scope=scope, is_owner=is_owner)
+                    if result.get("success"):
+                        print(f"Routine '{routine_name}' completed successfully")
+                    else:
+                        print(f"Routine '{routine_name}' finished with issues: "
+                              f"{result.get('steps_completed')}/{result.get('steps_total')} steps")
+                else:
+                    print(f"\n📨 Browser command: {cmd['content']}")
+                    agent.chat(cmd["content"])
 
     except KeyboardInterrupt:
         stop_event.set()

@@ -103,6 +103,7 @@
     <nav class="tab-bar">
       <button class="tab active" data-tab="monitor">Monitor</button>
       <button class="tab" data-tab="chat">Chat</button>
+      <button class="tab" data-tab="routines">Routines</button>
       <button class="tab" data-tab="permissions">Permissions <span id="approvalDot" class="approval-dot" hidden></span></button>
     </nav>
 
@@ -167,15 +168,91 @@
         <div class="state-empty">No active session. Start the agent to begin chatting.</div>
       </div>
       <form id="chatForm" class="chat-input-bar">
-        <input type="text" id="chatInput" class="chat-input" placeholder="Send a command to the agent&hellip;" autocomplete="off">
+        <input type="text" id="chatInput" class="chat-input" placeholder="Message agent or /run routine name&hellip;" autocomplete="off">
         <button type="submit" class="chat-send-btn" id="chatSendBtn" title="Send">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
       </form>
     </div>
 
+    <!-- ─── Routines panel ─── -->
+    <div id="routinesPanel" class="routines-panel" hidden>
+      <!-- List / Run view (default) -->
+      <div id="routinesListView">
+        <div class="routines-toolbar">
+          <input type="text" id="routineSearch" class="chip-input" placeholder="Search routines&hellip;" style="flex:1">
+          <button type="button" class="btn btn-sm btn-add" id="newRoutineBtn">+ New</button>
+        </div>
+        <div id="routinesList" class="routines-list">
+          <div class="state-empty" style="padding:24px">No routines yet. Create one from a past session.</div>
+        </div>
+      </div>
+
+      <!-- Create / Edit view -->
+      <div id="routinesEditView" hidden>
+        <div class="routines-edit-header">
+          <button type="button" class="btn-ghost" id="routineBackBtn">&larr; Back</button>
+          <span class="routines-edit-title" id="routineEditTitle">New Routine</span>
+        </div>
+
+        <div class="perm-section" style="border-bottom:none;margin-bottom:8px;padding-bottom:8px">
+          <label class="field-label">Name</label>
+          <input type="text" id="routineName" class="chip-input" placeholder="e.g. Amazon Login" style="width:100%;margin-bottom:6px">
+          <label class="field-label">Description</label>
+          <input type="text" id="routineDesc" class="chip-input" placeholder="Optional description" style="width:100%;margin-bottom:6px">
+          <label class="field-label">Scope</label>
+          <select id="routineScope" class="toolbar-select" style="margin-bottom:6px">
+            <option value="private">Private</option>
+            <option value="global">Global</option>
+          </select>
+        </div>
+
+        <!-- Session picker (for from-session creation) -->
+        <div class="perm-section" id="sessionPickerSection">
+          <h3 class="perm-heading">Import from Session</h3>
+          <p class="perm-hint">Select a session and pick the actions to include.</p>
+          <select id="sessionPicker" class="toolbar-select" style="width:100%;margin-bottom:8px">
+            <option value="">-- Select session --</option>
+          </select>
+          <div id="sessionActionsList" class="session-actions-picker"></div>
+        </div>
+
+        <!-- Steps editor -->
+        <div class="perm-section" style="border-bottom:none">
+          <h3 class="perm-heading">Steps <span id="routineStepCount" class="meta-pill" style="margin-left:6px">0</span></h3>
+          <div id="routineSteps" class="routine-steps-list"></div>
+        </div>
+
+        <div class="routines-edit-actions">
+          <button type="button" class="btn btn-primary" id="saveRoutineBtn">Save Routine</button>
+          <button type="button" class="btn btn-ghost" id="deleteRoutineBtn" style="color:var(--c-danger)" hidden>Delete</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ─── Permissions panel ─── -->
     <div id="permissionsPanel" class="permissions-panel" hidden>
+
+      <!-- Saved Logins (Credential Vault) -->
+      <div class="perm-section">
+        <h3 class="perm-heading">Saved Logins</h3>
+        <p class="perm-hint">Stored credentials the agent uses to auto-fill login forms.</p>
+        <div id="credentialsList" class="credentials-list"></div>
+        <div class="cred-add-form" id="credAddForm">
+          <input type="text" id="credDomainInput" class="chip-input" placeholder="Domain (e.g. amazon.com)">
+          <input type="text" id="credUsernameInput" class="chip-input" placeholder="Username / Email">
+          <input type="password" id="credPasswordInput" class="chip-input" placeholder="Password">
+          <button type="button" class="btn btn-sm btn-add" id="addCredentialBtn">Save Login</button>
+        </div>
+      </div>
+
+      <!-- Connected Accounts (Token Vault) -->
+      <div class="perm-section">
+        <h3 class="perm-heading">Connected Accounts</h3>
+        <p class="perm-hint">OAuth providers for direct API access (no browser needed).</p>
+        <div id="connectionsList" class="connections-list"></div>
+      </div>
+
       <div class="perm-section">
         <h3 class="perm-heading">Blocked Domains</h3>
         <p class="perm-hint">Actions on these domains will always be denied.</p>
