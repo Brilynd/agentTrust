@@ -6,6 +6,18 @@ const router = express.Router();
 const { validateAction } = require('../middleware/auth');
 const { enforcePolicy } = require('../middleware/policy');
 
+function sanitizeFormData(fd) {
+  if (!fd || typeof fd !== 'object') return fd;
+  const out = { ...fd };
+  if (out.fields && typeof out.fields === 'object') {
+    const safe = { ...out.fields };
+    if (safe.password) safe.password = '***';
+    if (safe.username) safe.username = safe.username.substring(0, 3) + '***';
+    out.fields = safe;
+  }
+  return out;
+}
+
 // Log an action
 // NOTE: The enforcePolicy middleware already logs the action to the database
 // (for both allowed and denied actions). We reuse that logged action here
@@ -79,7 +91,6 @@ router.get('/user', require('../middleware/auth').authenticateUser, async (req, 
     
     const actions = await Action.findAll(filters);
     
-    // Convert to API format
     const formattedActions = actions.map(action => ({
       id: action.id,
       agentId: action.agentId,
@@ -92,7 +103,7 @@ router.get('/user', require('../middleware/auth').authenticateUser, async (req, 
       hash: action.hash,
       previousHash: action.previousHash,
       target: action.target,
-      formData: action.formData,
+      formData: sanitizeFormData(action.formData),
       scopes: action.scopes,
       stepUpRequired: action.stepUpRequired,
       reason: action.reason,
@@ -144,7 +155,6 @@ router.get('/', validateAction, async (req, res) => {
     
     const actions = await Action.findAll(filters);
     
-    // Convert to API format
     const formattedActions = actions.map(action => ({
       id: action.id,
       agentId: action.agentId,
@@ -157,7 +167,7 @@ router.get('/', validateAction, async (req, res) => {
       hash: action.hash,
       previousHash: action.previousHash,
       target: action.target,
-      formData: action.formData,
+      formData: sanitizeFormData(action.formData),
       scopes: action.scopes,
       stepUpRequired: action.stepUpRequired,
       reason: action.reason,

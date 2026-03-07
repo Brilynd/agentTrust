@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { authenticateUser, validateAction } = require('../middleware/auth');
 const pool = require('../config/database');
+const { encryptJSON, decryptJSON } = require('../utils/crypto');
 
 let _tableChecked = false;
 async function ensureTable() {
@@ -165,8 +166,8 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
       return res.status(400).json({ success: false, error: 'name is required' });
     }
 
-    // Fetch actions for the session
-    let query = `SELECT id, type, url, domain, target, form_data, status
+    // Fetch actions for the session (include form_data_iv for decryption)
+    let query = `SELECT id, type, url, domain, target, form_data, form_data_iv, status
                  FROM actions WHERE session_id = $1 AND status IN ('allowed', 'approved_override')
                  ORDER BY timestamp ASC`;
     const result = await pool.query(query, [sessionId]);
@@ -177,13 +178,25 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
 
     let actions = result.rows;
 
-    // Cherry-pick if selectedActionIds provided
     if (selectedActionIds && Array.isArray(selectedActionIds) && selectedActionIds.length > 0) {
       const idSet = new Set(selectedActionIds);
       actions = actions.filter(a => idSet.has(a.id));
     }
 
-    function labelForAction(a) {
+    function decryptFormData(row) {
+      if (!row.form_data) return null;
+      if (row.form_data_iv) {
+        const plain = typeof row.form_data === 'string' ? row.form_data : JSON.stringify(row.form_data);
+        return decryptJSON(plain, row.form_data_iv);
+      }
+      // Legacy unencrypted row
+      if (typeof row.form_data === 'string') {
+        try { return JSON.parse(row.form_data); } catch { return row.form_data; }
+      }
+      return row.form_data;
+    }
+
+    function labelForAction(a, formData) {
       const domain = a.domain || '';
       switch (a.type) {
         case 'navigation': return `Navigate to ${domain}`;
@@ -192,14 +205,26 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
           const text = target?.text || target?.id || 'element';
           return `Click "${text}" on ${domain}`;
         }
-        case 'form_submit': return `Submit form on ${domain}`;
+        case 'form_submit': {
+          if (formData && formData.action === 'auto_login') return `Login on ${domain}`;
+          return `Submit form on ${domain}`;
+        }
         default: return `${a.type} on ${domain}`;
       }
     }
 
     const steps = actions.map((a, i) => {
       const target = typeof a.target === 'string' ? JSON.parse(a.target) : a.target;
-      const formData = typeof a.form_data === 'string' ? JSON.parse(a.form_data) : a.form_data;
+      const formData = decryptFormData(a);
+
+      // Re-encrypt form data for storage inside the routine steps JSONB
+      // so credentials are never stored in plaintext in routines table
+      let encFormData = null;
+      if (formData != null) {
+        const { encrypted, iv } = encryptJSON(formData);
+        encFormData = { _enc: encrypted, _iv: iv };
+      }
+
       return {
         order: i + 1,
         type: 'action',
@@ -207,8 +232,8 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
         url: a.url,
         domain: a.domain,
         target: target || null,
-        formData: formData || null,
-        label: labelForAction(a)
+        formData: encFormData,
+        label: labelForAction(a, formData)
       };
     });
 
@@ -249,7 +274,15 @@ router.post('/:id/execute', authenticateUser, async (req, res) => {
     }
 
     const routine = result.rows[0];
-    const steps = typeof routine.steps === 'string' ? JSON.parse(routine.steps) : routine.steps;
+    const rawSteps = typeof routine.steps === 'string' ? JSON.parse(routine.steps) : routine.steps;
+
+    // Decrypt any encrypted formData in steps before sending to the agent
+    const steps = rawSteps.map(step => {
+      if (step.formData && step.formData._enc && step.formData._iv) {
+        return { ...step, formData: decryptJSON(step.formData._enc, step.formData._iv) };
+      }
+      return step;
+    });
 
     // Push a special run_routine command to the agent command queue
     const commandsRoute = require('./commands');

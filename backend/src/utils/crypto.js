@@ -1,7 +1,46 @@
 // Cryptographic Utilities
-// Handles cryptographic hashing for action chain
+// Handles hashing for audit chain + AES-256-GCM encryption for sensitive fields
 
 const crypto = require('crypto');
+
+const AES_ALGORITHM = 'aes-256-gcm';
+
+function _getEncryptionKey() {
+  const hex = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  if (hex && hex.length >= 64) {
+    return Buffer.from(hex, 'hex');
+  }
+  const secret = process.env.JWT_SECRET || 'agenttrust-default-credential-key';
+  return crypto.createHash('sha256').update(secret).digest();
+}
+
+function encryptJSON(obj) {
+  if (obj == null) return { encrypted: null, iv: null };
+  const key = _getEncryptionKey();
+  const plaintext = typeof obj === 'string' ? obj : JSON.stringify(obj);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(AES_ALGORITHM, key, iv);
+  let enc = cipher.update(plaintext, 'utf8', 'hex');
+  enc += cipher.final('hex');
+  const tag = cipher.getAuthTag().toString('hex');
+  return { encrypted: enc + ':' + tag, iv: iv.toString('hex') };
+}
+
+function decryptJSON(encryptedStr, ivHex) {
+  if (!encryptedStr || !ivHex) return null;
+  try {
+    const key = _getEncryptionKey();
+    const [enc, tag] = encryptedStr.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const decipher = crypto.createDecipheriv(AES_ALGORITHM, key, iv);
+    decipher.setAuthTag(Buffer.from(tag, 'hex'));
+    let dec = decipher.update(enc, 'hex', 'utf8');
+    dec += decipher.final('utf8');
+    try { return JSON.parse(dec); } catch { return dec; }
+  } catch {
+    return null;
+  }
+}
 
 function createHash(previousHash, actionData) {
   const payload = JSON.stringify({
@@ -41,5 +80,8 @@ function verifyChain(chain) {
 
 module.exports = {
   createHash,
-  verifyChain
+  verifyChain,
+  encryptJSON,
+  decryptJSON,
+  _getEncryptionKey
 };

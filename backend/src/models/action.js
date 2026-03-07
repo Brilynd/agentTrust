@@ -1,7 +1,22 @@
 // Action Model
 // Database model for action logs
+// form_data is encrypted at rest with AES-256-GCM
 
 const pool = require('../config/database');
+const { encryptJSON, decryptJSON } = require('../utils/crypto');
+
+let _ivColumnChecked = false;
+async function ensureFormDataIvColumn() {
+  if (_ivColumnChecked) return;
+  try {
+    await pool.query(`
+      ALTER TABLE actions ADD COLUMN IF NOT EXISTS form_data_iv VARCHAR(64)
+    `);
+    _ivColumnChecked = true;
+  } catch {
+    _ivColumnChecked = true;
+  }
+}
 
 class Action {
   constructor(data) {
@@ -16,17 +31,35 @@ class Action {
     this.hash = data.hash;
     this.previousHash = data.previous_hash || data.previousHash;
     this.target = data.target;
-    this.formData = data.form_data || data.form;
     this.scopes = data.scopes;
     this.stepUpRequired = data.step_up_required || data.stepUpRequired;
     this.reason = data.reason;
-    this.status = data.status || 'allowed'; // 'allowed', 'denied', or 'step_up_required'
+    this.status = data.status || 'allowed';
     this.screenshot = data.screenshot;
     this.promptId = data.prompt_id || data.promptId;
     this.createdAt = data.created_at;
+
+    // Decrypt form_data if it was stored with an IV (encrypted)
+    const rawFormData = data.form_data || data.formData || data.form;
+    const iv = data.form_data_iv || data.formDataIv;
+    if (rawFormData && iv) {
+      const plain = typeof rawFormData === 'string' ? rawFormData : JSON.stringify(rawFormData);
+      this.formData = decryptJSON(plain, iv);
+    } else if (rawFormData) {
+      // Legacy unencrypted rows — parse as-is
+      if (typeof rawFormData === 'string') {
+        try { this.formData = JSON.parse(rawFormData); } catch { this.formData = rawFormData; }
+      } else {
+        this.formData = rawFormData;
+      }
+    } else {
+      this.formData = null;
+    }
   }
   
   static async create(data) {
+    await ensureFormDataIvColumn();
+
     const {
       id,
       agentId,
@@ -47,13 +80,22 @@ class Action {
       screenshot,
       promptId
     } = data;
+
+    // Encrypt form_data before storing
+    let formDataStr = null;
+    let formDataIv = null;
+    if (formData != null) {
+      const { encrypted, iv } = encryptJSON(formData);
+      formDataStr = encrypted;
+      formDataIv = iv;
+    }
     
     const query = `
       INSERT INTO actions (
         id, agent_id, session_id, type, timestamp, domain, url, risk_level,
-        hash, previous_hash, target, form_data, scopes,
+        hash, previous_hash, target, form_data, form_data_iv, scopes,
         step_up_required, reason, status, screenshot, prompt_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
       RETURNING *
     `;
     
@@ -69,7 +111,8 @@ class Action {
       hash,
       previousHash || null,
       target ? JSON.stringify(target) : null,
-      formData ? JSON.stringify(formData) : null,
+      formDataStr,
+      formDataIv,
       scopes || [],
       stepUpRequired || false,
       reason || null,
@@ -88,6 +131,7 @@ class Action {
   }
   
   static async findById(id) {
+    await ensureFormDataIvColumn();
     const query = 'SELECT * FROM actions WHERE id = $1';
     const result = await pool.query(query, [id]);
     
@@ -99,6 +143,7 @@ class Action {
   }
   
   static async findByAgent(agentId, filters = {}) {
+    await ensureFormDataIvColumn();
     let query = 'SELECT * FROM actions WHERE agent_id = $1';
     const values = [agentId];
     let paramIndex = 2;
@@ -127,7 +172,7 @@ class Action {
       paramIndex++;
     }
     
-    query += ' ORDER BY timestamp DESC';
+    query += ' ORDER BY timestamp ASC';
     
     if (filters.limit) {
       query += ` LIMIT $${paramIndex}`;
@@ -141,6 +186,7 @@ class Action {
   }
   
   static async findAll(filters = {}) {
+    await ensureFormDataIvColumn();
     let query = 'SELECT * FROM actions WHERE 1=1';
     const values = [];
     let paramIndex = 1;
@@ -187,7 +233,7 @@ class Action {
       paramIndex++;
     }
     
-    query += ' ORDER BY timestamp DESC';
+    query += ' ORDER BY timestamp ASC';
     
     if (filters.limit) {
       query += ` LIMIT $${paramIndex}`;

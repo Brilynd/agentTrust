@@ -638,7 +638,7 @@ AGENTTRUST_FUNCTION_DEFINITION = {
     "type": "function",
     "function": {
         "name": "agenttrust_browser_action",
-        "description": "MANDATORY: Execute a browser action (click, form submit, navigation) through AgentTrust's policy-enforced system. This is the ONLY way to perform browser actions - AgentTrust validation is enforced 100% of the time. Returns whether action is allowed, denied, or requires step-up authentication. You MUST call this function before performing ANY browser automation - there is no alternative or bypass.",
+        "description": "MANDATORY: Execute a browser action (click, form submit, navigation) through AgentTrust. Returns whether action is allowed, denied, or requires step-up auth. For clicks, provide as many target fields as possible (id, href, text, selector, aria_label). Use 'nth' (0-based) to pick which match when multiple elements share the same text (e.g. multiple 'Add to Cart' buttons — use nth=2 for the third one).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -653,12 +653,16 @@ AGENTTRUST_FUNCTION_DEFINITION = {
                 },
                 "target": {
                     "type": "object",
-                    "description": "Target element information (required for click actions)",
+                    "description": "Target element for click actions. Provide as many fields as possible.",
                     "properties": {
-                        "tagName": {"type": "string", "description": "HTML tag name"},
-                        "id": {"type": "string", "description": "Element ID"},
+                        "tagName": {"type": "string", "description": "HTML tag name (a, button, input, etc.)"},
+                        "id": {"type": "string", "description": "Element ID attribute"},
                         "className": {"type": "string", "description": "CSS class name"},
-                        "text": {"type": "string", "description": "Element text content"}
+                        "text": {"type": "string", "description": "Visible text content of the element"},
+                        "href": {"type": "string", "description": "Link href (for <a> elements)"},
+                        "selector": {"type": "string", "description": "CSS selector to uniquely identify the element"},
+                        "aria_label": {"type": "string", "description": "aria-label attribute"},
+                        "nth": {"type": "integer", "description": "0-based index when multiple elements match the same text (e.g. nth=2 for the 3rd 'Add to Cart')"}
                     }
                 },
                 "form_data": {

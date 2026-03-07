@@ -511,6 +511,14 @@ class BrowserController:
     
     def navigate(self, url: str):
         """Navigate to URL — validation already done by BrowserActionExecutor."""
+        # Resolve relative paths (e.g. /ap/signin) against current origin
+        if url and not url.startswith(("http://", "https://", "about:", "data:", "file:")):
+            try:
+                from urllib.parse import urljoin
+                base = self._actual_driver.current_url
+                url = urljoin(base, url)
+            except Exception:
+                pass
         self._actual_driver.get(url)
         self.current_url = self._actual_driver.current_url
         return {"success": True, "url": self.current_url}
@@ -526,165 +534,107 @@ class BrowserController:
     
     def get_page_content(self, include_html: bool = False) -> Dict[str, Any]:
         """
-        Get page content - text and optionally HTML
-        
-        Returns:
-            dict with text content, title, url, and optionally html
+        Get page content — compact text focused on the main content area.
         """
         drv = self._actual_driver
+
+        # Try to extract just the main content area, fall back to body
+        main_text = drv.execute_script("""
+            const main = document.querySelector('main, [role="main"], #content, #main, .main-content, #search, #center-col');
+            if (main) return main.innerText.substring(0, 4000);
+            return document.body.innerText.substring(0, 4000);
+        """) or ""
+
         content = {
             "url": drv.current_url,
             "title": drv.title,
-            "text": drv.find_element(By.TAG_NAME, "body").text[:5000]
+            "text": main_text
         }
         
         if include_html:
-            content["html"] = drv.page_source[:10000]
+            content["html"] = drv.page_source[:6000]
         
         return content
     
     def get_visible_elements(self, element_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Get visible interactive elements on the page with rich metadata.
+        Get visible interactive elements on the page using a single JS call.
         
-        Returns indexed elements with aria-labels, roles, and other useful
-        attributes so the LLM can pick the right element on the first try.
-        Stale-element-safe: individual element failures are skipped.
+        Prioritises elements in/near the viewport so product links and buttons
+        on content-heavy pages (e.g. Amazon search results) are returned before
+        distant header/footer chrome.
         """
-        elements = []
-        idx = 0
+        drv = self._actual_driver
 
-        def _attr(el, name):
-            try:
-                return (el.get_attribute(name) or "").strip()
-            except Exception:
-                return ""
+        # One JS call: collect all interactive elements, check visibility and
+        # viewport proximity, and return structured data.  Much faster than
+        # dozens of Selenium find_elements + get_attribute round-trips.
+        # Compact JS: collect viewport-priority elements, return minimal data.
+        # Only text, id, and short href are sent — keeps token usage low.
+        js = """
+        const F = arguments[0];
+        const MAX = 40;
+        const vh = window.innerHeight;
+        const buf = vh;
 
-        def _visible(el):
-            try:
-                return el.is_displayed()
-            except Exception:
-                return False
+        const all = document.querySelectorAll(
+            'a,button,input,select,[role="button"],input[type="submit"]');
+        const out = [];
+
+        for (let i = 0; i < all.length && out.length < MAX * 3; i++) {
+            const el = all[i];
+            const r = el.getBoundingClientRect();
+            if (!r.width && !r.height) continue;
+            if (el.offsetParent === null && el.tagName !== 'BODY') continue;
+
+            const tag = el.tagName.toLowerCase();
+            let t;
+            if (tag === 'a') t = 'link';
+            else if (tag === 'button') t = 'btn';
+            else if (tag === 'input') {
+                const it = (el.type||'').toLowerCase();
+                t = (it==='submit'||it==='button') ? 'btn' : 'in';
+            } else t = 'btn';
+            if (F && t !== F && !(F==='button'&&t==='btn') && !(F==='input'&&t==='in')) continue;
+
+            const txt = (el.innerText||el.textContent||'').trim().substring(0,60);
+            // Skip elements with no useful text and no id
+            if (!txt && !el.id && !el.name && !el.placeholder) continue;
+
+            const near = (r.top < vh + buf && r.bottom > -buf) ? 1 : 0;
+            // For links, keep only the pathname to save tokens
+            let hp = '';
+            if (tag === 'a' && el.href) {
+                try { hp = new URL(el.href).pathname.substring(0,80); } catch(e) { hp = el.href.substring(0,80); }
+            }
+
+            out.push({t,txt,id:el.id||'',nm:el.name||'',hp,
+                al:el.getAttribute('aria-label')||'',
+                ph:el.placeholder||'',
+                v:(el.value||'').substring(0,30),
+                n:near,y:Math.round(r.top)});
+        }
+        out.sort((a,b) => a.n!==b.n ? b.n-a.n : a.y-b.y);
+        return out.slice(0, MAX);
+        """
 
         try:
-            drv = self._actual_driver
-            if not element_type or element_type == 'button':
-                try:
-                    buttons = drv.find_elements(By.TAG_NAME, "button")
-                    for btn in buttons[:30]:
-                        try:
-                            if _visible(btn):
-                                elements.append({
-                                    "index": idx, "type": "button",
-                                    "text": (btn.text or "")[:120].strip(),
-                                    "id": _attr(btn, "id"), "class": _attr(btn, "class"),
-                                    "aria_label": _attr(btn, "aria-label"),
-                                    "role": _attr(btn, "role"),
-                                    "data_testid": _attr(btn, "data-testid"),
-                                })
-                                idx += 1
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-            
-            if not element_type or element_type == 'link':
-                try:
-                    links = drv.find_elements(By.TAG_NAME, "a")
-                    for link in links[:30]:
-                        try:
-                            if _visible(link):
-                                elements.append({
-                                    "index": idx, "type": "link",
-                                    "text": (link.text or "")[:120].strip(),
-                                    "href": _attr(link, "href"), "id": _attr(link, "id"),
-                                    "aria_label": _attr(link, "aria-label"),
-                                })
-                                idx += 1
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-            
-            if not element_type or element_type == 'input':
-                try:
-                    inputs = drv.find_elements(By.TAG_NAME, "input")
-                    for inp in inputs[:20]:
-                        try:
-                            if _visible(inp):
-                                elements.append({
-                                    "index": idx, "type": "input",
-                                    "input_type": _attr(inp, "type"),
-                                    "name": _attr(inp, "name"), "id": _attr(inp, "id"),
-                                    "placeholder": _attr(inp, "placeholder"),
-                                    "aria_label": _attr(inp, "aria-label"),
-                                    "value": _attr(inp, "value")[:60],
-                                })
-                                idx += 1
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-
-            if not element_type or element_type == 'input':
-                try:
-                    selects = drv.find_elements(By.TAG_NAME, "select")
-                    for sel in selects[:10]:
-                        try:
-                            if _visible(sel):
-                                elements.append({
-                                    "index": idx, "type": "select",
-                                    "name": _attr(sel, "name"), "id": _attr(sel, "id"),
-                                    "aria_label": _attr(sel, "aria-label"),
-                                })
-                                idx += 1
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-            
-            if not element_type or element_type == 'button':
-                try:
-                    role_btns = drv.find_elements(By.CSS_SELECTOR, "[role='button']:not(button)")
-                    for rb in role_btns[:15]:
-                        try:
-                            if _visible(rb):
-                                elements.append({
-                                    "index": idx, "type": "role_button",
-                                    "text": (rb.text or "")[:120].strip(),
-                                    "id": _attr(rb, "id"), "class": _attr(rb, "class"),
-                                    "aria_label": _attr(rb, "aria-label"),
-                                    "tagName": rb.tag_name,
-                                })
-                                idx += 1
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-
-            # Also grab submit-type inputs (Amazon uses <input type="submit">)
-            if not element_type or element_type == 'button':
-                try:
-                    submits = drv.find_elements(By.CSS_SELECTOR, "input[type='submit']")
-                    for sub in submits[:10]:
-                        try:
-                            if _visible(sub):
-                                elements.append({
-                                    "index": idx, "type": "submit_input",
-                                    "value": _attr(sub, "value"),
-                                    "id": _attr(sub, "id"), "name": _attr(sub, "name"),
-                                    "aria_label": _attr(sub, "aria-label"),
-                                })
-                                idx += 1
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-        
+            raw = drv.execute_script(js, element_type)
+            elements = []
+            for i, r in enumerate(raw or []):
+                e = {"i": i, "t": r.get("t", "?")}
+                if r.get("txt"): e["text"] = r["txt"]
+                if r.get("id"):  e["id"] = r["id"]
+                if r.get("nm"):  e["name"] = r["nm"]
+                if r.get("hp"):  e["href"] = r["hp"]
+                if r.get("al"):  e["aria_label"] = r["al"]
+                if r.get("ph"):  e["placeholder"] = r["ph"]
+                if r.get("v"):   e["value"] = r["v"]
+                elements.append(e)
+            return elements
         except Exception as e:
             print(f"⚠️  Error getting elements: {e}")
-        
-        return elements
+            return []
     
     def _unwrap_element(self, element):
         """Get the actual Selenium WebElement from InterceptedWebElement wrapper."""
@@ -730,20 +680,31 @@ class BrowserController:
                 except NoSuchElementException:
                     pass
             
+            if not element and target.get("aria_label"):
+                try:
+                    al = target["aria_label"].replace("'", "''")
+                    element = drv.find_element(By.CSS_SELECTOR, f"[aria-label='{al}']")
+                except (NoSuchElementException, Exception):
+                    pass
+
+            # text + optional nth (0-based) to disambiguate repeated labels like "Add to Cart"
+            nth = target.get("nth", 0) if target.get("nth") is not None else 0
             if not element and text_safe:
                 for xpath in [
                     f"//a[contains(., '{text_xpath}')]",
                     f"//button[contains(., '{text_xpath}')]",
                     f"//*[@role='button'][contains(., '{text_xpath}')]",
+                    f"//input[@value='{text_xpath}' or contains(@value, '{text_xpath}')]",
                     f"//*[contains(., '{text_xpath}')]",
                 ]:
                     try:
-                        elements = drv.find_elements(By.XPATH, xpath)
-                        for el in elements:
-                            if el.is_displayed() and el.is_enabled():
-                                element = el
-                                break
-                        if element:
+                        found = drv.find_elements(By.XPATH, xpath)
+                        visible = [el for el in found if el.is_displayed() and el.is_enabled()]
+                        if visible and nth < len(visible):
+                            element = visible[nth]
+                            break
+                        elif visible:
+                            element = visible[0]
                             break
                     except NoSuchElementException:
                         continue
@@ -1342,6 +1303,16 @@ class BrowserActionExecutor:
             PermissionError: If AgentTrust denies the action
             ValueError: If AgentTrust validation fails
         """
+        # Resolve relative paths before validation
+        if url and not url.startswith(("http://", "https://", "about:", "data:")):
+            try:
+                from urllib.parse import urljoin
+                base = self.browser.get_current_url() if self.browser else ""
+                if base:
+                    url = urljoin(base, url)
+            except Exception:
+                pass
+
         # MANDATORY: Validate with AgentTrust first
         result = self.agenttrust.execute_action(
             action_type="navigation",
@@ -1516,7 +1487,6 @@ class BrowserActionExecutor:
         # Determine target URL
         target_url = href
         if not target_url and link_text:
-            # Find link to get its href
             links = self.browser.get_visible_elements("link")
             for link in links:
                 if link.get("text") and link_text.lower() in link.get("text", "").lower():
@@ -1525,6 +1495,15 @@ class BrowserActionExecutor:
         
         if not target_url:
             return {"error": "Could not determine link URL"}
+        
+        # Resolve relative paths to absolute URLs
+        if target_url and not target_url.startswith(("http://", "https://")):
+            try:
+                from urllib.parse import urljoin
+                base = self.browser.get_current_url()
+                target_url = urljoin(base, target_url)
+            except Exception:
+                pass
         
         # Validate navigation through AgentTrust
         try:
@@ -1546,33 +1525,37 @@ class BrowserActionExecutor:
     
     def type_text(self, target: Dict[str, Any], text: str):
         """
-        Type text into an input field - MANDATORY AgentTrust validation
-        
-        Typing text is considered a form interaction and requires validation.
+        Type text into an input field.
+        Validated as a click (low-risk) rather than form_submit, because
+        typing into a search box / filter is not a form submission.
         """
         if not self.browser:
             return {"error": "Browser not initialized"}
         
         current_url = self.browser.get_current_url()
         
-        # Validate as form interaction
         try:
-            # For typing, we validate as a form action
             result = self.agenttrust.execute_action(
-                action_type="form_submit",  # Use form_submit for typing validation
+                action_type="click",
                 url=current_url,
-                form_data={target.get("name") or target.get("id"): text}
+                target={"type": "input", "action": "type_text",
+                        "id": target.get("id"), "name": target.get("name")}
             )
             
-            if result.get("status") == "allowed":
+            status = result.get("status") if result else None
+
+            if status in ("allowed", None):
                 type_result = self.browser.type_text(target, text)
+                if not type_result.get("success"):
+                    # Element not found by standard lookup — try CSS selector fallback
+                    type_result = self._type_text_fallback(target, text)
                 screenshot = None
                 if type_result.get("success"):
                     try:
                         import time
                         time.sleep(0.1)
                         screenshot = self.browser.take_screenshot()
-                        if screenshot and result.get("action_id"):
+                        if screenshot and result and result.get("action_id"):
                             try:
                                 self.agenttrust._update_action_screenshot(result.get("action_id"), screenshot)
                             except:
@@ -1582,18 +1565,60 @@ class BrowserActionExecutor:
                 
                 return {
                     "status": "allowed",
-                    "action_id": result.get("action_id"),
-                    "risk_level": result.get("risk_level"),
-                    "typed": type_result.get("success", False)
+                    "action_id": result.get("action_id") if result else None,
+                    "risk_level": result.get("risk_level") if result else "low",
+                    "typed": type_result.get("success", False),
+                    "message": type_result.get("message", "")
                 }
-            elif result.get("status") == "denied":
-                raise PermissionError(result.get("message", "Typing denied by AgentTrust"))
-            elif result.get("status") == "step_up_required":
-                raise PermissionError(f"Step-up required: {result.get('message')}")
-        except PermissionError as e:
-            return {"status": "denied", "message": str(e)}
+            elif status == "denied":
+                return {"status": "denied", "message": result.get("message", "Typing denied by AgentTrust")}
+            elif status == "step_up_required":
+                return {"status": "step_up_required", "message": result.get("message", "Requires approval")}
+            else:
+                return {"status": status or "error", "message": result.get("message", "Unexpected status") if result else "No response"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def _type_text_fallback(self, target: Dict[str, Any], text: str) -> Dict[str, Any]:
+        """Fallback: find an input by multiple strategies when standard lookup fails."""
+        drv = self.browser._actual_driver
+        from selenium.webdriver.common.by import By
+        element = None
+
+        # Try aria-label
+        if target.get("aria-label"):
+            try:
+                element = drv.find_element(By.CSS_SELECTOR, f"input[aria-label='{target['aria-label']}']")
+            except Exception:
+                pass
+        # Try type attribute
+        if not element and target.get("type"):
+            try:
+                element = drv.find_element(By.CSS_SELECTOR, f"input[type='{target['type']}']")
+            except Exception:
+                pass
+        # Try role=searchbox or common search selectors
+        if not element:
+            for sel in ["input[role='searchbox']", "input[type='search']",
+                        "input[name='field-keywords']", "#twotabsearchtextbox",
+                        "input[aria-label*='Search']", "input[placeholder*='Search']",
+                        "input[name='q']", "input[name='search']"]:
+                try:
+                    el = drv.find_element(By.CSS_SELECTOR, sel)
+                    if el.is_displayed():
+                        element = el
+                        break
+                except Exception:
+                    continue
+
+        if element and element.is_displayed():
+            try:
+                element.clear()
+                element.send_keys(text)
+                return {"success": True, "message": f"Text typed (fallback): {text[:50]}"}
+            except Exception as e:
+                return {"success": False, "message": f"Fallback type failed: {e}"}
+        return {"success": False, "message": "Input field not found by any method"}
     
     def scroll_page(self, direction: str = "down", amount: int = 3):
         """Scroll the page - NO AgentTrust validation needed (read-only navigation)"""
@@ -1726,20 +1751,21 @@ class BrowserActionExecutor:
             ]
             selectors = username_selectors if field_type == "username" else password_selectors
 
+            # Combine all selectors into a single CSS query to avoid N separate calls
+            combined = ", ".join(selectors)
             for attempt in range(retries):
-                for sel in selectors:
-                    try:
-                        els = driver.find_elements(By.CSS_SELECTOR, sel)
-                        for el in els:
-                            try:
-                                if el.is_displayed() and el.is_enabled():
-                                    return el
-                            except StaleElementReferenceException:
-                                continue
-                    except Exception:
-                        continue
+                try:
+                    els = driver.find_elements(By.CSS_SELECTOR, combined)
+                    for el in els:
+                        try:
+                            if el.is_displayed() and el.is_enabled():
+                                return el
+                        except StaleElementReferenceException:
+                            continue
+                except Exception:
+                    pass
                 if attempt < retries - 1:
-                    time.sleep(0.5)
+                    time.sleep(0.15)
             return None
 
         def _find_continue_button(retries=2):
@@ -1791,6 +1817,9 @@ class BrowserActionExecutor:
                 full = " ".join(texts)
                 return any(skip in full for skip in skip_keywords)
 
+            # Build a single CSS selector for fallback IDs to avoid N separate calls
+            fallback_css = ", ".join(f"#{bid}" for bid in fallback_ids)
+
             for attempt in range(retries):
                 try:
                     candidates = driver.find_elements(By.CSS_SELECTOR,
@@ -1812,20 +1841,23 @@ class BrowserActionExecutor:
                             continue
                 except Exception:
                     pass
-                for bid in fallback_ids:
-                    try:
-                        el = driver.find_element(By.ID, bid)
-                        if el.is_displayed() and not _is_passkey_button(el):
-                            return el
-                    except Exception:
-                        continue
+                try:
+                    fb_els = driver.find_elements(By.CSS_SELECTOR, fallback_css)
+                    for el in fb_els:
+                        try:
+                            if el.is_displayed() and not _is_passkey_button(el):
+                                return el
+                        except StaleElementReferenceException:
+                            continue
+                except Exception:
+                    pass
                 if attempt < retries - 1:
-                    time.sleep(0.5)
+                    time.sleep(0.15)
             return None
 
         def _dismiss_overlays():
             """Close QR-code dialogs, cookie banners, or other overlays. Fast path."""
-            dismiss_selectors = [
+            combined_selector = ", ".join([
                 "a[data-action='a-modal-close']",
                 "button[data-action='a-modal-close']",
                 "button.a-modal-close", "a.a-modal-close",
@@ -1836,27 +1868,24 @@ class BrowserActionExecutor:
                 "button[aria-label='Close']", "button[aria-label='Dismiss']",
                 "[data-dismiss='modal']",
                 "button.modal-close", "a.skip-link", "button.skip",
-            ]
+            ])
             dismissed = False
-
-            for sel in dismiss_selectors:
-                try:
-                    els = driver.find_elements(By.CSS_SELECTOR, sel)
-                    for el in els:
-                        try:
-                            if el.is_displayed():
-                                el.click()
-                                dismissed = True
-                                time.sleep(0.2)
-                        except (StaleElementReferenceException, ElementNotInteractableException):
-                            continue
-                except Exception:
-                    continue
+            try:
+                els = driver.find_elements(By.CSS_SELECTOR, combined_selector)
+                for el in els:
+                    try:
+                        if el.is_displayed():
+                            el.click()
+                            dismissed = True
+                            time.sleep(0.1)
+                    except (StaleElementReferenceException, ElementNotInteractableException):
+                        continue
+            except Exception:
+                pass
 
             if not dismissed:
                 try:
                     driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                    time.sleep(0.2)
                 except Exception:
                     pass
 
@@ -1901,19 +1930,30 @@ class BrowserActionExecutor:
 
         # ── Main flow ────────────────────────────────────────────
 
+        # Disable implicit wait for the duration of auto_login.
+        # Each find_elements miss blocks for `implicitly_wait` seconds (2s default).
+        # With dozens of CSS selectors probed, that adds up to 30+ seconds of dead time.
+        # We use explicit WebDriverWait where actual waiting is needed.
+        _prev_implicit_wait = 2
+        try:
+            driver.implicitly_wait(0)
+        except Exception:
+            pass
+
         try:
             # Step 0: Validate the login action with AgentTrust
-            form_data = {"action": "auto_login", "fields": {"username": "***", "password": "***"}}
+            form_data = {"action": "auto_login", "fields": {"username": username, "password": password}}
             result = self.agenttrust.execute_action(
                 action_type="form_submit", url=url, form_data=form_data
             )
             status = result.get("status")
+            safe_form = {"action": "auto_login", "fields": {"username": username[:3] + "***", "password": "***"}}
             if status == "denied":
-                self._notify_extension("form_submit", url, "denied", form_data=form_data)
+                self._notify_extension("form_submit", url, "denied", form_data=safe_form)
                 return {"success": False, "status": "denied",
                         "message": result.get("message", "Login denied by policy")}
             if status == "step_up_required":
-                self._notify_extension("form_submit", url, "step_up_required", form_data=form_data)
+                self._notify_extension("form_submit", url, "step_up_required", form_data=safe_form)
                 return {"success": False, "status": "step_up_required",
                         "message": "Login requires user approval",
                         "requires_user_approval": True}
@@ -2086,6 +2126,11 @@ class BrowserActionExecutor:
         except Exception as e:
             return {"success": False, "message": f"Login flow error: {str(e)}",
                     "steps_completed": steps_log}
+        finally:
+            try:
+                driver.implicitly_wait(_prev_implicit_wait)
+            except Exception:
+                pass
 
     def _wait_page_ready(self, timeout: int = 15):
         """Wait until the page is fully loaded (document.readyState === 'complete')."""
@@ -2330,7 +2375,48 @@ class BrowserActionExecutor:
                     if not form_data:
                         results.append({"step": i, "status": "skipped", "reason": "no form_data"})
                         continue
-                    if trusted:
+
+                    is_login = False
+                    if isinstance(form_data, dict):
+                        if form_data.get("action") == "auto_login":
+                            is_login = True
+                        elif isinstance(form_data.get("fields"), dict):
+                            flds = form_data["fields"]
+                            if "username" in flds or "password" in flds:
+                                is_login = True
+
+                    if is_login:
+                        self._wait_page_ready(timeout=10)
+                        login_url = url or (self.browser.get_current_url() if self.browser else "")
+
+                        # Try to use credentials embedded in the (decrypted) form_data first
+                        fields = form_data.get("fields", {}) if isinstance(form_data, dict) else {}
+                        login_user = fields.get("username", "") or ""
+                        login_pass = fields.get("password", "") or ""
+
+                        # If credentials are masked or missing, resolve from vault
+                        if not login_user or "***" in login_user or not login_pass or "***" in login_pass:
+                            lookup_domain = domain or ""
+                            if not lookup_domain and login_url:
+                                try:
+                                    from urllib.parse import urlparse
+                                    lookup_domain = urlparse(login_url).hostname or ""
+                                except Exception:
+                                    pass
+                            if lookup_domain:
+                                print(f"           Looking up credentials for {lookup_domain}...")
+                                login_user, login_pass = self._resolve_credentials(lookup_domain)
+                        
+                        if login_user and login_pass:
+                            print(f"           Logging in as {login_user}")
+                            result = self.auto_login(url=login_url, username=login_user, password=login_pass)
+                            self._wait_page_ready(timeout=15)
+                        else:
+                            print(f"           No credentials available for {domain or login_url}")
+                            results.append({"step": i, "status": "skipped",
+                                            "reason": f"No credentials for {domain or login_url}"})
+                            continue
+                    elif trusted:
                         result = self._exec_browser_form_submit(form_data)
                     else:
                         form_url = url or (self.browser.get_current_url() if self.browser else "")
@@ -2629,7 +2715,8 @@ with a list of manual steps. NEVER say "I'm unable to perform this" or
 
 WORKFLOW for every request:
 1. LOOK  — call get_page_content or get_visible_elements to see the current
-   page. If there is no page loaded yet, start by navigating.
+   page. Every tool response includes "current_url" — use it to know where
+   the browser is RIGHT NOW. If there is no page loaded yet, start by navigating.
 2. PLAN  — pick the single best next action. Use the most specific element
    identifier available: id > href > aria-label > text.  Fill the "target"
    object completely (id, text, tagName, href, className, selector).
@@ -2639,6 +2726,21 @@ WORKFLOW for every request:
    re-examine the page with get_visible_elements and try a different
    element or approach.
 5. REPEAT steps 1-4 until the task is done, then give a brief summary.
+
+PAGE CONTINUITY — VERY IMPORTANT:
+- Every tool response includes "current_url" telling you EXACTLY where the
+  browser is. ALWAYS check it before deciding your next action.
+- If you are ALREADY on a page that has the content you need, DO NOT
+  navigate away. Work with the current page.
+- For follow-up actions (e.g. "add item 4 to cart" after showing search
+  results), you are ALREADY on the relevant page. Call get_visible_elements
+  or get_page_content FIRST to see what's on the current page, then click
+  the correct link/button. Do NOT navigate to the homepage.
+- Only navigate to a new URL when the current page genuinely does not have
+  what you need.
+- When you listed items from a page (e.g. search results, product listings),
+  the browser is STILL on that page. To act on one of those items, find and
+  click its link on the CURRENT page.
 
 RULES:
 - ALWAYS start by using tools. Never skip straight to a text answer.
@@ -2674,10 +2776,21 @@ ROUTINES:
 - After a routine finishes, the user may send follow-up messages to you
   from the state the routine left the browser in. Continue normally."""
         
+        # Inject current browser state so the LLM knows where it is before choosing an action
+        browser_context = ""
+        try:
+            if self.browser_executor.browser:
+                ctx_url = self.browser_executor.get_current_url()
+                ctx_title = self.browser_executor.browser.get_page_title()
+                if ctx_url:
+                    browser_context = f"\n[Current browser page: \"{ctx_title}\" at {ctx_url}]"
+        except Exception:
+            pass
+        
         messages = [
             {"role": "system", "content": system_prompt}
         ] + self.conversation_history + [
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_message + browser_context}
         ]
         
         tools = self._build_tools()
@@ -2755,11 +2868,26 @@ ROUTINES:
             except Exception:
                 pass
         
+        # Build a context-rich assistant message that includes browser state.
+        # This lets the LLM remember where it left off across messages.
+        current_url = ""
+        page_title = ""
+        try:
+            if self.browser_executor.browser:
+                current_url = self.browser_executor.get_current_url()
+                page_title = self.browser_executor.browser.get_page_title()
+        except Exception:
+            pass
+        
+        state_suffix = ""
+        if current_url:
+            state_suffix = f"\n\n[Browser state: {page_title} — {current_url}]"
+        
         self.conversation_history.append({"role": "user", "content": user_message})
-        self.conversation_history.append({"role": "assistant", "content": response_text})
+        self.conversation_history.append({"role": "assistant", "content": response_text + state_suffix})
 
         # Keep conversation history bounded to avoid exceeding token limits
-        MAX_HISTORY_TURNS = 10  # 10 user+assistant pairs = 20 messages
+        MAX_HISTORY_TURNS = 10
         if len(self.conversation_history) > MAX_HISTORY_TURNS * 2:
             self.conversation_history = self.conversation_history[-(MAX_HISTORY_TURNS * 2):]
         
@@ -2804,8 +2932,10 @@ ROUTINES:
                 link_text=args.get("link_text"),
                 link_index=args.get("link_index")
             )
+            current_url = self.browser_executor.get_current_url() if self.browser_executor.browser else ""
             if result.get("status") == "allowed":
                 print(f"🔗 Link opened: {result.get('new_url', 'N/A')}")
+            result["current_url"] = current_url
             return result
         
         elif function_name == "type_text":
@@ -2814,6 +2944,9 @@ ROUTINES:
                 target=args.get("target", {}),
                 text=args.get("text", "")
             )
+            result = result or {"status": "error", "message": "No result from type_text"}
+            current_url = self.browser_executor.get_current_url() if self.browser_executor.browser else ""
+            result["current_url"] = current_url
             if result.get("status") == "allowed":
                 print(f"⌨️  Text typed into field")
             return result
@@ -2878,6 +3011,7 @@ ROUTINES:
                 }
             print(f"🔐 Auto-login on {current_url}")
             result = self.browser_executor.auto_login(url=current_url, username=username, password=password)
+            result["current_url"] = self.browser_executor.get_current_url() if self.browser_executor.browser else current_url
             if result.get("success"):
                 print(f"   ✅ Login completed: {', '.join(result.get('steps_completed', []))}")
             else:
@@ -2946,17 +3080,20 @@ ROUTINES:
                 "action_id": result.get("action_id"), "risk_level": risk
             })
             
+            current_url = self.browser_executor.get_current_url() if self.browser_executor.browser else url
             return {
                 "status": "allowed",
                 "action_id": result.get("action_id"),
                 "risk_level": risk,
+                "current_url": current_url,
                 "browser_result": {
                     "success": executed_ok,
                     "message": br.get("message", ""),
-                    "new_url": br.get("new_url", ""),
+                    "new_url": br.get("new_url", "") or current_url,
                 },
                 "message": f"AgentTrust allowed ({risk} risk). "
                            + (f"Browser: {br.get('message', 'OK')}" if br else "No browser.")
+                           + f" Current page: {current_url}"
             }
         
         except PermissionError as e:

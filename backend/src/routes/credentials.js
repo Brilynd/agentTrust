@@ -4,17 +4,26 @@ const crypto = require('crypto');
 const { authenticateUser, validateAction } = require('../middleware/auth');
 const pool = require('../config/database');
 
-const ALGORITHM = 'aes-256-gcm';
+const { encryptJSON, decryptJSON } = require('../utils/crypto');
 
 function normalizeDomain(input) {
   if (!input) return '';
   let d = input.trim().toLowerCase();
   d = d.replace(/^https?:\/\//, '');
   d = d.replace(/^www\./, '');
-  d = d.split('/')[0]; // strip path
-  d = d.split('?')[0]; // strip query
-  d = d.split(':')[0]; // strip port
+  d = d.split('/')[0];
+  d = d.split('?')[0];
+  d = d.split(':')[0];
   return d;
+}
+
+function encrypt(text) {
+  return encryptJSON(text);
+}
+function decrypt(encryptedData, ivHex) {
+  const result = decryptJSON(encryptedData, ivHex);
+  if (result === null) throw new Error('Decryption failed');
+  return result;
 }
 
 let _tableChecked = false;
@@ -39,39 +48,6 @@ async function ensureTable() {
   } catch (err) {
     console.error('Failed to ensure credentials table:', err);
   }
-}
-
-function getEncryptionKey() {
-  const hex = process.env.CREDENTIAL_ENCRYPTION_KEY;
-  if (hex && hex.length >= 64) {
-    return Buffer.from(hex, 'hex');
-  }
-  // Fallback: derive a key from JWT_SECRET so credentials still work without a dedicated key
-  const secret = process.env.JWT_SECRET || 'agenttrust-default-credential-key';
-  return crypto.createHash('sha256').update(secret).digest();
-}
-
-function encrypt(text) {
-  const key = getEncryptionKey();
-  if (!key) throw new Error('CREDENTIAL_ENCRYPTION_KEY not configured');
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  const authTag = cipher.getAuthTag().toString('hex');
-  return { encrypted: encrypted + ':' + authTag, iv: iv.toString('hex') };
-}
-
-function decrypt(encryptedData, ivHex) {
-  const key = getEncryptionKey();
-  if (!key) throw new Error('CREDENTIAL_ENCRYPTION_KEY not configured');
-  const [encrypted, authTag] = encryptedData.split(':');
-  const iv = Buffer.from(ivHex, 'hex');
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(Buffer.from(authTag, 'hex'));
-  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
 }
 
 // List all saved credentials for the user (passwords masked)

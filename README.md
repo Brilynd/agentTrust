@@ -1,553 +1,562 @@
-# 🛡 AgentTrust: Identity & Audit Layer for Agentic Browsers
+# AgentTrust — Identity & Audit Layer for Agentic Browsers
 
-> **A policy-enforced, identity-bound execution environment for AI agents in browsers.**
+AgentTrust is a production-grade governance platform for AI agents operating in web browsers. It provides identity-bound, policy-enforced, auditable execution so that AI agents can safely interact with real web services — GitHub, Amazon, Slack, banking — without uncontrolled access.
 
-AgentTrust provides enterprise-grade governance for AI agents operating in web browsers. Instead of simple click logging, AgentTrust delivers identity-bound, policy-enforced, auditable execution with cryptographic tamper-evidence.
-
----
-
-## 🎯 Project Vision
-
-**AgentTrust solves the "trust deficit" that prevents AI agents from being deployed in production.**
-
-### The Problem
-AI agents can reason and make decisions, but they can't safely interact with real web services (GitHub, Slack, banking) because there's no way to govern what they do.
-
-### Our Solution
-AgentTrust provides the **governance layer** that makes AI agent browser automation safe for production:
-- **Identity**: Each agent has authenticated identity (Auth0)
-- **Policy**: Fine-grained control over what agents can do
-- **Risk Management**: Automatic detection of high-risk actions
-- **Audit**: Complete, tamper-evident log of all actions
-
-**Result**: Agents can safely interact with real services instead of staying in sandboxes.
-
-### Key Features
-- **Agent Identity**: Each AI agent has authenticated identity via Auth0
-- **Pre-Execution Validation**: Agents must check with AgentTrust before acting
-- **Policy-as-Code**: JSON-based policies control what agents can do, where, and when
-- **Risk Classification**: Automatic detection of high-risk agent actions
-- **Just-In-Time Privilege**: Short-lived elevated tokens for high-risk actions
-- **Cryptographic Audit Trail**: Tamper-evident logging of all agent actions
-- **Agent Monitoring**: Complete visibility into agent behavior
+Instead of building another agent that does tasks, AgentTrust builds **the infrastructure layer** that makes autonomous agents safe to deploy.
 
 ---
 
-## 🏗 Architecture Overview
+## The Problem
+
+AI agents can reason and make decisions, but they cannot safely interact with real web services because there is no way to govern what they do. Most agents are either confined to sandboxes or given uncontrolled access. Neither is acceptable for production environments.
+
+## The Solution
+
+AgentTrust sits between the AI agent and the browser, enforcing identity, policy, and audit on every action before it executes. The agent must check with AgentTrust before performing any browser action — navigation, click, form submission — and AgentTrust decides whether to allow, deny, or escalate for human approval.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   User / Operator                       │
+│         (Chrome Extension — monitor, approve,           │
+│          manage policies, run routines)                  │
+└────────────────────────┬────────────────────────────────┘
+                         │  Approvals / Commands / Config
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│              AgentTrust Backend API                      │
+│   Node.js + Express + PostgreSQL                        │
+│                                                         │
+│  • Auth0 JWT validation   • Policy engine               │
+│  • Risk classification    • Cryptographic audit chain    │
+│  • Step-up approvals      • Credential vault            │
+│  • Session management     • Routine storage             │
+│  • Command queue          • Token exchange              │
+└────────────────────────┬────────────────────────────────┘
+                         │  validate / log / approve
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│              ChatGPT Agent (Python)                      │
+│   OpenAI GPT-4o + Selenium WebDriver                    │
+│                                                         │
+│  • AgentTrust client      • Browser controller          │
+│  • Intercepted WebDriver  • Auto-login engine           │
+│  • Routine replay engine  • Credential resolver         │
+│  • Auth0 Token Vault      • Extension auto-login        │
+└─────────────────────────────────────────────────────────┘
+```
 
 ### Components
 
-1. **Chrome Extension** (Manifest v3)
-   - Content scripts for action interception
-   - Background service worker for coordination
-   - UI for step-up authentication prompts
-
-2. **Backend API** (Node.js)
-   - Auth0 JWT validation
-   - Policy engine for risk classification
-   - Token exchange for step-up authentication
-   - Audit log storage
-
-3. **Auth0 Integration**
-   - Machine-to-Machine (M2M) authentication
-   - Scoped tokens (`browser.basic`, `browser.form.submit`, `browser.high_risk`)
-   - Token exchange for temporary elevated privileges
-
-4. **Database** (PostgreSQL)
-   - Audit logs with cryptographic hashes
-   - Policy configurations
-   - Agent behavioral baselines
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **Backend API** | Node.js, Express, PostgreSQL | Policy enforcement, audit logging, session management, credential vault, routine storage, command/approval queues |
+| **Chrome Extension** | Manifest V3 | Real-time monitoring dashboard, step-up approval UI, policy management, credential management, routine management, chat interface |
+| **ChatGPT Agent** | Python, OpenAI GPT-4o, Selenium | AI-driven browser automation with mandatory AgentTrust validation on every action |
+| **Auth0 Integration** | M2M tokens, Token Vault | Agent identity, scoped tokens, token exchange for step-up and external APIs |
+| **Database** | PostgreSQL (AWS RDS supported) | Actions, sessions, prompts, credentials (AES-256-GCM encrypted), routines, users, audit chain |
 
 ---
 
-## 🚀 Quick Start
+## Features
 
-### Prerequisites
+### 1. Identity-Bound Execution
 
-- Node.js 18+ and npm
-- PostgreSQL 14+
-- Auth0 account and application configured
-- Google Chrome browser
+Every browser action is tied to an authenticated agent identity via Auth0 Machine-to-Machine (M2M) authentication. Actions cannot execute anonymously.
 
-### Installation
+- Auth0 JWT validation on every API request
+- Agent identity embedded in every audit log entry
+- Scoped token system: `browser.basic`, `browser.form.submit`, `browser.high_risk`
+- User authentication (JWT) for the Chrome extension
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd agentTrust
-   ```
+### 2. Pre-Execution Policy Enforcement
 
-2. **Install dependencies**
-   ```bash
-   # Backend dependencies
-   cd backend
-   npm install
+All browser actions (navigation, click, form submission) are validated against configurable policies **before** execution. The `InterceptedWebDriver` wrapper ensures no code path can bypass validation.
 
-   # Extension dependencies (if any)
-   cd ../extension
-   npm install
-   ```
+- **Allowed domains** — whitelist of permitted domains
+- **Blocked domains** — actions are always denied
+- **High-risk keywords** — trigger step-up approval (e.g., "delete", "transfer", "merge")
+- **Financial domain detection** — elevated risk scoring for banking/payment sites
+- **Form field analysis** — password fields and payment forms increase risk
+- **URL pattern matching** — admin routes and sensitive endpoints
 
-3. **Configure environment variables**
-   ```bash
-   # Backend .env
-   cp backend/.env.example backend/.env
-   # Edit backend/.env with your Auth0 credentials and database URL
-   ```
+### 3. Risk Classification Engine
 
-4. **Set up database**
-   ```bash
-   cd backend
-   npm run migrate
-   ```
+Every action is automatically classified as `low`, `medium`, `high`, or `blocked` based on:
 
-5. **Load the extension**
-   - Open Chrome and navigate to `chrome://extensions/`
-   - Enable "Developer mode"
-   - Click "Load unpacked"
-   - Select the `extension` folder
+- Domain sensitivity (financial sites, unknown domains)
+- Action type (form submission scores higher)
+- DOM keyword detection across element text, class, ID, aria-label, and URL
+- URL path patterns (`/delete`, `/admin`, `/transfer`)
+- Form field analysis (password fields, payment data)
 
-6. **Start the backend**
-   ```bash
-   cd backend
-   npm start
-   ```
+### 4. Step-Up Authentication & Human-in-the-Loop Approval
 
-### 🧪 Testing Setup
+High-risk actions trigger a step-up approval flow rather than being silently denied:
 
-**For complete testing setup instructions, see [Testing Setup Guide](./docs/testing-setup.md)**
+1. Agent requests an action that exceeds its current scope
+2. Backend returns `step_up_required` with risk details
+3. Chrome extension shows an approval banner with action context
+4. User approves or denies in real time
+5. Agent long-polls for the decision and proceeds if approved
+6. Manual overrides are logged as `approved_override` in the audit trail
 
-Quick test:
-```bash
-# Get Auth0 token
-cd backend
-node test/get-token.js
+Approvals auto-expire after 2 minutes if not acted upon.
 
-# Test API (with token)
-./test/test-api.sh <your-token>
+### 5. Cryptographic Audit Trail
+
+Every action produces a tamper-evident log entry linked in a SHA-256 hash chain:
+
+```
+hash = SHA256(previous_hash + agent_id + type + timestamp + domain + url + risk_level)
 ```
 
+- Chain integrity can be verified at any time
+- Each entry includes agent identity, session, prompt, risk level, and status
+- Screenshots are captured after each action and attached to the audit entry
+- The full chain is queryable by agent, domain, risk level, date range, and action type
+
+### 6. Credential Vault
+
+Encrypted credential storage for autonomous login:
+
+- Credentials encrypted at rest with **AES-256-GCM**
+- Stored per-user in PostgreSQL with separate IV per credential
+- **Fuzzy domain matching** — `amazon.com` matches `https://www.amazon.com/ap/signin`
+- Agent looks up credentials via M2M-authenticated API at login time
+- Credentials are never sent to the LLM; the auto-login engine uses them directly
+- CRUD management via the Chrome extension Permissions tab
+
+### 7. Intelligent Auto-Login Engine
+
+A dedicated `auto_login` tool handles complex real-world login flows without LLM involvement per keystroke:
+
+- **Multi-step form detection** — handles username-then-continue-then-password flows
+- **Overlay/popup dismissal** — closes QR code dialogs, cookie banners, passkey prompts
+- **Passkey suppression** — Chrome DevTools Protocol commands and JavaScript injection disable native WebAuthn/passkey dialogs
+- **Stale element recovery** — retries on `StaleElementReferenceException`
+- **Smart button detection** — finds continue/submit buttons while explicitly skipping passkey, biometric, and security-key buttons
+- **Form submission via Enter key** — prefers pressing Enter on the password field over hunting for submit buttons, avoiding misclicks
+- **Credential Vault integration** — auto-resolves stored credentials by domain
+
+### 8. Reusable Routines
+
+Record, save, and replay browser action sequences deterministically — without involving ChatGPT for each step:
+
+- **Create from session** — cherry-pick specific actions from a past session to build a routine
+- **Private and global scopes** — private routines are user-only; global routines are shared
+- **Deterministic replay** — actions execute directly via the browser controller, not through the LLM
+- **Trust model**:
+  - Private routines and owner-run global routines bypass policy validation entirely (trusted execution)
+  - Non-owner global routines perform a single upfront domain validation, then proceed in trusted mode
+- **Credential resolution** — `auto_login` steps in routines automatically look up credentials from the vault
+- **Page-ready waits** — `WebDriverWait` on `document.readyState` between steps for reliability
+- **Chat UI integration** — run routines via `/run <routine_name>` in the chat panel
+- **Full CRUD** — create, edit, delete, and search routines from the extension
+
+### 9. Real-Time Monitoring Dashboard
+
+The Chrome extension popup provides a live dashboard:
+
+- **Monitor tab** — session list, action feed with risk badges, screenshot viewer, filters by risk/type/domain
+- **Chat tab** — conversation view showing User Request → ChatGPT Response → Action Screenshot, with `/run` command support
+- **Routines tab** — routine list, search, create/edit/delete, import from session, one-click execution
+- **Permissions tab** — manage allowed/blocked/financial domains, high-risk keywords, step-up toggles, saved credentials, connected OAuth accounts
+- **Pop-out window** — detach the panel into a standalone window that persists across page navigations
+- **Live auto-refresh** — toggle real-time polling for new actions
+- **Approval banner** — step-up approval prompts appear inline with approve/deny buttons
+
+### 10. Session Management
+
+Each agent run creates a distinct session for organized tracking:
+
+- Sessions are created and ended via API (`POST /api/sessions`, `PATCH /api/sessions/:id/end`)
+- All actions, prompts, and screenshots are associated with the active session
+- Sessions are listed and browsable in the Monitor tab
+- Routines are executed within the context of the current session
+
+### 11. Prompt Tracking
+
+User prompts and ChatGPT responses are stored and linked to their resulting actions:
+
+- Each user message is stored via `POST /api/prompts`
+- Actions reference their originating `promptId`
+- ChatGPT's response is updated on the prompt record after generation
+- The Chat tab renders the full prompt → response → action → screenshot flow
+
+### 12. Command Queue & Long Polling
+
+Bidirectional communication between the extension and the agent:
+
+- Extension sends commands (chat messages, routine executions) via `POST /api/commands`
+- Agent long-polls `GET /api/commands/pending` with configurable timeout
+- Instant delivery when the agent is already polling; queued otherwise
+- Same pattern for approvals: agent long-polls `GET /api/approvals/:id/wait`
+
+### 13. Auth0 Token Vault Integration
+
+External API access via Auth0 Token Vault:
+
+- Token exchange for provider-specific tokens (GitHub, Google, Slack)
+- Auth0 manages OAuth flows, token refresh, and consent
+- Step-up token exchange for elevated privileges
+- Connected accounts managed via the extension Permissions tab
+
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 agentTrust/
-├── extension/                 # Chrome Extension (Manifest v3)
-│   ├── manifest.json         # Extension manifest
-│   ├── background/           # Background service worker
-│   │   └── service-worker.js
-│   ├── content/              # Content scripts
-│   │   ├── content.js        # Main content script
-│   │   └── action-capture.js # Action interception logic
-│   ├── popup/                # Extension popup UI
-│   │   ├── popup.html
-│   │   ├── popup.js
-│   │   └── popup.css
-│   ├── stepup/               # Step-up authentication UI
-│   │   ├── stepup.html
-│   │   ├── stepup.js
-│   │   └── stepup.css
-│   ├── assets/               # Icons, images
-│   └── utils/                # Shared utilities
-│       ├── auth.js           # Auth0 token management
-│       └── messaging.js      # Chrome messaging utilities
-│
-├── backend/                  # Node.js Backend API
+├── backend/                          # Node.js Backend API
 │   ├── src/
-│   │   ├── server.js         # Express server setup
-│   │   ├── routes/           # API routes
-│   │   │   ├── actions.js    # Action logging endpoints
-│   │   │   ├── auth.js       # Auth0 validation
-│   │   │   ├── policies.js   # Policy management
-│   │   │   └── audit.js      # Audit dashboard endpoints
-│   │   ├── middleware/       # Express middleware
-│   │   │   ├── auth.js       # JWT validation
-│   │   │   └── policy.js     # Policy enforcement
-│   │   ├── services/         # Business logic
-│   │   │   ├── auth0.js      # Auth0 integration
-│   │   │   ├── policy-engine.js # Risk classification
-│   │   │   ├── token-exchange.js # Step-up token exchange
-│   │   │   └── audit.js      # Audit log management
-│   │   ├── models/           # Database models
-│   │   │   ├── action.js     # Action log model
-│   │   │   ├── policy.js     # Policy model
-│   │   │   └── agent.js      # Agent baseline model
-│   │   └── utils/            # Utilities
-│   │       ├── crypto.js     # Cryptographic hashing
-│   │       └── validation.js # Input validation
-│   ├── migrations/           # Database migrations
-│   ├── tests/                # Test files
-│   ├── .env.example          # Environment variable template
+│   │   ├── server.js                 # Express app setup, middleware, routes
+│   │   ├── config/
+│   │   │   └── database.js           # PostgreSQL connection pool
+│   │   ├── middleware/
+│   │   │   ├── auth.js               # JWT validation (M2M + user)
+│   │   │   ├── policy.js             # Policy enforcement middleware
+│   │   │   └── security.js           # Request ID, headers, input validation
+│   │   ├── models/
+│   │   │   ├── action.js             # Action audit log model
+│   │   │   ├── prompt.js             # Prompt storage model
+│   │   │   ├── session.js            # Session model
+│   │   │   └── user.js               # User model (bcrypt passwords)
+│   │   ├── routes/
+│   │   │   ├── actions.js            # Action logging + screenshot PATCH
+│   │   │   ├── approvals.js          # Step-up approval queue + long polling
+│   │   │   ├── audit.js              # Audit chain query + verification
+│   │   │   ├── auth.js               # User login/register, token issue
+│   │   │   ├── commands.js           # Agent command queue + long polling
+│   │   │   ├── credentials.js        # Encrypted credential vault CRUD
+│   │   │   ├── external-api.js       # Proxied external API calls
+│   │   │   ├── policies.js           # Policy CRUD
+│   │   │   ├── prompts.js            # Prompt storage + response update
+│   │   │   ├── routines.js           # Routine CRUD, from-session, execute
+│   │   │   ├── sessions.js           # Session create/end/list
+│   │   │   ├── token-vault.js        # Auth0 Token Vault endpoints
+│   │   │   └── users.js              # User management
+│   │   ├── services/
+│   │   │   ├── audit.js              # Audit log + hash chain logic
+│   │   │   ├── auth0.js              # Auth0 JWT validation (JWKS)
+│   │   │   ├── policy-engine.js      # Risk classification + policy check
+│   │   │   └── token-exchange.js     # Auth0 token exchange for step-up
+│   │   └── utils/
+│   │       ├── crypto.js             # SHA-256 hash chain
+│   │       ├── security.js           # Rate limiting, headers
+│   │       └── validation.js         # Input sanitization
+│   ├── config/
+│   │   └── policies.json             # Default policy configuration
+│   ├── migrations/
+│   │   └── migrate.js                # Database migration runner
+│   ├── scripts/                      # DB setup scripts
 │   └── package.json
 │
-├── dashboard/                # Audit Dashboard (Optional - Future)
-│   ├── src/
-│   └── public/
+├── extension/                        # Chrome Extension (Manifest V3)
+│   ├── manifest.json
+│   ├── background/
+│   │   └── service-worker.js         # Background coordination
+│   ├── content/
+│   │   ├── content.js                # Main content script
+│   │   └── action-capture.js         # DOM event interception
+│   ├── popup/
+│   │   ├── popup.html                # Dashboard UI (4 tabs)
+│   │   ├── popup.js                  # All client-side logic
+│   │   └── popup.css                 # Styles
+│   ├── stepup/
+│   │   ├── stepup.html               # Step-up approval page
+│   │   ├── stepup.js
+│   │   └── stepup.css
+│   ├── utils/
+│   │   ├── auth.js                   # Token management
+│   │   └── messaging.js              # Chrome messaging utilities
+│   └── assets/                       # Icons (16, 32, 128)
 │
-├── docs/                     # Documentation
-│   ├── architecture.md       # System architecture
-│   ├── api.md               # API documentation
-│   └── policies.md          # Policy configuration guide
+├── integrations/
+│   └── chatgpt/                      # ChatGPT Agent Integration
+│       ├── chatgpt_agent_with_agenttrust.py   # Main agent (3100+ lines)
+│       │   ├── InterceptedWebDriver           # Mandatory validation wrapper
+│       │   ├── InterceptedWebElement           # Click/type interception
+│       │   ├── BrowserController               # Selenium browser operations
+│       │   ├── BrowserActionExecutor           # AgentTrust-validated execution
+│       │   │   ├── execute_click()
+│       │   │   ├── execute_navigation()
+│       │   │   ├── execute_form_submit()
+│       │   │   ├── auto_login()               # Multi-step login engine
+│       │   │   ├── replay_routine()           # Deterministic routine replay
+│       │   │   └── _notify_extension()        # Real-time DOM events
+│       │   └── ChatGPTAgentWithAgentTrust     # OpenAI chat loop + tool calling
+│       ├── agenttrust_client.py               # Python API client
+│       │   ├── Auth0 M2M token management
+│       │   ├── execute_action()
+│       │   ├── Session management
+│       │   ├── Prompt storage
+│       │   ├── Credential lookup
+│       │   ├── Step-up approval polling
+│       │   └── Async screenshot upload
+│       ├── auth0_token_vault.py               # Token Vault client
+│       ├── requirements.txt
+│       └── test_agent.py
 │
-├── .gitignore
-└── README.md
+└── docs/                             # Documentation
+    ├── architecture.md
+    ├── api.md
+    ├── agent-integration.md
+    ├── policies.md
+    └── security.md
 ```
 
 ---
 
-## 🔐 Core Features
+## Quick Start
 
-### 1. Identity-Bound Actions
+### Prerequisites
 
-Every browser action is captured with:
-- Agent identity (from Auth0 JWT)
-- Timestamp
-- Action type (click, form submit, navigation)
-- DOM context
-- URL and domain
+- **Node.js** 18+ and npm
+- **Python** 3.9+ with pip
+- **PostgreSQL** 14+ (local or AWS RDS)
+- **Auth0** account with M2M application configured
+- **Google Chrome** browser
+- **OpenAI API key** (GPT-4o access)
 
-### 2. Risk Classification Engine
-
-Actions are automatically classified by:
-- **Domain sensitivity**: Financial sites, internal tools, unknown domains
-- **Action type**: Delete, merge, transfer, read
-- **DOM keyword detection**: "delete", "confirm", "submit payment"
-- **Form field analysis**: Password fields, payment forms
-- **URL pattern matching**: Admin routes, sensitive endpoints
-
-Risk levels: `low`, `medium`, `high`
-
-### 3. Policy Enforcement
-
-JSON-based policies define:
-```json
-{
-  "allowed_domains": ["github.com", "slack.com"],
-  "high_risk_keywords": ["delete", "merge", "transfer"],
-  "requires_step_up": ["high"],
-  "blocked_domains": ["malicious-site.com"]
-}
-```
-
-### 4. Step-Up Authentication
-
-For high-risk actions:
-1. Agent requests action with insufficient scope
-2. Backend denies request
-3. Extension prompts user for approval
-4. Auth0 issues temporary `browser.high_risk` scope (30-60 seconds)
-5. Action executes
-6. Token expires automatically
-
-### 5. Cryptographic Action Chain
-
-Each event is cryptographically linked:
-```
-hash = SHA256(previous_hash + event_payload)
-```
-
-Ensures tamper-evident audit trail.
-
-### 6. Audit Dashboard
-
-Filter and analyze actions by:
-- Agent identity
-- Domain
-- Risk level
-- Date range
-- Action type
-
-View:
-- Token scope used
-- Step-up status
-- Approval metadata
-- Event replay data
-
----
-
-## 🧩 Development Roadmap
-
-### Week 1 – Foundation: Identity + Action Capture
-- [x] Project setup and folder structure
-- [ ] Auth0 agent registration and M2M setup
-- [x] Chrome extension manifest and basic structure
-- [ ] Action capture (click, form submit, navigation)
-- [x] Backend JWT validation
-- [ ] Basic audit logging
-
-### Week 2 – Policy Engine + Risk Classification
-- [ ] Risk classification engine
-- [ ] Policy JSON schema and API
-- [ ] Domain trust profiles
-- [ ] Keyword detection (high/medium risk)
-- [ ] Form field analysis
-- [ ] Financial domain detection
-
-### Week 3 – Step-Up + Short-Lived Delegated Authority
-- [ ] Step-up authentication UI
-- [ ] Auth0 token exchange flow
-- [ ] Short-lived token issuance (30-60 seconds)
-- [ ] User approval workflow
-- [ ] Token expiration handling
-
-### Week 4 – Cryptographic Audit & Advanced Features
-- [ ] Cryptographic action chain (SHA256)
-- [ ] Audit dashboard API endpoints
-- [ ] Agent behavioral baseline
-- [ ] Reason capture for actions
-- [ ] Chain integrity verification
-
-### Week 5 – Polish, Demo Prep & Submission
-- [ ] Feature completion and bug fixes
-- [ ] Complete documentation
-- [ ] Demo video and presentation
-- [ ] Final testing and submission
-
----
-
-## 🔧 Configuration
-
-### Auth0 Setup
-
-1. Create a Machine-to-Machine application in Auth0
-2. Configure API with scopes:
-   - `browser.basic`
-   - `browser.form.submit`
-   - `browser.high_risk`
-3. Set up token exchange for step-up flow
-
-### Policy Configuration
-
-Edit `backend/src/config/policies.json` or use the API to configure policies.
-
-### Environment Variables
-
-See `backend/.env.example` for required variables:
-
-**Required**:
-- `AUTH0_DOMAIN` - Your Auth0 tenant domain
-- `AUTH0_CLIENT_ID` - Auth0 M2M application client ID
-- `AUTH0_CLIENT_SECRET` - Auth0 M2M application client secret
-- `AUTH0_AUDIENCE` - Auth0 API identifier
-- `DATABASE_URL` - PostgreSQL connection string
-
-**Optional** (with defaults):
-- `PORT` - Server port (default: 3000)
-- `NODE_ENV` - Environment (development/production)
-- `RATE_LIMIT_WINDOW_MS` - Rate limit window (default: 900000 = 15 min)
-- `RATE_LIMIT_MAX_REQUESTS` - Max requests per window (default: 100)
-- `CORS_ORIGIN` - Allowed CORS origins (comma-separated)
-- `TOKEN_CACHE_TTL` - Token cache TTL in seconds (default: 3600)
-- `JWT_SECRET` - Additional JWT secret (for future use)
-
----
-
-## 🧪 Testing
+### 1. Clone and Install
 
 ```bash
-# Run backend tests
-cd backend
-npm test
+git clone <repository-url>
+cd agentTrust
 
-# Run extension tests (if configured)
-cd extension
-npm test
+# Backend
+cd backend
+npm install
+
+# Python agent
+cd ../integrations/chatgpt
+pip install -r requirements.txt
 ```
+
+### 2. Configure Environment
+
+**Backend** (`backend/.env`):
+
+```env
+# Auth0
+AUTH0_DOMAIN=your-tenant.us.auth0.com
+AUTH0_CLIENT_ID=your_m2m_client_id
+AUTH0_CLIENT_SECRET=your_m2m_client_secret
+AUTH0_AUDIENCE=https://agenttrust.api
+
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/agenttrust
+
+# Security
+JWT_SECRET=your-jwt-secret-for-user-auth
+CREDENTIAL_ENCRYPTION_KEY=<64-char hex string for AES-256-GCM>
+
+# Optional
+PORT=3000
+CORS_ORIGIN=http://localhost:3000,chrome-extension://<extension-id>
+RATE_LIMIT_MAX_REQUESTS=10000
+```
+
+**Agent** (`integrations/chatgpt/.env`):
+
+```env
+# OpenAI
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o
+
+# AgentTrust
+AGENTTRUST_API_URL=http://localhost:3000/api
+AUTH0_DOMAIN=your-tenant.us.auth0.com
+AUTH0_CLIENT_ID=your_m2m_client_id
+AUTH0_CLIENT_SECRET=your_m2m_client_secret
+AUTH0_AUDIENCE=https://agenttrust.api
+
+# Optional: auto-load extension and sign in
+EXTENSION_PATH=../../extension
+EXTENSION_LOGIN_EMAIL=admin@agenttrust.local
+EXTENSION_LOGIN_PASSWORD=your-password
+```
+
+### 3. Set Up Database
+
+```bash
+cd backend
+npm run setup-db
+# Or: npm run migrate
+```
+
+### 4. Load the Chrome Extension
+
+1. Open `chrome://extensions/` in Chrome
+2. Enable **Developer mode**
+3. Click **Load unpacked** and select the `extension/` folder
+
+### 5. Start the Backend
+
+```bash
+cd backend
+npm start
+# Server runs on http://localhost:3000
+```
+
+### 6. Run the Agent
+
+```bash
+cd integrations/chatgpt
+python chatgpt_agent_with_agenttrust.py
+```
+
+The agent will:
+- Launch a Chrome instance with the AgentTrust extension loaded
+- Create a new session
+- Auto-sign-in to the extension (if credentials are configured)
+- Suppress passkey/WebAuthn dialogs via Chrome DevTools Protocol
+- Begin listening for commands from the extension Chat tab
 
 ---
 
-## 📊 API Endpoints
+## API Reference
 
 ### Actions
-- `POST /api/actions` - Log an action
-- `GET /api/actions` - Query audit log
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/actions` | M2M | Log and validate a browser action |
+| `GET` | `/api/actions` | M2M | Query the audit log (filters: session, type, risk, domain) |
+| `PATCH` | `/api/actions/:id` | M2M | Attach screenshot to an action |
 
-### Authentication
-- `POST /api/auth/validate` - Validate JWT token
-- `POST /api/auth/stepup` - Request step-up token
+### Sessions
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/sessions` | M2M | Create a new session |
+| `GET` | `/api/sessions` | User | List all sessions |
+| `PATCH` | `/api/sessions/:id/end` | M2M | End a session |
+
+### Prompts
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/prompts` | M2M | Store a user prompt |
+| `PATCH` | `/api/prompts/:id` | M2M | Update with agent response |
+| `GET` | `/api/prompts` | User | List prompts (by session) |
+
+### Commands
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/commands` | User | Send command to agent |
+| `GET` | `/api/commands/pending` | M2M | Long-poll for pending commands |
+
+### Approvals
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/approvals/pending` | User | List pending approvals |
+| `POST` | `/api/approvals/:id/respond` | User | Approve or deny |
+| `GET` | `/api/approvals/:id/wait` | M2M | Long-poll for user decision |
+
+### Credentials
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/credentials` | User | List saved credentials (masked) |
+| `POST` | `/api/credentials` | User | Store a new credential (encrypted) |
+| `PUT` | `/api/credentials/:id` | User | Update a credential |
+| `DELETE` | `/api/credentials/:id` | User | Delete a credential |
+| `GET` | `/api/credentials/lookup?domain=` | M2M | Agent looks up credentials by domain |
+
+### Routines
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/routines` | User | List routines (private + global) |
+| `GET` | `/api/routines/:id` | User | Get a single routine |
+| `POST` | `/api/routines` | User | Create a routine |
+| `PUT` | `/api/routines/:id` | User | Update a routine (owner only) |
+| `DELETE` | `/api/routines/:id` | User | Delete a routine (owner only) |
+| `POST` | `/api/routines/from-session/:sessionId` | User | Create routine from session actions |
+| `POST` | `/api/routines/:id/execute` | User | Queue routine for agent execution |
 
 ### Policies
-- `GET /api/policies` - Get current policies
-- `PUT /api/policies` - Update policies
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/policies` | User | Get current policies |
+| `PUT` | `/api/policies` | User | Update policies |
 
 ### Audit
-- `GET /api/audit/chain` - Get cryptographic action chain
-- `GET /api/audit/agent/:agentId` - Get agent-specific audit log
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/audit/chain` | M2M | Get cryptographic action chain |
+| `GET` | `/api/audit/verify` | M2M | Verify chain integrity |
+
+### Auth
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/auth/login` | None | User login (returns JWT) |
+| `POST` | `/api/auth/register` | None | User registration |
+| `POST` | `/api/auth/stepup` | M2M | Request step-up token |
 
 ---
 
-## 🤝 Contributing
+## Security
 
-This is a hackathon project. Contributions welcome!
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
----
-
-## 📝 License
-
-[Specify your license here]
+- **Auth0 M2M JWT** validation on all agent-facing endpoints (JWKS-based)
+- **User JWT** validation on all extension-facing endpoints
+- **AES-256-GCM** encryption for credential storage with per-credential IVs
+- **SHA-256 hash chain** for tamper-evident audit logs
+- **Helmet** security headers
+- **Rate limiting** (configurable per IP)
+- **CORS** whitelisting
+- **Input sanitization** (express-validator, mongo-sanitize, HPP)
+- **bcrypt** password hashing for user accounts
+- **Passkey/WebAuthn suppression** — Chrome DevTools Protocol and JavaScript injection prevent native browser dialogs from interfering with automation
 
 ---
 
-## 🏆 Hackathon Alignment: Auth0 "Authorized to Act"
+## How the Agent Works
 
-AgentTrust directly addresses the **"trust deficit"** holding back AI agents from production readiness. This project solves the critical challenge of managing secure access to a user's digital life—GitHub, Slack, banking, and more—by providing a comprehensive identity and governance layer.
-
-### How AgentTrust Addresses Hackathon Requirements
-
-#### ✅ 1. Solves the Trust Deficit
-
-**Problem**: Most AI agents remain confined to sandboxes because managing secure access is a massive security burden.
-
-**AgentTrust Solution**:
-- **Identity-Bound Execution**: Every browser action is tied to an authenticated agent identity via Auth0, eliminating anonymous/uncontrolled tool use
-- **Policy-as-Code**: JSON-based policies provide fine-grained control over what agents can do, where they can operate, and when step-up authentication is required
-- **Cryptographic Audit Trail**: Tamper-evident action chains ensure complete accountability and enable forensic analysis
-- **Risk Classification**: Automatic detection of high-risk actions (deletions, financial transactions, etc.) with appropriate safeguards
-
-#### ✅ 2. Secure Access to Digital Life
-
-**Problem**: Agents need secure, controlled access to GitHub, Slack, banking, and other critical services.
-
-**AgentTrust Solution**:
-- **Domain-Based Policies**: Explicit allowlists/blocklists for domains (e.g., `github.com`, `slack.com`)
-- **Financial Domain Detection**: Special handling for banking and payment sites with elevated security
-- **Domain Trust Profiles**: Customizable risk profiles per domain (e.g., GitHub has lower risk multiplier)
-- **Real-World Examples**: Tested and configured for GitHub (repository management), Slack (messaging), and financial services
-
-#### ✅ 3. Secure Tool Calling
-
-**Problem**: Uncontrolled tool use leads to security vulnerabilities and unintended consequences.
-
-**AgentTrust Solution**:
-- **Scoped Token System**: Three-tier scope model:
-  - `browser.basic`: Read-only and low-risk navigation
-  - `browser.form.submit`: Form submissions and medium-risk actions
-  - `browser.high_risk`: Deletions, transfers, financial actions (requires step-up)
-- **Pre-Execution Validation**: Every action is validated against policies before execution
-- **Just-In-Time Privilege**: Short-lived elevated tokens (30-60 seconds) for high-risk actions only when approved
-- **Token Exchange**: Auth0 token exchange for secure scope elevation
-
-#### ✅ 4. Agent Identity
-
-**Problem**: Agents need verifiable identity to operate in production environments.
-
-**AgentTrust Solution**:
-- **Auth0 Machine-to-Machine (M2M) Authentication**: Each agent has a unique, authenticated identity
-- **JWT-Based Identity**: Every action includes agent identity in JWT token, validated on every request
-- **Agent-Specific Audit Logs**: Complete audit trail filtered by agent identity
-- **Behavioral Baseline**: Track agent behavior patterns to detect anomalies
-- **Identity in Action Chain**: Cryptographic hash includes agent ID, ensuring non-repudiation
-
-#### ✅ 5. Model Context Protocol (MCP) Alignment
-
-**Problem**: Need standardized interface for agent-browser interactions.
-
-**AgentTrust Solution**:
-- **Structured Action Model**: All browser actions follow a consistent schema (type, domain, target, risk level)
-- **Context-Aware Policies**: Policies consider full context (domain, action type, DOM elements, form fields)
-- **MCP-Compatible API**: RESTful API that can be exposed as MCP tools/resources
-- **Standardized Metadata**: Action metadata includes all context needed for MCP tool calling
-- **Future MCP Integration**: Architecture supports exposing browser actions as MCP tools for LLM agents
-
-#### ✅ 6. Moves Beyond RAG and Uncontrolled Tool Use
-
-**Problem**: Current agents either use RAG (limited) or uncontrolled tool access (risky).
-
-**AgentTrust Solution**:
-- **Governed Tool Execution**: Every tool call (browser action) is policy-enforced, not just logged
-- **Risk-Aware Execution**: System automatically classifies and handles risk before execution
-- **User-in-the-Loop**: High-risk actions require explicit user approval with reason
-- **Audit-First Design**: Complete visibility into all agent actions with cryptographic proof
-- **Production-Ready**: Designed for real-world use, not just demos
-
-### Hackathon Value Proposition
-
-> **AgentTrust transforms browser automation from a security risk into a governed, auditable system that enables AI agents to operate safely in production environments.**
-
-Instead of building another agent that does tasks, AgentTrust builds **the infrastructure layer** that makes agents safe to deploy. This is exactly what Auth0 is looking for: a solution that uses their identity platform to solve the trust deficit.
+1. **User sends a message** via the Chat tab or the agent receives a command
+2. **Prompt is stored** in the database via AgentTrust API
+3. **OpenAI GPT-4o processes the message** with a system prompt that enforces tool use
+4. **Agent calls tools** (navigate, click, type, auto_login, etc.)
+5. **Each tool call validates with AgentTrust** — `POST /api/actions` checks policy, classifies risk, logs to audit chain
+6. **If allowed**, the browser action executes and a screenshot is captured
+7. **If step-up required**, the agent long-polls while the user approves/denies in the extension
+8. **If denied**, the agent reports the denial to ChatGPT, which adapts its approach
+9. **Results flow back** to ChatGPT for the next reasoning step
+10. **Extension updates in real time** via DOM events dispatched by the agent
 
 ---
 
-## 🎯 Strategic Positioning
+## Auth0 Hackathon Alignment
 
-AgentTrust isn't just a click logger—it's **infrastructure-level governance for AI agents**.
+AgentTrust is built for the **Auth0 "Authorized to Act"** hackathon, directly addressing the trust deficit that prevents AI agents from production deployment.
 
-This project demonstrates:
-- ✅ **Secure Tool Calling**: Policy-enforced, scoped browser actions
-- ✅ **Agent Identity**: Auth0 M2M authentication with JWT validation
-- ✅ **Token Vault Usage**: Short-lived elevated tokens via Auth0 token exchange
-- ✅ **MCP Alignment**: Structured action model compatible with Model Context Protocol
-
-**Built for the AI era, with enterprise-grade security.**
-
----
-
-## 🤖 Agent Integration
-
-**AgentTrust monitors AI agents, not human users.**
-
-Agents integrate by calling AgentTrust API **before** performing browser actions. AgentTrust validates, logs, and controls what agents can do.
-
-### Quick Start for Agents
-
-1. **Set up Agent Identity in Auth0** (one per agent)
-2. **Integrate AgentTrust client** into your agent code
-3. **Call AgentTrust before browser actions**
-4. **Handle policy responses** (allowed/denied/step-up)
-
-**Example**:
-```python
-from integrations.chatgpt.agenttrust_client import AgentTrustClient
-
-# Initialize for your agent
-agenttrust = AgentTrustClient()
-
-# Before performing browser action:
-result = agenttrust.execute_action(
-    action_type="click",
-    url="https://github.com/user/repo",
-    target={"tagName": "BUTTON", "id": "submit-btn"}
-)
-
-# Check result
-if result["status"] == "allowed":
-    # Proceed with action
-    perform_click(...)
-elif result["status"] == "step_up_required":
-    # Request user approval
-    request_approval(...)
-else:
-    # Action denied
-    raise Exception("Action not allowed")
-```
-
-See [Agent Integration Guide](./docs/agent-integration.md) for complete setup instructions.
+| Hackathon Requirement | AgentTrust Implementation |
+|----------------------|--------------------------|
+| **Token Vault** | `auth0_token_vault.py` — exchanges tokens for external API access via Auth0 Token Vault |
+| **OAuth flows** | Handled by Auth0; agents exchange tokens without managing refresh tokens |
+| **Agent identity** | Auth0 M2M authentication — every action is identity-bound |
+| **Secure tool calling** | Three-tier scope model with pre-execution validation |
+| **Step-up authentication** | Real-time approval flow with long-polling and auto-expiry |
+| **Consent delegation** | Auth0 Connected Accounts for third-party API consent |
+| **Audit trail** | SHA-256 hash chain with full action context and screenshots |
 
 ---
 
-## 📚 Documentation
+## Tech Stack
 
-### Essential Guides
-- [Real Agent Integration Guide](./docs/real-agent-integration.md) - **Integrate with real AI agents (ChatGPT, AutoGPT, LangChain)**
-- [Test Scenario Guide](./docs/test-scenario-guide.md) - **Test AgentTrust with real AI agents**
-- [Agent Integration Guide](./docs/agent-integration.md) - **How agents integrate with AgentTrust**
-- [Testing Setup Guide](./docs/testing-setup.md) - **Complete testing setup instructions**
-- [ChatGPT Integration Guide](./docs/chatgpt-integration.md) - **ChatGPT-specific integration**
-
-### Technical Documentation
-- [Architecture Documentation](./docs/architecture.md) - System architecture and design
-- [API Documentation](./docs/api.md) - Complete API reference
-- [Security Documentation](./docs/security.md) - **Complete security guide and best practices**
-- [Policy Configuration Guide](./docs/policies.md) - Policy setup and configuration
+| Layer | Technology |
+|-------|-----------|
+| AI Agent | Python 3.9+, OpenAI GPT-4o |
+| Browser Automation | Selenium 4.41, Chrome DevTools Protocol |
+| Backend | Node.js 18+, Express 4 |
+| Database | PostgreSQL 14+ (AWS RDS compatible) |
+| Authentication | Auth0 (M2M + Token Vault), JWT, bcrypt |
+| Encryption | AES-256-GCM (credentials), SHA-256 (audit chain) |
+| Extension | Chrome Manifest V3 |
+| Security | Helmet, express-rate-limit, CORS, HPP, mongo-sanitize |
 
 ---
 
-## 🙏 Acknowledgments
+## License
 
-Built with Auth0 for identity and security.
+MIT
