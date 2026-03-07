@@ -47,10 +47,10 @@ class AgentTrustClient:
             auth0_audience: Auth0 API audience
         """
         self.api_url = api_url or os.getenv('AGENTTRUST_API_URL', 'http://localhost:3000/api')
-        self.auth0_domain = auth0_domain or os.getenv('AUTH0_DOMAIN')
-        self.auth0_client_id = auth0_client_id or os.getenv('AUTH0_CLIENT_ID')
-        self.auth0_client_secret = auth0_client_secret or os.getenv('AUTH0_CLIENT_SECRET')
-        self.auth0_audience = auth0_audience or os.getenv('AUTH0_AUDIENCE')
+        self.auth0_domain = (auth0_domain or os.getenv('AUTH0_DOMAIN') or '').strip().rstrip('/')
+        self.auth0_client_id = (auth0_client_id or os.getenv('AUTH0_CLIENT_ID') or '').strip()
+        self.auth0_client_secret = (auth0_client_secret or os.getenv('AUTH0_CLIENT_SECRET') or '').strip()
+        self.auth0_audience = (auth0_audience or os.getenv('AUTH0_AUDIENCE') or '').strip().rstrip('/')
         self.dev_mode = os.getenv('AGENTTRUST_DEV_MODE', 'false').lower() == 'true'
         
         self._token = None

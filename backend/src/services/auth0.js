@@ -4,17 +4,20 @@
 const jwt = require('jsonwebtoken');
 const jwksClient = require('jwks-rsa');
 
-// Validate environment variables
-if (!process.env.AUTH0_DOMAIN) {
+// Normalize env vars (strip whitespace / trailing slashes to prevent mismatches)
+const AUTH0_DOMAIN = (process.env.AUTH0_DOMAIN || '').trim().replace(/\/+$/, '');
+const AUTH0_AUDIENCE = (process.env.AUTH0_AUDIENCE || '').trim().replace(/\/+$/, '');
+
+if (!AUTH0_DOMAIN) {
   throw new Error('AUTH0_DOMAIN environment variable is required');
 }
-if (!process.env.AUTH0_AUDIENCE) {
+if (!AUTH0_AUDIENCE) {
   throw new Error('AUTH0_AUDIENCE environment variable is required');
 }
 
 // Initialize JWKS client with caching
 const client = jwksClient({
-  jwksUri: `https://${process.env.AUTH0_DOMAIN}/.well-known/jwks.json`,
+  jwksUri: `https://${AUTH0_DOMAIN}/.well-known/jwks.json`,
   cache: true,
   cacheMaxEntries: 5,
   cacheMaxAge: 600000, // 10 minutes
@@ -55,8 +58,8 @@ async function validateToken(token) {
       token,
       getKey,
       {
-        audience: process.env.AUTH0_AUDIENCE,
-        issuer: `https://${process.env.AUTH0_DOMAIN}/`,
+        audience: AUTH0_AUDIENCE,
+        issuer: `https://${AUTH0_DOMAIN}/`,
         algorithms: ['RS256'],
         complete: false
       },
