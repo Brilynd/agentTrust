@@ -550,6 +550,16 @@ async function handleSendCommand(e) {
   const text = input.value.trim();
   if (!text) return;
 
+  // Always refresh to the latest session before sending, so the command
+  // reaches whichever Python agent session is currently polling.
+  try {
+    const { userToken } = await chrome.storage.local.get(['userToken']);
+    const sessRes = await apiFetch('/sessions?limit=1', { token: userToken });
+    if (sessRes.success && sessRes.sessions && sessRes.sessions.length > 0) {
+      activeSessionId = sessRes.sessions[0].id;
+    }
+  } catch (_) { /* keep existing activeSessionId */ }
+
   if (!activeSessionId) {
     await loadChatHistory();
     if (!activeSessionId) return;
