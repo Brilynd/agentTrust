@@ -40,9 +40,6 @@ router.get('/', authenticateUser, async (req, res) => {
     const { agentId, limit = 50 } = req.query;
     const userId = req.user.userId;
     
-    // Auto-claim any unclaimed sessions for this user
-    await Session.claimUnclaimedSessions(userId);
-    
     let sessions;
     if (agentId && agentId !== 'all') {
       sessions = await Session.findByUserAndAgent(userId, agentId, parseInt(limit));

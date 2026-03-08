@@ -57,6 +57,19 @@ class Session {
   }
 
   static async findByUser(userId, limit = 50) {
+    // Return sessions owned by this user OR still unclaimed
+    const query = `
+      SELECT * FROM sessions 
+      WHERE user_id = $1 OR user_id IS NULL
+      ORDER BY started_at DESC 
+      LIMIT $2
+    `;
+    const result = await pool.query(query, [userId, limit]);
+    return result.rows.map(row => new Session(row));
+  }
+
+  static async findByUserStrict(userId, limit = 50) {
+    // Return ONLY sessions owned by this user (no unclaimed)
     const query = `
       SELECT * FROM sessions 
       WHERE user_id = $1 
@@ -70,22 +83,11 @@ class Session {
   static async findByUserAndAgent(userId, agentId, limit = 50) {
     const query = `
       SELECT * FROM sessions 
-      WHERE user_id = $1 AND agent_id = $2 
+      WHERE (user_id = $1 OR user_id IS NULL) AND agent_id = $2 
       ORDER BY started_at DESC 
       LIMIT $3
     `;
     const result = await pool.query(query, [userId, agentId, limit]);
-    return result.rows.map(row => new Session(row));
-  }
-
-  static async claimUnclaimedSessions(userId) {
-    // Claim all unclaimed sessions for this user
-    const query = `
-      UPDATE sessions SET user_id = $1 
-      WHERE user_id IS NULL 
-      RETURNING *
-    `;
-    const result = await pool.query(query, [userId]);
     return result.rows.map(row => new Session(row));
   }
 

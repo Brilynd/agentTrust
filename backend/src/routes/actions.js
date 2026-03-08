@@ -68,10 +68,7 @@ router.get('/user', require('../middleware/auth').authenticateUser, async (req, 
     const { Action } = require('../models/action');
     const { Session } = require('../models/session');
     
-    // Auto-claim any unclaimed sessions for this user
-    await Session.claimUnclaimedSessions(userId);
-    
-    // Get all session IDs belonging to this user
+    // Get sessions belonging to this user (includes unclaimed sessions)
     const userSessions = await Session.findByUser(userId, 1000);
     const userSessionIds = userSessions.map(s => s.id);
     
