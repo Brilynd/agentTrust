@@ -203,6 +203,13 @@ class Action {
       paramIndex++;
     }
     
+    // Filter by multiple session IDs (for user-scoped queries)
+    if (filters.sessionIds && filters.sessionIds.length > 0) {
+      query += ` AND session_id = ANY($${paramIndex})`;
+      values.push(filters.sessionIds);
+      paramIndex++;
+    }
+    
     if (filters.type) {
       query += ` AND type = $${paramIndex}`;
       values.push(filters.type);

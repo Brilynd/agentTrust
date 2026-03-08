@@ -63,11 +63,21 @@ router.post('/', validateAction, enforcePolicy, async (req, res) => {
 router.get('/user', require('../middleware/auth').authenticateUser, async (req, res) => {
   try {
     const { agentId, domain, riskLevel, type, startDate, endDate, limit = 100 } = req.query;
+    const userId = req.user.userId;
     
     const { Action } = require('../models/action');
+    const { Session } = require('../models/session');
+    
+    // Auto-claim any unclaimed sessions for this user
+    await Session.claimUnclaimedSessions(userId);
+    
+    // Get all session IDs belonging to this user
+    const userSessions = await Session.findByUser(userId, 1000);
+    const userSessionIds = userSessions.map(s => s.id);
     
     const filters = {
-      limit: parseInt(limit)
+      limit: parseInt(limit),
+      sessionIds: userSessionIds
     };
     
     if (agentId) {

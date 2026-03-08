@@ -160,6 +160,17 @@ async function migrate() {
       CREATE INDEX IF NOT EXISTS idx_actions_session_id ON actions(session_id)
     `);
     
+    // Add user_id column to sessions so each session belongs to a specific user
+    await pool.query(`
+      ALTER TABLE sessions 
+      ADD COLUMN IF NOT EXISTS user_id INTEGER
+    `);
+
+    // Create index on user_id for filtering sessions by user
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)
+    `);
+
     // Create index on agent_id and started_at for session queries
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_sessions_agent_started ON sessions(agent_id, started_at)

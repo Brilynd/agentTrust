@@ -34,14 +34,21 @@ router.post('/:sessionId/end', validateAction, async (req, res) => {
   }
 });
 
-// Get all sessions (optionally filtered by agentId)
+// Get all sessions for the authenticated user (optionally filtered by agentId)
 router.get('/', authenticateUser, async (req, res) => {
   try {
     const { agentId, limit = 50 } = req.query;
+    const userId = req.user.userId;
     
-    const sessions = (agentId && agentId !== 'all')
-      ? await Session.findByAgent(agentId, parseInt(limit))
-      : await Session.findAll(parseInt(limit));
+    // Auto-claim any unclaimed sessions for this user
+    await Session.claimUnclaimedSessions(userId);
+    
+    let sessions;
+    if (agentId && agentId !== 'all') {
+      sessions = await Session.findByUserAndAgent(userId, agentId, parseInt(limit));
+    } else {
+      sessions = await Session.findByUser(userId, parseInt(limit));
+    }
     
     const sessionsWithDetails = await Promise.all(
       sessions.map(async (session) => {
@@ -94,6 +101,14 @@ router.get('/:sessionId', authenticateUser, async (req, res) => {
     const session = await Session.findById(sessionId);
     
     if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: 'Session not found'
+      });
+    }
+    
+    // Only allow users to see their own sessions
+    if (session.userId && session.userId !== req.user.userId) {
       return res.status(404).json({
         success: false,
         error: 'Session not found'

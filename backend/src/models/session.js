@@ -7,22 +7,23 @@ class Session {
   constructor(data) {
     this.id = data.id;
     this.agentId = data.agent_id || data.agentId;
+    this.userId = data.user_id || data.userId || null;
     this.startedAt = data.started_at;
     this.endedAt = data.ended_at;
     this.actionCount = data.action_count || 0;
     this.createdAt = data.created_at;
   }
   
-  static async create(agentId) {
+  static async create(agentId, userId = null) {
     const id = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     const query = `
-      INSERT INTO sessions (id, agent_id, started_at)
-      VALUES ($1, $2, NOW())
+      INSERT INTO sessions (id, agent_id, user_id, started_at)
+      VALUES ($1, $2, $3, NOW())
       RETURNING *
     `;
     
-    const values = [id, agentId];
+    const values = [id, agentId, userId];
     
     try {
       const result = await pool.query(query, values);
@@ -55,6 +56,39 @@ class Session {
     return result.rows.map(row => new Session(row));
   }
 
+  static async findByUser(userId, limit = 50) {
+    const query = `
+      SELECT * FROM sessions 
+      WHERE user_id = $1 
+      ORDER BY started_at DESC 
+      LIMIT $2
+    `;
+    const result = await pool.query(query, [userId, limit]);
+    return result.rows.map(row => new Session(row));
+  }
+
+  static async findByUserAndAgent(userId, agentId, limit = 50) {
+    const query = `
+      SELECT * FROM sessions 
+      WHERE user_id = $1 AND agent_id = $2 
+      ORDER BY started_at DESC 
+      LIMIT $3
+    `;
+    const result = await pool.query(query, [userId, agentId, limit]);
+    return result.rows.map(row => new Session(row));
+  }
+
+  static async claimUnclaimedSessions(userId) {
+    // Claim all unclaimed sessions for this user
+    const query = `
+      UPDATE sessions SET user_id = $1 
+      WHERE user_id IS NULL 
+      RETURNING *
+    `;
+    const result = await pool.query(query, [userId]);
+    return result.rows.map(row => new Session(row));
+  }
+
   static async findAll(limit = 50) {
     const query = `
       SELECT * FROM sessions 
@@ -65,7 +99,7 @@ class Session {
     return result.rows.map(row => new Session(row));
   }
   
-  static async getOrCreateActiveSession(agentId) {
+  static async getOrCreateActiveSession(agentId, userId = null) {
     // Try to find an active session (not ended) from the last hour
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     
@@ -85,7 +119,16 @@ class Session {
     }
     
     // Create new session
-    return await Session.create(agentId);
+    return await Session.create(agentId, userId);
+  }
+
+  async setUserId(userId) {
+    const query = 'UPDATE sessions SET user_id = $1 WHERE id = $2 RETURNING *';
+    const result = await pool.query(query, [userId, this.id]);
+    if (result.rows.length > 0) {
+      this.userId = result.rows[0].user_id;
+    }
+    return this;
   }
   
   async end() {
@@ -105,6 +148,7 @@ class Session {
     return {
       id: this.id,
       agentId: this.agentId,
+      userId: this.userId,
       startedAt: this.startedAt,
       endedAt: this.endedAt,
       actionCount: this.actionCount,

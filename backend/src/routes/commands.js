@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateUser, validateAction } = require('../middleware/auth');
+const { Session } = require('../models/session');
 
 // In-memory command queue: sessionId -> [{ id, content, createdAt }]
 const queues = new Map();
@@ -11,11 +12,21 @@ const waiters = new Map();
 let cmdCounter = 0;
 
 // Extension submits a command (user auth)
-router.post('/', authenticateUser, (req, res) => {
+router.post('/', authenticateUser, async (req, res) => {
   const { content, sessionId } = req.body;
 
   if (!content || !sessionId) {
     return res.status(400).json({ success: false, error: 'content and sessionId are required' });
+  }
+
+  // Associate the session with this user if not already claimed
+  try {
+    const session = await Session.findById(sessionId);
+    if (session && !session.userId) {
+      await session.setUserId(req.user.userId);
+    }
+  } catch (err) {
+    console.error('Failed to associate session with user:', err);
   }
 
   const command = {
