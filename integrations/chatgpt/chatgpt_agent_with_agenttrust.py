@@ -1538,25 +1538,35 @@ class BrowserActionExecutor:
     def type_text(self, target: Dict[str, Any], text: str):
         """
         Type text into an input field.
-        Validated as a click (low-risk) rather than form_submit, because
-        typing into a search box / filter is not a form submission.
+        Validated as 'form_input' through AgentTrust so that the policy
+        engine can apply appropriate risk scoring (password fields get
+        higher risk than plain search boxes).
         """
         if not self.browser:
             return {"error": "Browser not initialized"}
         
         current_url = self.browser.get_current_url()
         
+        # Detect if this is a sensitive input (password, credit card, etc.)
+        target_name = (target.get("name") or "").lower()
+        target_id = (target.get("id") or "").lower()
+        target_type = (target.get("type") or "").lower()
+        target_placeholder = (target.get("placeholder") or "").lower()
+        is_sensitive = any(kw in f"{target_name} {target_id} {target_type} {target_placeholder}"
+                          for kw in ("password", "passwd", "secret", "ssn", "credit", "card", "cvv", "pin"))
+        
         try:
             result = self.agenttrust.execute_action(
-                action_type="click",
+                action_type="form_input",
                 url=current_url,
                 target={"type": "input", "action": "type_text",
-                        "id": target.get("id"), "name": target.get("name")}
+                        "id": target.get("id"), "name": target.get("name"),
+                        "is_sensitive": is_sensitive}
             )
             
             status = result.get("status") if result else None
 
-            if status in ("allowed", None):
+            if status == "allowed":
                 type_result = self.browser.type_text(target, text)
                 if not type_result.get("success"):
                     # Element not found by standard lookup — try CSS selector fallback
@@ -2119,10 +2129,84 @@ class BrowserActionExecutor:
                 except Exception:
                     pass
 
+            # ── Post-login verification ──────────────────────────
+            # Check if the login actually succeeded by looking for
+            # error indicators on the resulting page.
+            login_failed = False
+            failure_reason = ""
+
+            # Check 1: DOM-based error detection
+            try:
+                page_text = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+                error_phrases = [
+                    "incorrect password", "wrong password", "invalid password",
+                    "incorrect username", "invalid credentials",
+                    "login failed", "sign-in failed", "authentication failed",
+                    "account not found", "user not found",
+                    "too many attempts", "account locked", "account disabled",
+                    "please try again", "unable to sign in", "unable to log in",
+                    "password is incorrect", "email is incorrect",
+                    "doesn't match", "does not match", "didn't match",
+                    "we didn't recognize", "we don't recognize",
+                    "verify it's you", "verify your identity",
+                ]
+                for phrase in error_phrases:
+                    if phrase in page_text:
+                        login_failed = True
+                        failure_reason = f"Page shows error: '{phrase}'"
+                        steps_log.append(f"⚠️ Detected login error: '{phrase}'")
+                        break
+            except Exception:
+                pass
+
+            # Check 2: Still on a login page (password field still visible)
+            if not login_failed:
+                try:
+                    still_has_password = _find_input("password")
+                    if still_has_password and still_has_password.is_displayed():
+                        # URL didn't change and password field is still there
+                        if new_url == url or "/login" in new_url or "/signin" in new_url:
+                            login_failed = True
+                            failure_reason = "Still on login page after submitting"
+                            steps_log.append("⚠️ Password field still visible — login likely failed")
+                except Exception:
+                    pass
+
+            # Check 3: Vision-based verification (if available)
+            if not login_failed and screenshot and getattr(self, '_parent_agent', None):
+                pa = self._parent_agent
+                if getattr(pa, 'page_vision', None) and pa.page_vision.enabled:
+                    try:
+                        vision_result = pa.page_vision.ask_about_page(
+                            screenshot,
+                            "Did the login succeed or fail? Look for error messages, "
+                            "'incorrect password' banners, or red warning text. "
+                            "Answer ONLY 'success' or 'failed: <reason>'.",
+                            url=new_url,
+                        )
+                        if vision_result and "failed" in vision_result.lower():
+                            login_failed = True
+                            failure_reason = f"Vision detected failure: {vision_result}"
+                            steps_log.append(f"⚠️ Vision: {vision_result}")
+                    except Exception:
+                        pass
+
             self._notify_extension("form_submit", url, "allowed",
                                    risk_level=result.get("risk_level"),
                                    action_id=action_id,
                                    form_data={"action": "auto_login"})
+
+            if login_failed:
+                return {
+                    "success": False, "status": "allowed",
+                    "action_id": action_id,
+                    "risk_level": result.get("risk_level"),
+                    "new_url": new_url,
+                    "steps_completed": steps_log,
+                    "login_error": failure_reason,
+                    "message": f"Login form was submitted but appears to have failed: {failure_reason}. "
+                               "Check the page for error details and try a different approach."
+                }
 
             return {
                 "success": True, "status": "allowed",
@@ -2589,6 +2673,45 @@ class ChatGPTAgentWithAgentTrust:
         self._last_action_key = None
         self._tool_call_count = 0
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+        # Action history RAG (optional — improves planning with past task patterns)
+        self.action_rag = None
+        try:
+            from action_history_rag import ActionHistoryRAG
+            self.action_rag = ActionHistoryRAG()
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"\u26a0\ufe0f  Action history RAG init failed: {e}")
+
+        # Vision model for page understanding (optional)
+        self.page_vision = None
+        try:
+            from page_vision import PageVision
+            self.page_vision = PageVision(self.openai)
+            if self.page_vision.enabled:
+                print("\U0001f441\ufe0f  Vision page analysis enabled")
+            else:
+                print("\u2139\ufe0f  Vision disabled (set AGENTTRUST_VISION=true to enable)")
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"\u26a0\ufe0f  Vision init failed: {e}")
+
+        # Give executor a back-reference so auto_login can use vision
+        self.browser_executor._parent_agent = self
+
+        # LangGraph state machine (optional — falls back to legacy loop)
+        self._graph = None
+        try:
+            from graph_agent import build_graph
+            self._graph = build_graph(self)
+            print("\u2705 LangGraph agent enabled (PLAN \u2192 OBSERVE \u2192 ACT \u2192 VERIFY)")
+        except ImportError:
+            print("\u2139\ufe0f  LangGraph not installed, using standard agent loop")
+            print("   Install with: pip install langgraph")
+        except Exception as e:
+            print(f"\u26a0\ufe0f  LangGraph init failed ({e}), using standard agent loop")
     
     # ------------------------------------------------------------------ #
     # Rate-limit-aware API call wrapper
@@ -2699,17 +2822,24 @@ class ChatGPTAgentWithAgentTrust:
                     "body": {"type": "object", "description": "Request body for POST/PUT/PATCH (optional)"}
                 }, "required": ["provider", "method", "endpoint"]}
             }},
+            {"type": "function", "function": {
+                "name": "analyse_page_screenshot",
+                "description": "Take a screenshot of the current page and get a visual AI analysis. Use when: (1) page text is empty/sparse, (2) you suspect a popup/modal/captcha is blocking interaction, (3) you need to understand the visual layout, (4) actions keep failing and you can't tell why from text alone.",
+                "parameters": {"type": "object", "properties": {
+                    "question": {"type": "string", "description": "Optional specific question about the page (e.g. 'Is there a cookie consent banner?'). If omitted, returns a general analysis."}
+                }}
+            }},
         ])
         return tools
     
     # ------------------------------------------------------------------ #
-    # Main chat loop
+    # Main chat entry point
     # ------------------------------------------------------------------ #
     MAX_TOOL_ROUNDS = 25      # hard cap per user message
     MAX_CONSECUTIVE_FAILS = 3  # same action fails -> give up
     
     def chat(self, user_message):
-        """Process one user message, call tools as needed, return final text."""
+        """Process one user message. Routes to LangGraph or legacy loop."""
         print(f"\n👤 User: {user_message}\n")
 
         # Store the user prompt in the DB so the extension can show it
@@ -2718,7 +2848,158 @@ class ChatGPTAgentWithAgentTrust:
             prompt_id = self.agenttrust.store_prompt(user_message)
         except Exception:
             pass
-        
+
+        # --- Core processing: LangGraph state machine or legacy loop ---
+        if self._graph:
+            response_text = self._chat_graph(user_message)
+        else:
+            response_text = self._chat_loop(user_message)
+
+        print(f"🤖 ChatGPT: {response_text}\n")
+
+        # Store the agent's response alongside the prompt
+        if prompt_id:
+            try:
+                self.agenttrust.update_prompt_response(prompt_id, response_text)
+            except Exception:
+                pass
+
+        # Build a context-rich assistant message that includes browser state.
+        # This lets the LLM remember where it left off across messages.
+        current_url = ""
+        page_title = ""
+        try:
+            if self.browser_executor.browser:
+                current_url = self.browser_executor.get_current_url()
+                page_title = self.browser_executor.browser.get_page_title()
+        except Exception:
+            pass
+
+        state_suffix = ""
+        if current_url:
+            state_suffix = f"\n\n[Browser state: {page_title} — {current_url}]"
+
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": response_text + state_suffix})
+
+        # Keep conversation history bounded to avoid exceeding token limits
+        MAX_HISTORY_TURNS = 10
+        if len(self.conversation_history) > MAX_HISTORY_TURNS * 2:
+            self.conversation_history = self.conversation_history[-(MAX_HISTORY_TURNS * 2):]
+
+        # Record successful actions for RAG retrieval in future tasks
+        self._record_actions_for_rag(user_message, response_text)
+
+        return response_text
+
+    # ------------------------------------------------------------------ #
+    # Action history RAG recording
+    # ------------------------------------------------------------------ #
+    def _record_actions_for_rag(self, user_message: str, response_text: str):
+        """Save the action sequence from this chat turn for future RAG retrieval."""
+        if not self.action_rag:
+            return
+        if not self.actions_performed:
+            return
+
+        # Build compact action records from what was performed
+        action_records = []
+        domains = set()
+        for ap in self.actions_performed:
+            url = ap.get("url", "")
+            domain = ""
+            if url:
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).hostname or ""
+                except Exception:
+                    pass
+                if domain:
+                    domains.add(domain)
+
+            action_records.append({
+                "tool": ap.get("type", "unknown"),
+                "args": {"url": url},
+                "result_status": "allowed" if ap.get("risk_level") else "unknown",
+            })
+
+        # Also capture any tool calls tracked by the executor
+        executor_history = getattr(self.browser_executor, 'action_history', [])
+        for eh in executor_history:
+            if eh.get("status") == "allowed" and eh not in self.actions_performed:
+                url = eh.get("url", "")
+                if url:
+                    try:
+                        from urllib.parse import urlparse
+                        d = urlparse(url).hostname or ""
+                        if d:
+                            domains.add(d)
+                    except Exception:
+                        pass
+                action_records.append({
+                    "tool": eh.get("action", "unknown"),
+                    "args": {"url": url},
+                    "result_status": eh.get("status", "allowed"),
+                })
+
+        if not action_records:
+            return
+
+        # Determine success: no blocked actions and we got a response
+        has_blocks = len(self.actions_blocked) > 0
+        success = not has_blocks and bool(response_text)
+
+        try:
+            self.action_rag.record(
+                task=user_message,
+                actions=action_records,
+                success=success,
+                domains=sorted(domains),
+            )
+        except Exception as e:
+            print(f"\u26a0\ufe0f  Failed to record action history: {e}")
+
+    # ------------------------------------------------------------------ #
+    # LangGraph implementation (PLAN → OBSERVE → ACT → VERIFY)
+    # ------------------------------------------------------------------ #
+    def _chat_graph(self, user_message):
+        """Process message using the LangGraph state machine."""
+        initial_state = {
+            "user_request": user_message,
+            "conversation_history": list(self.conversation_history),
+            "sub_goals": [],
+            "current_goal_index": 0,
+            "plan_text": "",
+            "current_url": "",
+            "page_title": "",
+            "page_text": "",
+            "visible_elements": [],
+            "turn_messages": [],
+            "pending_tool_calls": [],
+            "last_action_result": {},
+            "last_action_name": "",
+            "action_category": "none",
+            "consecutive_failures": 0,
+            "total_actions": 0,
+            "final_response": "",
+            "needs_step_up": False,
+            "step_up_message": "",
+        }
+
+        try:
+            result = self._graph.invoke(initial_state)
+            return result.get("final_response", "Task completed.")
+        except Exception as e:
+            print(f"⚠️  LangGraph error ({e}), falling back to legacy loop")
+            import traceback
+            traceback.print_exc()
+            return self._chat_loop(user_message)
+
+    # ------------------------------------------------------------------ #
+    # Legacy loop implementation (fallback when LangGraph not available)
+    # ------------------------------------------------------------------ #
+    def _chat_loop(self, user_message):
+        """Process message using the original while-loop approach."""
         system_prompt = """You are a hands-on browser automation agent. You have FULL control of a
 real browser through your tools. Your job is to PERFORM the user's requests
 by actually navigating, clicking, typing, and reading pages — NOT by giving
@@ -2807,7 +3088,24 @@ ROUTINES:
         ] + self.conversation_history + [
             {"role": "user", "content": user_message + browser_context}
         ]
-        
+
+        # --- Inject RAG context from past action histories ---
+        if self.action_rag:
+            try:
+                similar = self.action_rag.retrieve(user_message, top_k=3)
+                if similar:
+                    rag_text = self.action_rag.format_for_prompt(similar)
+                    messages.insert(1, {
+                        "role": "system",
+                        "content": (
+                            "The following are action sequences from similar "
+                            "past tasks that succeeded. Use them as reference "
+                            "for planning your approach:\n\n" + rag_text
+                        ),
+                    })
+            except Exception as e:
+                print(f"⚠️  RAG retrieval failed in legacy loop: {e}")
+
         tools = self._build_tools()
         self._tool_call_count = 0
         self._consecutive_failures = 0
@@ -2899,40 +3197,7 @@ ROUTINES:
             )
             message = response.choices[0].message
         
-        response_text = message.content or ""
-        print(f"🤖 ChatGPT: {response_text}\n")
-
-        # Store the agent's response alongside the prompt
-        if prompt_id:
-            try:
-                self.agenttrust.update_prompt_response(prompt_id, response_text)
-            except Exception:
-                pass
-        
-        # Build a context-rich assistant message that includes browser state.
-        # This lets the LLM remember where it left off across messages.
-        current_url = ""
-        page_title = ""
-        try:
-            if self.browser_executor.browser:
-                current_url = self.browser_executor.get_current_url()
-                page_title = self.browser_executor.browser.get_page_title()
-        except Exception:
-            pass
-        
-        state_suffix = ""
-        if current_url:
-            state_suffix = f"\n\n[Browser state: {page_title} — {current_url}]"
-        
-        self.conversation_history.append({"role": "user", "content": user_message})
-        self.conversation_history.append({"role": "assistant", "content": response_text + state_suffix})
-
-        # Keep conversation history bounded to avoid exceeding token limits
-        MAX_HISTORY_TURNS = 10
-        if len(self.conversation_history) > MAX_HISTORY_TURNS * 2:
-            self.conversation_history = self.conversation_history[-(MAX_HISTORY_TURNS * 2):]
-        
-        return response_text
+        return message.content or ""
     
     def handle_function_call(self, function_call):
         """
@@ -3073,6 +3338,24 @@ ROUTINES:
             else:
                 print(f"⚠️  External API call to {provider}: {result.get('error', 'unknown error')}")
             return result
+
+        elif function_name == "analyse_page_screenshot":
+            if not self.page_vision or not self.page_vision.enabled:
+                return {"error": "Vision analysis is not available. Set AGENTTRUST_VISION=true."}
+            b64 = self.browser_executor.take_screenshot()
+            if not b64:
+                return {"error": "Could not capture screenshot (no browser)."}
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            question = args.get("question")
+            url = self.browser_executor.get_current_url() or ""
+            if question:
+                answer = self.page_vision.ask_about_page(b64, question, url=url)
+                print(f"\U0001f441\ufe0f  Vision Q&A: {question[:60]}")
+                return {"answer": answer or "Could not analyse.", "current_url": url}
+            else:
+                analysis = self.page_vision.analyse_screenshot(b64, url=url, force=True)
+                print(f"\U0001f441\ufe0f  Vision analysis: {(analysis or {}).get('page_type', '?')}")
+                return {**(analysis or {}), "current_url": url}
 
         # Handle browser action function (requires AgentTrust validation)
         elif function_name == "agenttrust_browser_action":

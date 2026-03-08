@@ -78,6 +78,14 @@ async function classifyRisk(actionData) {
   if (type === 'form_submit') {
     riskScore += 1;
   }
+
+  // Form input — typing into fields. Sensitive fields (password, card)
+  // get higher risk; plain text inputs stay low.
+  if (type === 'form_input') {
+    if (target?.is_sensitive) {
+      riskScore += 2;  // e.g. password field on a financial domain → high
+    }
+  }
   
   // Check form fields for passwords
   if (form) {
@@ -143,6 +151,20 @@ async function checkPolicy(actionData, agentScopes) {
       requiresStepUp: true,
       reason: 'Form submission requires user approval (missing browser.form.submit scope)'
     };
+  }
+
+  // Sensitive form inputs (password, card fields) require approval if on
+  // a financial domain or if the scope is missing
+  if (actionData.type === 'form_input' && actionData.target?.is_sensitive) {
+    if (policies.financial_domains.some(fin => actionData.domain && actionData.domain.includes(fin))) {
+      if (!agentScopes.includes('browser.form.submit')) {
+        return {
+          allowed: false,
+          requiresStepUp: true,
+          reason: 'Sensitive input on financial site requires user approval'
+        };
+      }
+    }
   }
   
   return {

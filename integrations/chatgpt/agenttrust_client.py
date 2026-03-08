@@ -193,7 +193,7 @@ class AgentTrustClient:
         Returns:
             Dict with status, action_id, risk_level, etc.
         """
-        if action_type not in ['click', 'form_submit', 'navigation']:
+        if action_type not in ['click', 'form_submit', 'form_input', 'navigation']:
             raise ValueError(f"Invalid action_type: {action_type}")
         
         # Extract domain from URL if not provided
@@ -538,27 +538,61 @@ class AgentTrustClient:
     def get_credentials(self, domain: str) -> Optional[Dict]:
         """Look up saved credentials for a domain.
         
+        Tries multiple domain variations to maximise match rate:
+        the exact normalized form, then with common subdomains stripped
+        (accounts., login., auth., id., sso., www.), and vice-versa.
+        
         Returns:
             Dict with 'username' and 'password', or None if not found.
         """
         if self.dev_mode:
             return None
-        try:
-            normalized = self._normalize_domain(domain)
-            token = self._get_token()
-            response = requests.get(
-                f"{self.api_url}/credentials/lookup",
-                headers={"Authorization": f"Bearer {token}"},
-                params={"domain": normalized},
-                timeout=5
-            )
-            if response.status_code == 200:
-                data = response.json()
-                cred = data.get("credential")
-                if cred:
-                    return {"username": cred["username"], "password": cred["password"]}
-        except Exception as e:
-            print(f"⚠️  Credential lookup error: {e}")
+
+        normalized = self._normalize_domain(domain)
+        # Build a list of domain variations to try
+        variations = [normalized]
+
+        # Strip common auth-related subdomains
+        _auth_prefixes = ("accounts.", "login.", "auth.", "id.", "sso.", "signin.", "app.")
+        for prefix in _auth_prefixes:
+            if normalized.startswith(prefix):
+                base = normalized[len(prefix):]
+                if base and "." in base:
+                    variations.append(base)
+                break  # only strip one prefix
+
+        # Also try adding common prefixes for the base domain
+        parts = normalized.split(".")
+        if len(parts) == 2:  # e.g. "spotify.com" — also try "accounts.spotify.com"
+            for prefix in _auth_prefixes:
+                variations.append(prefix + normalized)
+
+        # De-duplicate while preserving order
+        seen = set()
+        unique = []
+        for v in variations:
+            if v not in seen:
+                seen.add(v)
+                unique.append(v)
+
+        for candidate in unique:
+            try:
+                token = self._get_token()
+                response = requests.get(
+                    f"{self.api_url}/credentials/lookup",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"domain": candidate},
+                    timeout=5,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    cred = data.get("credential")
+                    if cred:
+                        return {"username": cred["username"], "password": cred["password"]}
+            except Exception as e:
+                print(f"⚠️  Credential lookup error for {candidate}: {e}")
+                break  # network error — no point trying more variations
+
         return None
 
     def call_external_api(
