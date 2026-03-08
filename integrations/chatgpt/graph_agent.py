@@ -111,7 +111,72 @@ def build_graph(agent):
     #  PLAN node                                                          #
     # ================================================================== #
     def plan_node(state: AgentState) -> dict:
-        """Use the LLM to decompose the user request into sub-goals."""
+        """Use the LLM to decompose the user request into sub-goals.
+
+        First classifies whether the request actually needs browser
+        automation.  If not (e.g. casual chat, general questions),
+        produce a plain-text answer and skip the action pipeline.
+        """
+
+        # ---- Intent gate: does the request need browser actions? ----
+        req = state["user_request"]
+        try:
+            gate_resp = agent._chat_completion(
+                model=agent.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an intent classifier. Given a user message "
+                            "to a browser-automation agent, decide whether it "
+                            "requires the agent to USE the browser (navigate, "
+                            "click, type, search on a website, open a page, "
+                            "log in, etc.).\n\n"
+                            "Reply with EXACTLY one word:\n"
+                            "  BROWSER  — if live browser interaction is needed\n"
+                            "  CHAT     — if it can be answered with text alone\n"
+                        ),
+                    },
+                    {"role": "user", "content": req},
+                ],
+                temperature=0,
+            )
+            intent = (gate_resp.choices[0].message.content or "").strip().upper()
+        except Exception:
+            intent = "BROWSER"  # default to browser on error
+
+        if intent.startswith("CHAT"):
+            # No browser needed — answer conversationally
+            try:
+                chat_resp = agent._chat_completion(
+                    model=agent.model,
+                    messages=(
+                        [{"role": "system", "content": "You are a helpful assistant."}]
+                        + list(state.get("conversation_history") or [])
+                        + [{"role": "user", "content": req}]
+                    ),
+                    temperature=0.5,
+                )
+                answer = chat_resp.choices[0].message.content or "I'm not sure."
+            except Exception:
+                answer = "Sorry, I wasn't able to process that."
+
+            print(f"  PLAN: No browser action needed — answering directly.")
+            return {
+                "sub_goals": [],
+                "current_goal_index": 0,
+                "plan_text": "(no browser actions required)",
+                "turn_messages": [],
+                "pending_tool_calls": [],
+                "consecutive_failures": 0,
+                "total_actions": 0,
+                "needs_step_up": False,
+                "step_up_message": "",
+                "action_category": "none",
+                "final_response": answer,
+            }
+
+        # ---- Browser path: gather context & build sub-goals ----
 
         # Include current browser context so the planner knows where we are
         browser_ctx = ""
@@ -345,6 +410,10 @@ def build_graph(agent):
             "   id > href > aria-label > text.\n"
             "4. Fill target objects completely (id, text, href, tagName, etc.).\n\n"
             "RULES:\n"
+            "- ONLY perform actions the user EXPLICITLY asked for. Do NOT\n"
+            "  browse, search, or navigate on your own initiative.\n"
+            "- If the user did not ask you to go to a website or perform a\n"
+            "  specific browser action, reply with text only — no tool calls.\n"
             "- Execute exactly ONE tool call per turn.\n"
             "- NEVER guess deep URLs (e.g. /ap/signin). Navigate to homepages\n"
             "  first, then find and click links.\n"
@@ -382,18 +451,11 @@ def build_graph(agent):
             not in ("get_page_content", "get_visible_elements", "get_current_url")
         ]
 
-        # Force tool use on the very first action to prevent text-only replies
-        is_first = (
-            state.get("total_actions", 0) == 0
-            and not state.get("turn_messages")
-            and agent.browser_executor.browser is not None
-        )
-
         response = agent._chat_completion(
             model=agent.model,
             messages=messages,
             tools=tools,
-            tool_choice="required" if is_first else "auto",
+            tool_choice="auto",
         )
 
         message = response.choices[0].message
@@ -703,8 +765,18 @@ def build_graph(agent):
     # Entry: always start with planning
     graph.set_entry_point("plan")
 
-    # plan → observe (read page before first action)
-    graph.add_edge("plan", "observe")
+    # plan → observe (if browser actions needed) or respond (if chat only)
+    def route_after_plan(state: AgentState) -> str:
+        """Skip the action pipeline when no browser actions are needed."""
+        if state.get("final_response"):
+            return "respond"
+        return "observe"
+
+    graph.add_conditional_edges(
+        "plan",
+        route_after_plan,
+        {"observe": "observe", "respond": "respond"},
+    )
 
     # observe → agent (LLM sees fresh page state)
     graph.add_edge("observe", "agent")

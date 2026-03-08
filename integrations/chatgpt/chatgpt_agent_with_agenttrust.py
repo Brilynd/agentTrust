@@ -3005,11 +3005,14 @@ real browser through your tools. Your job is to PERFORM the user's requests
 by actually navigating, clicking, typing, and reading pages — NOT by giving
 instructions for the user to follow manually.
 
-CRITICAL: You MUST use your tools to carry out every request. NEVER respond
-with a list of manual steps. NEVER say "I'm unable to perform this" or
-"please do this yourself." You ARE the one doing it.
+CRITICAL: Only perform browser actions the user EXPLICITLY asked for.
+If the user asks a general question, has a casual conversation, or does
+not mention visiting a specific site / performing a browser task, reply
+with text only — do NOT call any tools.
+When the user DOES ask for a browser action, carry it out fully with your
+tools. Do NOT respond with a list of manual steps.
 
-WORKFLOW for every request:
+WORKFLOW (only when the user asks for a browser action):
 1. LOOK  — call get_page_content or get_visible_elements to see the current
    page. Every tool response includes "current_url" — use it to know where
    the browser is RIGHT NOW. If there is no page loaded yet, start by navigating.
@@ -3039,7 +3042,9 @@ PAGE CONTINUITY — VERY IMPORTANT:
   click its link on the CURRENT page.
 
 RULES:
-- ALWAYS start by using tools. Never skip straight to a text answer.
+- ONLY act on what the user explicitly asked. Do NOT browse, search,
+  or navigate on your own initiative. If the request does not need
+  browser interaction, answer with text only.
 - NEVER guess deep URLs (e.g. /ap/signin, /login/oauth). Always navigate
   to the site's HOMEPAGE first (e.g. https://www.amazon.com), then find
   and click the sign-in link on the page. Deep login URLs often fail.
@@ -3111,18 +3116,12 @@ ROUTINES:
         self._consecutive_failures = 0
         self._last_action_key = None
         
-        # Force tool use on the first call so the LLM never gives a
-        # text-only "here are the steps" response.  Subsequent rounds
-        # use "auto" so it can finish with a text summary.
-        first_call = True
-        
         response = self._chat_completion(
             model=self.model,
             messages=messages,
             tools=tools,
-            tool_choice="required" if (first_call and self.browser_executor.browser) else "auto"
+            tool_choice="auto"
         )
-        first_call = False
         message = response.choices[0].message
         
         while message.tool_calls and self._tool_call_count < self.MAX_TOOL_ROUNDS:
