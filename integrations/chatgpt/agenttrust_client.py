@@ -538,8 +538,8 @@ class AgentTrustClient:
     # Cross-service domain aliases — services that share credentials
     # but use different domain names for login vs. product pages.
     _DOMAIN_ALIAS_GROUPS = [
-        {"google.com", "gmail.com", "youtube.com", "accounts.google.com"},
-        {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
+        {"google.com", "gmail.com", "youtube.com", "accounts.google.com", "mail.google.com"},
+        {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com", "mail.live.com"},
         {"apple.com", "icloud.com", "appleid.apple.com"},
         {"yahoo.com", "ymail.com", "mail.yahoo.com"},
         {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.ca"},
@@ -576,7 +576,7 @@ class AgentTrustClient:
         variations = [normalized]
 
         # Strip common auth-related subdomains
-        _auth_prefixes = ("accounts.", "login.", "auth.", "id.", "sso.", "signin.", "app.")
+        _auth_prefixes = ("accounts.", "login.", "auth.", "id.", "sso.", "signin.", "app.", "mail.", "my.", "secure.", "portal.")
         for prefix in _auth_prefixes:
             if normalized.startswith(prefix):
                 base = normalized[len(prefix):]

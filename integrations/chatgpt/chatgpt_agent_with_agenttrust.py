@@ -3454,9 +3454,9 @@ class ChatGPTAgentWithAgentTrust:
             }},
             {"type": "function", "function": {
                 "name": "get_saved_credentials",
-                "description": "Look up saved login credentials for a domain. Call this BEFORE asking the user for login credentials. If credentials exist, use them with auto_login.",
+                "description": "Look up saved login credentials for a domain. Call this BEFORE asking the user for login credentials. If credentials exist, use them with auto_login. Use the BASE domain (e.g. 'google.com' not 'mail.google.com', 'amazon.com' not 'smile.amazon.com'). For Gmail/Google services, use 'google.com' or 'gmail.com'.",
                 "parameters": {"type": "object", "properties": {
-                    "domain": {"type": "string", "description": "Domain to look up (e.g. github.com, amazon.com)"}
+                    "domain": {"type": "string", "description": "Base domain to look up (e.g. google.com, gmail.com, amazon.com, github.com). Use the base domain, not subdomains."}
                 }, "required": ["domain"]}
             }},
             {"type": "function", "function": {
@@ -3742,8 +3742,8 @@ SEARCH & FORM SUBMISSION:
   prefer pressing Enter over finding a submit button.
 
 LOGIN FLOW — MANDATORY:
-- When you land on ANY login page (sign-in form, email input,
-  password input), you MUST follow this exact sequence:
+- When you need to log into a site, FIRST navigate to that site's
+  login page (use open_new_tab or navigate). THEN follow this sequence:
   1. Call get_saved_credentials with the site's domain.
   2. If credentials are found, call auto_login immediately.
   3. auto_login handles multi-step forms, entering both username
@@ -3751,6 +3751,9 @@ LOGIN FLOW — MANDATORY:
   4. NEVER manually type usernames or passwords with type_text.
      auto_login does this for you with proper security validation.
   5. Only ask the user if NO saved credentials exist.
+- ⚠ auto_login ONLY works on the site's OWN login page.
+  Do NOT call auto_login while on an unrelated site.
+  Example: to log into Gmail, navigate to mail.google.com FIRST.
 - This applies to ALL sites: Google, Gmail, Amazon, eBay, etc.
 
 EMAIL & VERIFICATION CODE WORKFLOW — CRITICAL:
@@ -4054,6 +4057,85 @@ ROUTINES:
                     "message": f"Current page ({current_url}) is not a login page. "
                                "Navigate to the website's login page FIRST, then call auto_login."
                 }
+
+            # Guard: check that the current page domain is related to the
+            # credentials being used. This prevents auto_login on a totally
+            # unrelated site (e.g. calling Gmail auto_login while on cnbc.com).
+            # We only block when the email domain of the username is a MAJOR
+            # provider (Google, Microsoft, etc.) and the page is clearly
+            # unrelated — because many sites use email-style usernames, so
+            # user@gmail.com might still be a valid username on investopedia.com.
+            from urllib.parse import urlparse as _urlparse_guard
+            _guard_parsed = _urlparse_guard(current_url)
+            _guard_domain = _guard_parsed.netloc.lower().lstrip("www.")
+            
+            # Extract the credential domain from the username (email)
+            _cred_domain = ""
+            if "@" in username:
+                _cred_domain = username.split("@")[-1].lower()
+            
+            # We only enforce this guard for major email provider domains.
+            # If the credential uses a @gmail.com address, we check that
+            # the page is a Google property (not cnbc.com).
+            # For non-major-provider credentials, we allow (the email domain
+            # might just be the user's login email for any site).
+            _MAJOR_EMAIL_PROVIDERS = {
+                "gmail.com": {"google.com", "gmail.com", "youtube.com", "accounts.google.com", "mail.google.com"},
+                "google.com": {"google.com", "gmail.com", "youtube.com", "accounts.google.com", "mail.google.com"},
+                "outlook.com": {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
+                "hotmail.com": {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
+                "live.com": {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
+                "yahoo.com": {"yahoo.com", "ymail.com", "mail.yahoo.com"},
+                "ymail.com": {"yahoo.com", "ymail.com", "mail.yahoo.com"},
+                "icloud.com": {"apple.com", "icloud.com", "appleid.apple.com"},
+            }
+            
+            if _guard_domain and _cred_domain and _cred_domain in _MAJOR_EMAIL_PROVIDERS:
+                # The credential belongs to a major email provider — check
+                # if the page is one of that provider's domains.
+                _provider_domains = _MAJOR_EMAIL_PROVIDERS[_cred_domain]
+                
+                # Normalize the page domain: strip common auth prefixes
+                def _strip_prefix(d):
+                    for p in ("accounts.", "login.", "auth.", "id.", "sso.", "signin.", "app.", "mail.", "my.", "secure.", "www."):
+                        if d.startswith(p):
+                            base = d[len(p):]
+                            if base and "." in base:
+                                return base
+                    return d
+                _gd_stripped = _strip_prefix(_guard_domain)
+                
+                _is_provider_page = (
+                    _guard_domain in _provider_domains
+                    or _gd_stripped in _provider_domains
+                )
+                
+                if not _is_provider_page:
+                    # The page is NOT a known domain for this email provider.
+                    # However, check if the page itself has login fields —
+                    # if it does, the user might genuinely want to log in
+                    # with their email on a third-party site (many sites
+                    # accept email+password). We only block if the page has
+                    # NO login fields at all (meaning the agent is confused).
+                    has_login_inputs = False
+                    try:
+                        elements = self.browser_executor.get_visible_elements()
+                        for el in (elements or []):
+                            itype = (el.get("input_type") or el.get("type") or "").lower()
+                            name = (el.get("name") or "").lower()
+                            if itype in ("email", "password", "text") or name in ("email", "username", "password", "login_email"):
+                                has_login_inputs = True
+                                break
+                    except Exception:
+                        has_login_inputs = True  # assume yes on error
+                    
+                    if not has_login_inputs:
+                        return {
+                            "success": False,
+                            "message": f"Current page ({_guard_domain}) is not a login page for {_cred_domain}. "
+                                       f"Navigate to {_cred_domain}'s login page FIRST, then call auto_login. "
+                                       f"For example, use open_new_tab to go to the correct login page."
+                        }
 
             # --- KNOWN_LOGIN_URLS: if the page has no login fields, try
             # redirecting to the known login URL for common services ---
