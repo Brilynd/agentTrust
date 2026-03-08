@@ -169,6 +169,21 @@ class InterceptedWebDriver:
     def page_source(self):
         return self._driver.page_source
     
+    @property
+    def switch_to(self):
+        """Delegate switch_to (tab/window/frame switching) to the real driver."""
+        return self._driver.switch_to
+    
+    @property
+    def window_handles(self):
+        """Delegate window_handles to the real driver."""
+        return self._driver.window_handles
+    
+    @property
+    def current_window_handle(self):
+        """Delegate current_window_handle to the real driver."""
+        return self._driver.current_window_handle
+    
     def execute_script(self, script, *args):
         """Intercept script execution - validate if it's an action"""
         # Check if script contains action keywords
@@ -451,6 +466,14 @@ class BrowserController:
         self.driver = InterceptedWebDriver(actual_driver, agenttrust_validator)
         self._actual_driver = actual_driver  # Keep reference for cleanup
         self.current_url = None
+        
+        # Tab management state
+        self._tab_counter = 0
+        self._tabs = {}  # {window_handle: {"label": str, "index": int}}
+        # Register the initial tab
+        initial_handle = actual_driver.current_window_handle
+        self._tabs[initial_handle] = {"label": "main", "index": 0}
+        self._tab_counter = 1
         
         # Auto-login to extension using .env credentials
         if load_ext:
@@ -916,7 +939,7 @@ class BrowserController:
         except Exception as e:
             return {"success": False, "message": f"Error opening link: {str(e)}"}
     
-    def type_text(self, target: Dict[str, Any], text: str) -> Dict[str, Any]:
+    def type_text(self, target: Dict[str, Any], text: str, press_enter: bool = False) -> Dict[str, Any]:
         """
         Type text into an input field, textarea, or contenteditable element.
         
@@ -924,6 +947,7 @@ class BrowserController:
             target: dict identifying the input (id, name, placeholder,
                     aria-label, type, role, selector, etc.)
             text: Text to type
+            press_enter: If True, press Enter after typing to submit
         
         Returns:
             dict with success status
@@ -1015,7 +1039,14 @@ class BrowserController:
                 else:
                     element.clear()
                     element.send_keys(text)
-                return {"success": True, "message": f"Text typed successfully: {text[:50]}"}
+                # Press Enter after typing if requested
+                if press_enter:
+                    import time; time.sleep(0.15)
+                    from selenium.webdriver.common.keys import Keys
+                    element.send_keys(Keys.RETURN)
+                    time.sleep(0.3)
+                return {"success": True, "message": f"Text typed successfully: {text[:50]}"
+                        + (" + Enter pressed" if press_enter else "")}
             else:
                 return {"success": False, "message": "Input field not found or not visible"}
         
@@ -1121,6 +1152,212 @@ class BrowserController:
             screenshot = self._actual_driver.get_screenshot_as_base64()
             return screenshot
     
+    # ------------------------------------------------------------------ #
+    # Tab management
+    # ------------------------------------------------------------------ #
+
+    def open_new_tab(self, url: str, label: str = "") -> Dict[str, Any]:
+        """Open a new browser tab, navigate to *url*, and label it.
+
+        Args:
+            url: URL to navigate to in the new tab.
+            label: Human-readable label (e.g. "gmail", "ebay").
+                   Auto-generated from the domain if omitted.
+
+        Returns:
+            dict with success status, tab index, label, and handle.
+        """
+        drv = self._actual_driver
+        try:
+            # Open a blank new tab and switch to it
+            drv.switch_to.new_window('tab')
+            new_handle = drv.current_window_handle
+
+            # Navigate
+            drv.get(url)
+            import time
+            time.sleep(0.3)
+
+            # Auto-label from domain if not provided
+            if not label:
+                try:
+                    from urllib.parse import urlparse
+                    label = urlparse(url).netloc.replace("www.", "") or f"tab{self._tab_counter}"
+                except Exception:
+                    label = f"tab{self._tab_counter}"
+
+            idx = self._tab_counter
+            self._tabs[new_handle] = {"label": label, "index": idx}
+            self._tab_counter += 1
+            self.current_url = drv.current_url
+
+            return {
+                "success": True,
+                "message": f"Opened new tab '{label}' at {drv.current_url}",
+                "tab_index": idx,
+                "label": label,
+                "url": drv.current_url,
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Failed to open new tab: {e}"}
+
+    def switch_to_tab(self, label_or_index) -> Dict[str, Any]:
+        """Switch browser focus to another tab by *label* (str) or *index* (int).
+
+        Returns:
+            dict with success status and the new active tab info.
+        """
+        drv = self._actual_driver
+        target_handle = None
+
+        # Resolve by label (string) or index (int)
+        for handle, info in self._tabs.items():
+            if isinstance(label_or_index, int) and info["index"] == label_or_index:
+                target_handle = handle
+                break
+            if isinstance(label_or_index, str) and info["label"].lower() == label_or_index.lower():
+                target_handle = handle
+                break
+
+        if not target_handle:
+            # Fallback: try matching partial label
+            if isinstance(label_or_index, str):
+                for handle, info in self._tabs.items():
+                    if label_or_index.lower() in info["label"].lower():
+                        target_handle = handle
+                        break
+
+        if not target_handle:
+            return {"success": False, "message": f"Tab '{label_or_index}' not found. Use list_tabs to see available tabs."}
+
+        try:
+            drv.switch_to.window(target_handle)
+            self.current_url = drv.current_url
+            info = self._tabs[target_handle]
+            return {
+                "success": True,
+                "message": f"Switched to tab '{info['label']}' (index {info['index']})",
+                "tab_index": info["index"],
+                "label": info["label"],
+                "url": drv.current_url,
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Failed to switch tab: {e}"}
+
+    def close_tab(self, label_or_index=None) -> Dict[str, Any]:
+        """Close a tab by *label* or *index*. Defaults to current tab.
+
+        After closing, switches to the previously active tab (or the first
+        remaining tab).
+
+        Returns:
+            dict with success status and info about the new active tab.
+        """
+        drv = self._actual_driver
+
+        if len(self._tabs) <= 1:
+            return {"success": False, "message": "Cannot close the last remaining tab."}
+
+        # Resolve which handle to close
+        target_handle = None
+        if label_or_index is not None:
+            for handle, info in self._tabs.items():
+                if isinstance(label_or_index, int) and info["index"] == label_or_index:
+                    target_handle = handle
+                    break
+                if isinstance(label_or_index, str) and info["label"].lower() == label_or_index.lower():
+                    target_handle = handle
+                    break
+        else:
+            target_handle = drv.current_window_handle
+
+        if not target_handle:
+            return {"success": False, "message": f"Tab '{label_or_index}' not found."}
+
+        try:
+            closed_info = self._tabs.pop(target_handle, {})
+            # Switch to the tab being closed first if it's not current
+            if drv.current_window_handle != target_handle:
+                drv.switch_to.window(target_handle)
+            drv.close()
+
+            # Switch to the first remaining tab
+            remaining_handle = list(self._tabs.keys())[0]
+            drv.switch_to.window(remaining_handle)
+            self.current_url = drv.current_url
+            new_info = self._tabs[remaining_handle]
+
+            return {
+                "success": True,
+                "message": f"Closed tab '{closed_info.get('label', '?')}'. Now on '{new_info['label']}'.",
+                "active_tab_index": new_info["index"],
+                "active_tab_label": new_info["label"],
+                "url": drv.current_url,
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Failed to close tab: {e}"}
+
+    def list_tabs(self) -> List[Dict[str, Any]]:
+        """Return metadata for every open tab.
+
+        Each entry: {index, label, url, is_active}.
+        Syncs with the actual driver handles in case tabs were opened/closed
+        outside of this manager.
+        """
+        drv = self._actual_driver
+        current_handle = drv.current_window_handle
+        live_handles = set(drv.window_handles)
+
+        # Prune stale entries
+        stale = [h for h in self._tabs if h not in live_handles]
+        for h in stale:
+            del self._tabs[h]
+
+        # Register any unknown handles (e.g. opened by the page itself)
+        for h in live_handles:
+            if h not in self._tabs:
+                self._tabs[h] = {"label": f"tab{self._tab_counter}", "index": self._tab_counter}
+                self._tab_counter += 1
+
+        tabs = []
+        for handle, info in self._tabs.items():
+            # Get URL without switching if possible; only switch when needed
+            if handle == current_handle:
+                tab_url = drv.current_url
+            else:
+                try:
+                    drv.switch_to.window(handle)
+                    tab_url = drv.current_url
+                except Exception:
+                    tab_url = "(unknown)"
+
+            tabs.append({
+                "index": info["index"],
+                "label": info["label"],
+                "url": tab_url,
+                "is_active": handle == current_handle,
+            })
+
+        # Restore focus to original tab
+        try:
+            drv.switch_to.window(current_handle)
+        except Exception:
+            pass
+
+        tabs.sort(key=lambda t: t["index"])
+        return tabs
+
+    def get_active_tab(self) -> Dict[str, Any]:
+        """Return info about the currently focused tab."""
+        drv = self._actual_driver
+        handle = drv.current_window_handle
+        info = self._tabs.get(handle, {"label": "unknown", "index": -1})
+        return {
+            "index": info["index"],
+            "label": info["label"],
+            "url": drv.current_url,
+        }
+
     def close(self):
         """Close the browser."""
         if self._actual_driver:
@@ -1631,7 +1868,7 @@ class BrowserActionExecutor:
         except PermissionError as e:
             return {"status": "denied", "message": str(e)}
     
-    def type_text(self, target: Dict[str, Any], text: str):
+    def type_text(self, target: Dict[str, Any], text: str, press_enter: bool = False):
         """
         Type text into an input field.
         Validated as 'form_input' through AgentTrust so that the policy
@@ -1663,10 +1900,10 @@ class BrowserActionExecutor:
             status = result.get("status") if result else None
 
             if status == "allowed":
-                type_result = self.browser.type_text(target, text)
+                type_result = self.browser.type_text(target, text, press_enter=press_enter)
                 if not type_result.get("success"):
                     # Element not found by standard lookup — try CSS selector fallback
-                    type_result = self._type_text_fallback(target, text)
+                    type_result = self._type_text_fallback(target, text, press_enter=press_enter)
                 screenshot = None
                 if type_result.get("success"):
                     try:
@@ -1697,7 +1934,7 @@ class BrowserActionExecutor:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    def _type_text_fallback(self, target: Dict[str, Any], text: str) -> Dict[str, Any]:
+    def _type_text_fallback(self, target: Dict[str, Any], text: str, press_enter: bool = False) -> Dict[str, Any]:
         """Fallback: find an input by multiple strategies when standard lookup fails.
         
         Searches across input, textarea, contenteditable, and role-based elements.
@@ -1817,7 +2054,14 @@ class BrowserActionExecutor:
                 else:
                     element.clear()
                     element.send_keys(text)
-                return {"success": True, "message": f"Text typed (fallback): {text[:50]}"}
+                # Press Enter after typing if requested
+                if press_enter:
+                    import time; time.sleep(0.15)
+                    from selenium.webdriver.common.keys import Keys
+                    element.send_keys(Keys.RETURN)
+                    time.sleep(0.3)
+                return {"success": True, "message": f"Text typed (fallback): {text[:50]}"
+                        + (" + Enter pressed" if press_enter else "")}
             except Exception as e:
                 return {"success": False, "message": f"Fallback type failed: {e}"}
         return {"success": False, "message": "Input field not found by any method"}
@@ -1888,6 +2132,130 @@ class BrowserActionExecutor:
             return ""
         
         return self.browser.take_screenshot()
+
+    # ------------------------------------------------------------------ #
+    # Tab management wrappers
+    # ------------------------------------------------------------------ #
+
+    def open_new_tab(self, url: str, label: str = ""):
+        """Open a new tab — MANDATORY AgentTrust navigation validation.
+        
+        IMPORTANT: We validate-only here (no browser navigation) because
+        execute_navigation() would navigate the CURRENT tab, then
+        BrowserController.open_new_tab() would open a second tab with the
+        same URL — resulting in a double-navigation bug.
+        """
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+
+        try:
+            # Validate with AgentTrust WITHOUT navigating the current tab
+            result = self.agenttrust.execute_action(
+                action_type="navigation",
+                url=url
+            )
+            status = result.get("status")
+
+            if status == "denied":
+                error_msg = result.get("message", "Action denied by AgentTrust policy")
+                self.action_history.append({
+                    "action": "navigation", "url": url,
+                    "status": "denied", "reason": error_msg
+                })
+                return {"status": "denied", "message": f"AgentTrust DENIED: {error_msg}"}
+
+            if status == "step_up_required":
+                self.action_history.append({
+                    "action": "navigation", "url": url,
+                    "status": "step_up_required",
+                    "risk_level": result.get("risk_level")
+                })
+                return {
+                    "status": "step_up_required",
+                    "message": "High-risk action requires user approval",
+                    "risk_level": result.get("risk_level")
+                }
+
+            if status == "allowed":
+                self.action_history.append({
+                    "action": "navigation", "url": url,
+                    "status": "allowed",
+                    "action_id": result.get("action_id"),
+                    "risk_level": result.get("risk_level")
+                })
+                # Delegate to BrowserController — opens a NEW tab and
+                # navigates only that tab, leaving the current tab untouched.
+                tab_result = self.browser.open_new_tab(url, label)
+                tab_result["action_id"] = result.get("action_id")
+                tab_result["risk_level"] = result.get("risk_level")
+                tab_result["status"] = "allowed"
+                self._notify_extension("navigation", url, "allowed",
+                                       risk_level=result.get("risk_level"),
+                                       action_id=result.get("action_id"))
+                return tab_result
+
+            # Unexpected status
+            return {
+                "status": "error",
+                "message": f"AgentTrust returned unexpected status: {status}"
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def switch_to_tab(self, label_or_index):
+        """Switch to another tab — read-only, no AgentTrust validation needed."""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+
+        return self.browser.switch_to_tab(label_or_index)
+
+    def close_tab(self, label_or_index=None):
+        """Close a tab — MANDATORY AgentTrust validation.
+        
+        Uses validate-only (no navigation) to avoid the same
+        double-navigation bug as open_new_tab.
+        """
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+
+        current_url = self.browser.get_current_url()
+        try:
+            # Validate with AgentTrust WITHOUT navigating
+            result = self.agenttrust.execute_action(
+                action_type="navigation",
+                url=current_url
+            )
+            status = result.get("status")
+
+            if status == "denied":
+                return {"status": "denied", "message": result.get("message", "Action denied")}
+
+            if status == "step_up_required":
+                return {"status": "step_up_required", "message": "Requires user approval"}
+
+            if status == "allowed":
+                tab_result = self.browser.close_tab(label_or_index)
+                tab_result["action_id"] = result.get("action_id")
+                tab_result["status"] = "allowed" if tab_result.get("success") else "error"
+                return tab_result
+
+            return {"status": "error", "message": f"Unexpected status: {status}"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def list_tabs(self):
+        """List all open tabs — read-only, no AgentTrust validation needed."""
+        if not self.browser:
+            return []
+
+        return self.browser.list_tabs()
+
+    def get_active_tab(self):
+        """Get active tab info — read-only."""
+        if not self.browser:
+            return {}
+
+        return self.browser.get_active_tab()
 
     def dismiss_overlays(self) -> bool:
         """
@@ -2005,14 +2373,11 @@ class BrowserActionExecutor:
             pass
 
         # ── Phase 3: Escape key fallback ──
-        if not dismissed:
-            try:
-                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                time.sleep(0.2)
-                # Check if something changed (e.g. modal closed)
-                dismissed = True
-            except Exception:
-                pass
+        # Only send Escape if Phases 1/2 found nothing — and do NOT
+        # claim success unconditionally, because Escape on a normal
+        # page can cancel forms or trigger refreshes.
+        # We skip this phase entirely now; the agent prompt already
+        # tells the LLM to close overlays via targeted clicks.
 
         return dismissed
 
@@ -2387,7 +2752,22 @@ class BrowserActionExecutor:
                     steps_log.append("Pressed Enter to submit")
 
             # Step 4: Wait for navigation / page load
-            _wait_ready(0.5)
+            # Multi-step logins (Google, Microsoft) may redirect through
+            # several pages, so give them enough time.
+            _wait_ready(1.0)
+
+            # Wait extra time for multi-step logins that redirect
+            # (e.g. Google: password → consent → inbox)
+            initial_url = driver.current_url
+            for _ in range(6):  # up to 3 more seconds
+                time.sleep(0.5)
+                current = driver.current_url
+                if current != initial_url:
+                    # URL is changing — login redirect in progress
+                    initial_url = current
+                    _wait_ready(0.5)
+                else:
+                    break  # URL stabilized
 
             # Dismiss any post-login overlays (e.g. "stay signed in?" prompts)
             if _dismiss_overlays():
@@ -2410,6 +2790,14 @@ class BrowserActionExecutor:
             login_failed = False
             failure_reason = ""
 
+            # If URL changed significantly from the original, login likely worked
+            from urllib.parse import urlparse
+            orig_path = urlparse(url).path.rstrip("/")
+            new_path = urlparse(new_url).path.rstrip("/")
+            orig_host = urlparse(url).netloc.lower()
+            new_host = urlparse(new_url).netloc.lower()
+            url_changed_significantly = (new_host != orig_host) or (new_path != orig_path)
+
             # Check 1: DOM-based error detection
             try:
                 page_text = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
@@ -2419,11 +2807,10 @@ class BrowserActionExecutor:
                     "login failed", "sign-in failed", "authentication failed",
                     "account not found", "user not found",
                     "too many attempts", "account locked", "account disabled",
-                    "please try again", "unable to sign in", "unable to log in",
+                    "unable to sign in", "unable to log in",
                     "password is incorrect", "email is incorrect",
                     "doesn't match", "does not match", "didn't match",
                     "we didn't recognize", "we don't recognize",
-                    "verify it's you", "verify your identity",
                 ]
                 for phrase in error_phrases:
                     if phrase in page_text:
@@ -2435,15 +2822,18 @@ class BrowserActionExecutor:
                 pass
 
             # Check 2: Still on a login page (password field still visible)
-            if not login_failed:
+            # BUT only flag as failure if the URL has NOT changed significantly.
+            # On multi-step logins (Google, Microsoft), the URL may still
+            # contain /signin/ as part of the challenge flow even though
+            # login is progressing successfully.
+            if not login_failed and not url_changed_significantly:
                 try:
                     still_has_password = _find_input("password")
                     if still_has_password and still_has_password.is_displayed():
-                        # URL didn't change and password field is still there
-                        if new_url == url or "/login" in new_url or "/signin" in new_url:
-                            login_failed = True
-                            failure_reason = "Still on login page after submitting"
-                            steps_log.append("⚠️ Password field still visible — login likely failed")
+                        # URL didn't change AND password field is still there
+                        login_failed = True
+                        failure_reason = "Still on login page after submitting"
+                        steps_log.append("⚠️ Password field still visible — login likely failed")
                 except Exception:
                     pass
 
@@ -2961,7 +3351,22 @@ class ChatGPTAgentWithAgentTrust:
     # Rate-limit-aware API call wrapper
     # ------------------------------------------------------------------ #
     def _chat_completion(self, **kwargs):
-        """Call OpenAI chat completions."""
+        """Call OpenAI chat completions with automatic rate-limit retry."""
+        import time as _time
+        max_retries = 4
+        for attempt in range(max_retries):
+            try:
+                return self.openai.chat.completions.create(**kwargs)
+            except Exception as e:
+                err_str = str(e)
+                # Retry on rate limit (429) with exponential backoff
+                if "429" in err_str or "rate_limit" in err_str.lower():
+                    wait = 2 ** attempt  # 1, 2, 4, 8 seconds
+                    print(f"  ⏳ Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+                    _time.sleep(wait)
+                    continue
+                raise  # Non-rate-limit errors propagate immediately
+        # Final attempt — let the exception propagate if it fails again
         return self.openai.chat.completions.create(**kwargs)
 
     # ------------------------------------------------------------------ #
@@ -3004,7 +3409,7 @@ class ChatGPTAgentWithAgentTrust:
             }},
             {"type": "function", "function": {
                 "name": "type_text",
-                "description": "Type text into an input field, textarea, or contenteditable element. Identify the target using id, name, placeholder, aria-label, input type, role, or CSS selector. For search boxes, use aria-label, role='searchbox', or type='search'. For textareas and rich editors, use aria-label or role='textbox'.",
+                "description": "Type text into an input field, textarea, or contenteditable element. Identify the target using id, name, placeholder, aria-label, input type, role, or CSS selector. For search boxes, use aria-label, role='searchbox', or type='search'. Set press_enter=true to submit the form after typing (PREFERRED over clicking a submit button for search boxes and single-input forms).",
                 "parameters": {"type": "object", "properties": {
                     "target": {"type": "object", "properties": {
                         "id": {"type": "string", "description": "Element id attribute"},
@@ -3015,7 +3420,8 @@ class ChatGPTAgentWithAgentTrust:
                         "role": {"type": "string", "description": "ARIA role: searchbox, combobox, textbox"},
                         "selector": {"type": "string", "description": "CSS selector (last resort)"}
                     }},
-                    "text": {"type": "string", "description": "Text to type"}
+                    "text": {"type": "string", "description": "Text to type"},
+                    "press_enter": {"type": "boolean", "description": "Press Enter after typing to submit the form. Use for search boxes, verification code inputs, and single-input forms. Default: false."}
                 }, "required": ["target", "text"]}
             }},
             {"type": "function", "function": {
@@ -3070,6 +3476,34 @@ class ChatGPTAgentWithAgentTrust:
                     "endpoint": {"type": "string", "description": "Full API URL (e.g. https://api.github.com/user/repos)"},
                     "body": {"type": "object", "description": "Request body for POST/PUT/PATCH (optional)"}
                 }, "required": ["provider", "method", "endpoint"]}
+            }},
+            # --- Tab management tools ---
+            {"type": "function", "function": {
+                "name": "open_new_tab",
+                "description": "Open a new browser tab and navigate to the given URL. Use this when you need to visit a different site without losing your place on the current page (e.g. checking email for a 2FA code, comparing prices on another site). Give the tab a short label so you can switch back later.",
+                "parameters": {"type": "object", "properties": {
+                    "url": {"type": "string", "description": "URL to open in the new tab"},
+                    "label": {"type": "string", "description": "Short label for the tab (e.g. 'gmail', 'ebay'). Auto-generated from domain if omitted."}
+                }, "required": ["url"]}
+            }},
+            {"type": "function", "function": {
+                "name": "switch_to_tab",
+                "description": "Switch browser focus to another open tab by its label or index number. Use this to return to a previous tab after completing work in another tab (e.g. switching back to the login page after retrieving a 2FA code from email).",
+                "parameters": {"type": "object", "properties": {
+                    "label_or_index": {"type": "string", "description": "Tab label (e.g. 'gmail', 'main') or index number as a string (e.g. '0')"}
+                }, "required": ["label_or_index"]}
+            }},
+            {"type": "function", "function": {
+                "name": "close_tab",
+                "description": "Close an open browser tab by its label or index. After closing, the browser switches to another remaining tab. Use this to clean up tabs you no longer need.",
+                "parameters": {"type": "object", "properties": {
+                    "label_or_index": {"type": "string", "description": "Tab label or index number to close. If omitted, closes the current tab."}
+                }}
+            }},
+            {"type": "function", "function": {
+                "name": "list_tabs",
+                "description": "List all currently open browser tabs with their index, label, URL, and which one is active. Use this to see what tabs are available before switching.",
+                "parameters": {"type": "object", "properties": {}}
             }},
         ])
         return tools
@@ -3218,6 +3652,8 @@ class ChatGPTAgentWithAgentTrust:
             "visible_elements": [],
             "page_vision": "",
             "has_overlay": False,
+            "active_tab": "main",
+            "open_tabs": [],
             "turn_messages": [],
             "pending_tool_calls": [],
             "last_action_result": {},
@@ -3270,20 +3706,23 @@ WORKFLOW (only when the user asks for a browser action):
    element or approach.
 5. REPEAT steps 1-4 until the task is done, then give a brief summary.
 
+ELEMENT IDENTIFICATION — CRITICAL:
+- ALWAYS look at the interactive elements from get_visible_elements.
+- NEVER send a click with empty or missing target identifiers.
+- Copy the element's id, text, href, aria-label, or name EXACTLY from
+  the interactive elements into the target object.
+- If a button/link has text like 'Resend Email', 'Submit', 'Sign In',
+  set target.text to that EXACT text and target.tagName to 'BUTTON',
+  'A', or 'INPUT' as appropriate.
+- For elements with id, ALWAYS prefer target.id over text matching.
+
 PAGE CONTINUITY — VERY IMPORTANT:
 - Every tool response includes "current_url" telling you EXACTLY where the
   browser is. ALWAYS check it before deciding your next action.
 - If you are ALREADY on a page that has the content you need, DO NOT
   navigate away. Work with the current page.
-- For follow-up actions (e.g. "add item 4 to cart" after showing search
-  results), you are ALREADY on the relevant page. Call get_visible_elements
-  or get_page_content FIRST to see what's on the current page, then click
-  the correct link/button. Do NOT navigate to the homepage.
 - Only navigate to a new URL when the current page genuinely does not have
   what you need.
-- When you listed items from a page (e.g. search results, product listings),
-  the browser is STILL on that page. To act on one of those items, find and
-  click its link on the CURRENT page.
 
 OVERLAY / POPUP HANDLING:
 - If you see overlays, modals, popups, cookie consent banners, account
@@ -3291,42 +3730,79 @@ OVERLAY / POPUP HANDLING:
   close them BEFORE doing anything else.
 - Look for close buttons (aria-label="Close", "Dismiss", "X") or text
   buttons ("No thanks", "Skip", "Not now", "Decline").
-- Account creation popups and "sign up" modals should be CLOSED, not
-  filled in (unless the user explicitly asked to create an account).
 
-SEARCH INPUT IDENTIFICATION:
+SEARCH & FORM SUBMISSION:
 - When typing into search boxes, use the most specific identifier:
   aria-label (e.g. "Search"), role="searchbox" or role="combobox",
   type="search", placeholder text, or name attribute.
-- Prefer aria-label and role over generic selectors for unique inputs.
-- Check the interactive elements list for input_type and role fields.
-- Use the type_text tool with aria-label, type, or role in the target.
+- AFTER typing in a search box, use type_text with press_enter=true
+  to submit the search. Do NOT try to find and click a 'Search'
+  button — just press Enter. This is MORE RELIABLE.
+- For any form with a single input (search, verification code, etc.),
+  prefer pressing Enter over finding a submit button.
+
+LOGIN FLOW — MANDATORY:
+- When you land on ANY login page (sign-in form, email input,
+  password input), you MUST follow this exact sequence:
+  1. Call get_saved_credentials with the site's domain.
+  2. If credentials are found, call auto_login immediately.
+  3. auto_login handles multi-step forms, entering both username
+     AND password, clicking continue/next, and dismissing popups.
+  4. NEVER manually type usernames or passwords with type_text.
+     auto_login does this for you with proper security validation.
+  5. Only ask the user if NO saved credentials exist.
+- This applies to ALL sites: Google, Gmail, Amazon, eBay, etc.
+
+EMAIL & VERIFICATION CODE WORKFLOW — CRITICAL:
+- In email inboxes (Gmail, Outlook, Yahoo), the NEWEST emails
+  appear at the TOP of the inbox list.
+- In email THREADS (multiple replies in a conversation), the
+  NEWEST message is at the BOTTOM of the thread.
+- To extract a verification code from an email:
+  1. Open the email in the inbox.
+  2. Use get_page_content to READ the email body text.
+  3. Find the numeric code in the text (e.g. 5-6 digit number).
+  4. NEVER ask the user for the code — extract it yourself.
+- AFTER extracting the code, you MUST switch_to_tab to the
+  ORIGINAL site (e.g. investopedia, ebay) BEFORE typing the code.
+  ⚠ NEVER type a verification code into the email page.
+  ⚠ ALWAYS check the current URL — if it contains "mail.google",
+  "outlook", or "yahoo", you are on the EMAIL tab, NOT the target.
+  ⚠ switch_to_tab FIRST, then type the code.
+
+TAB MANAGEMENT:
+- Use open_new_tab when you need to visit a DIFFERENT site without
+  losing your place (e.g. checking email for a 2FA code, comparing
+  prices on another site, looking up information).
+- Give tabs short, meaningful labels (e.g. "gmail", "ebay", "amazon").
+- After completing work in a secondary tab, ALWAYS switch_to_tab
+  back to the original tab.
+- Close tabs you no longer need with close_tab to keep things tidy.
+- When a task requires 2FA / verification codes sent via email:
+  1. open_new_tab to the email provider (e.g. mail.google.com)
+  2. Call get_saved_credentials + auto_login if login is needed
+  3. Find the verification email and open it
+  4. Use get_page_content to READ the code from the email body
+  5. switch_to_tab back to the ORIGINAL site
+  6. Type the code into the verification field on that site
+  7. close_tab the email tab when done
+
+PREFERRED SERVICE URLS (use these instead of guessing):
+- Gmail / Google login → https://mail.google.com
+- Outlook / Microsoft → https://outlook.live.com
+- Yahoo Mail → https://mail.yahoo.com
+- Amazon → https://www.amazon.com
+- eBay → https://www.ebay.com
+- GitHub → https://github.com
+Do NOT use marketing/workspace/promo URLs.
 
 RULES:
-- ONLY act on what the user explicitly asked. Do NOT browse, search,
-  or navigate on your own initiative. If the request does not need
-  browser interaction, answer with text only.
-- NEVER guess deep URLs (e.g. /ap/signin, /login/oauth). Always navigate
-  to the site's HOMEPAGE first (e.g. https://www.amazon.com), then find
-  and click the sign-in link on the page. Deep login URLs often fail.
-- If a navigation returns a page_error in the response, the page failed
-  to load (404, connection error, etc.). Do NOT keep retrying the same
-  URL. Go to the homepage and find the correct link instead.
-- If a page requires login:
-  1. Navigate to the site's homepage first.
-  2. Find and click the sign-in / login link on the page.
-  3. Call get_saved_credentials with the domain.
-  4. If credentials found, call auto_login (it handles multi-step forms,
-     QR-code popups, and continue/next buttons automatically).
-  5. Only ASK the user if no saved credentials exist.
-  6. If the user gives credentials, navigate to the login page then auto_login.
-- For tasks on GitHub, Google, Slack, or Microsoft services, prefer
-  call_external_api over browser automation when possible (faster and
-  more reliable). Use browser automation as fallback.
+- ONLY act on what the user explicitly asked.
+- NEVER guess deep URLs. Navigate to homepages first.
+- If a page_error was returned, go to the homepage instead.
+- If the same action fails 2+ times, try a DIFFERENT approach.
 - If AgentTrust blocks an action (denied / step-up required), explain
   the policy decision and ask the user how they'd like to proceed.
-- If the same action fails 3 times, STOP and tell the user what is
-  happening.
 - Keep text replies short and action-oriented.
 
 ROUTINES:
@@ -3506,15 +3982,18 @@ ROUTINES:
         
         elif function_name == "type_text":
             args = json.loads(function_call.arguments) if function_call.arguments else {}
+            press_enter = args.get("press_enter", False)
             result = self.browser_executor.type_text(
                 target=args.get("target", {}),
-                text=args.get("text", "")
+                text=args.get("text", ""),
+                press_enter=press_enter
             )
             result = result or {"status": "error", "message": "No result from type_text"}
             current_url = self.browser_executor.get_current_url() if self.browser_executor.browser else ""
             result["current_url"] = current_url
             if result.get("status") == "allowed":
-                print(f"⌨️  Text typed into field")
+                enter_msg = " + Enter" if press_enter else ""
+                print(f"⌨️  Text typed into field{enter_msg}")
             return result
         
         elif function_name == "scroll_page":
@@ -3575,6 +4054,74 @@ ROUTINES:
                     "message": f"Current page ({current_url}) is not a login page. "
                                "Navigate to the website's login page FIRST, then call auto_login."
                 }
+
+            # --- KNOWN_LOGIN_URLS: if the page has no login fields, try
+            # redirecting to the known login URL for common services ---
+            KNOWN_LOGIN_URLS = {
+                "google.com": "https://accounts.google.com/signin",
+                "gmail.com": "https://accounts.google.com/signin",
+                "mail.google.com": "https://accounts.google.com/signin",
+                "workspace.google.com": "https://accounts.google.com/signin",
+                "youtube.com": "https://accounts.google.com/signin",
+                "microsoft.com": "https://login.microsoftonline.com/",
+                "outlook.com": "https://login.microsoftonline.com/",
+                "live.com": "https://login.microsoftonline.com/",
+                "office.com": "https://login.microsoftonline.com/",
+                "amazon.com": "https://www.amazon.com/ap/signin",
+                "ebay.com": "https://signin.ebay.com/ws/eBayISAPI.dll?SignIn",
+                "facebook.com": "https://www.facebook.com/login",
+                "instagram.com": "https://www.instagram.com/accounts/login/",
+                "twitter.com": "https://twitter.com/i/flow/login",
+                "x.com": "https://twitter.com/i/flow/login",
+                "github.com": "https://github.com/login",
+                "apple.com": "https://appleid.apple.com/sign-in",
+                "icloud.com": "https://appleid.apple.com/sign-in",
+                "yahoo.com": "https://login.yahoo.com/",
+                "linkedin.com": "https://www.linkedin.com/login",
+                "netflix.com": "https://www.netflix.com/login",
+                "spotify.com": "https://accounts.spotify.com/login",
+            }
+
+            # Check if the current page is a promo/marketing page with no
+            # login fields — if so, redirect to the known login page.
+            from urllib.parse import urlparse
+            parsed = urlparse(current_url)
+            page_domain = parsed.netloc.lower().lstrip("www.")
+
+            # Quick check: does the page have ANY login-looking input?
+            has_login_fields = False
+            try:
+                elements = self.browser_executor.get_visible_elements()
+                for el in (elements or []):
+                    itype = (el.get("input_type") or el.get("type") or "").lower()
+                    name = (el.get("name") or "").lower()
+                    placeholder = (el.get("placeholder") or "").lower()
+                    if itype in ("email", "password") or name in ("email", "username", "password", "login_email", "userid"):
+                        has_login_fields = True
+                        break
+                    if any(kw in placeholder for kw in ("email", "password", "username", "user id", "sign in")):
+                        has_login_fields = True
+                        break
+            except Exception:
+                has_login_fields = True  # assume yes on error
+
+            if not has_login_fields:
+                # Try to find a known login URL for this domain
+                login_url = None
+                for known_domain, known_url in KNOWN_LOGIN_URLS.items():
+                    if known_domain in page_domain or page_domain in known_domain:
+                        login_url = known_url
+                        break
+                if login_url and login_url != current_url:
+                    print(f"🔐 No login fields found on {current_url}, redirecting to {login_url}")
+                    try:
+                        nav_result = self.browser_executor.execute_navigation(login_url)
+                        if nav_result.get("status") == "allowed":
+                            time.sleep(2)
+                            current_url = self.browser_executor.get_current_url() or current_url
+                    except Exception as e:
+                        print(f"   ⚠️  Redirect failed: {e}")
+
             print(f"🔐 Auto-login on {current_url}")
             result = self.browser_executor.auto_login(url=current_url, username=username, password=password)
             result["current_url"] = self.browser_executor.get_current_url() if self.browser_executor.browser else current_url
@@ -3598,6 +4145,52 @@ ROUTINES:
             else:
                 print(f"⚠️  External API call to {provider}: {result.get('error', 'unknown error')}")
             return result
+
+        # --- Tab management ---
+        elif function_name == "open_new_tab":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            url = args.get("url", "about:blank")
+            label = args.get("label", "")
+            result = self.browser_executor.open_new_tab(url=url, label=label)
+            if result.get("success"):
+                print(f"🗂️  Opened new tab '{result.get('label', '')}' → {result.get('url', '')}")
+            result["current_url"] = self.browser_executor.get_current_url() if self.browser_executor.browser else ""
+            return result
+
+        elif function_name == "switch_to_tab":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            raw = args.get("label_or_index", "0")
+            # Try converting to int for index-based lookup
+            try:
+                label_or_index = int(raw)
+            except (ValueError, TypeError):
+                label_or_index = raw
+            result = self.browser_executor.switch_to_tab(label_or_index)
+            if result.get("success"):
+                print(f"🗂️  Switched to tab '{result.get('label', '')}' → {result.get('url', '')}")
+            result["current_url"] = self.browser_executor.get_current_url() if self.browser_executor.browser else ""
+            return result
+
+        elif function_name == "close_tab":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            raw = args.get("label_or_index")
+            if raw is not None:
+                try:
+                    label_or_index = int(raw)
+                except (ValueError, TypeError):
+                    label_or_index = raw
+            else:
+                label_or_index = None
+            result = self.browser_executor.close_tab(label_or_index)
+            if result.get("success"):
+                print(f"🗂️  Closed tab. Now on '{result.get('active_tab_label', '')}'")
+            result["current_url"] = self.browser_executor.get_current_url() if self.browser_executor.browser else ""
+            return result
+
+        elif function_name == "list_tabs":
+            tabs = self.browser_executor.list_tabs()
+            print(f"🗂️  {len(tabs)} tab(s) open")
+            return {"tabs": tabs, "count": len(tabs)}
 
         # Handle browser action function (requires AgentTrust validation)
         elif function_name == "agenttrust_browser_action":

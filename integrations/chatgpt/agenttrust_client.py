@@ -535,12 +535,35 @@ class AgentTrustClient:
         d = d.split('/')[0].split('?')[0].split(':')[0]
         return d
 
+    # Cross-service domain aliases — services that share credentials
+    # but use different domain names for login vs. product pages.
+    _DOMAIN_ALIAS_GROUPS = [
+        {"google.com", "gmail.com", "youtube.com", "accounts.google.com"},
+        {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
+        {"apple.com", "icloud.com", "appleid.apple.com"},
+        {"yahoo.com", "ymail.com", "mail.yahoo.com"},
+        {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.ca"},
+        {"ebay.com", "signin.ebay.com"},
+        {"facebook.com", "fb.com", "instagram.com", "meta.com"},
+    ]
+
+    @classmethod
+    def _get_domain_aliases(cls, domain: str) -> list:
+        """Return all known aliases for a domain (excluding itself)."""
+        aliases = []
+        d = cls._normalize_domain(domain)
+        for group in cls._DOMAIN_ALIAS_GROUPS:
+            if d in group:
+                aliases.extend(a for a in group if a != d)
+        return aliases
+
     def get_credentials(self, domain: str) -> Optional[Dict]:
         """Look up saved credentials for a domain.
         
         Tries multiple domain variations to maximise match rate:
         the exact normalized form, then with common subdomains stripped
-        (accounts., login., auth., id., sso., www.), and vice-versa.
+        (accounts., login., auth., id., sso., www.), vice-versa, and
+        finally cross-service aliases (e.g. google.com ↔ gmail.com).
         
         Returns:
             Dict with 'username' and 'password', or None if not found.
@@ -566,6 +589,15 @@ class AgentTrustClient:
         if len(parts) == 2:  # e.g. "spotify.com" — also try "accounts.spotify.com"
             for prefix in _auth_prefixes:
                 variations.append(prefix + normalized)
+
+        # Cross-service aliases (e.g. google.com → gmail.com)
+        for alias in self._get_domain_aliases(normalized):
+            variations.append(alias)
+            # Also try auth prefixes for each alias
+            alias_parts = alias.split(".")
+            if len(alias_parts) == 2:
+                for prefix in _auth_prefixes:
+                    variations.append(prefix + alias)
 
         # De-duplicate while preserving order
         seen = set()
