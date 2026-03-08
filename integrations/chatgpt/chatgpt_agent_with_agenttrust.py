@@ -2172,25 +2172,6 @@ class BrowserActionExecutor:
                 except Exception:
                     pass
 
-            # Check 3: Vision-based verification (if available)
-            if not login_failed and screenshot and getattr(self, '_parent_agent', None):
-                pa = self._parent_agent
-                if getattr(pa, 'page_vision', None) and pa.page_vision.enabled:
-                    try:
-                        vision_result = pa.page_vision.ask_about_page(
-                            screenshot,
-                            "Did the login succeed or fail? Look for error messages, "
-                            "'incorrect password' banners, or red warning text. "
-                            "Answer ONLY 'success' or 'failed: <reason>'.",
-                            url=new_url,
-                        )
-                        if vision_result and "failed" in vision_result.lower():
-                            login_failed = True
-                            failure_reason = f"Vision detected failure: {vision_result}"
-                            steps_log.append(f"⚠️ Vision: {vision_result}")
-                    except Exception:
-                        pass
-
             self._notify_extension("form_submit", url, "allowed",
                                    risk_level=result.get("risk_level"),
                                    action_id=action_id,
@@ -2684,19 +2665,7 @@ class ChatGPTAgentWithAgentTrust:
         except Exception as e:
             print(f"\u26a0\ufe0f  Action history RAG init failed: {e}")
 
-        # Vision model for page understanding (optional)
-        self.page_vision = None
-        try:
-            from page_vision import PageVision
-            self.page_vision = PageVision(self.openai)
-            if self.page_vision.enabled:
-                print("\U0001f441\ufe0f  Vision page analysis enabled")
-            else:
-                print("\u2139\ufe0f  Vision disabled (set AGENTTRUST_VISION=true to enable)")
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"\u26a0\ufe0f  Vision init failed: {e}")
+
 
         # Give executor a back-reference so auto_login can use vision
         self.browser_executor._parent_agent = self
@@ -2821,13 +2790,6 @@ class ChatGPTAgentWithAgentTrust:
                     "endpoint": {"type": "string", "description": "Full API URL (e.g. https://api.github.com/user/repos)"},
                     "body": {"type": "object", "description": "Request body for POST/PUT/PATCH (optional)"}
                 }, "required": ["provider", "method", "endpoint"]}
-            }},
-            {"type": "function", "function": {
-                "name": "analyse_page_screenshot",
-                "description": "Take a screenshot of the current page and get a visual AI analysis. Use when: (1) page text is empty/sparse, (2) you suspect a popup/modal/captcha is blocking interaction, (3) you need to understand the visual layout, (4) actions keep failing and you can't tell why from text alone.",
-                "parameters": {"type": "object", "properties": {
-                    "question": {"type": "string", "description": "Optional specific question about the page (e.g. 'Is there a cookie consent banner?'). If omitted, returns a general analysis."}
-                }}
             }},
         ])
         return tools
@@ -3337,24 +3299,6 @@ ROUTINES:
             else:
                 print(f"⚠️  External API call to {provider}: {result.get('error', 'unknown error')}")
             return result
-
-        elif function_name == "analyse_page_screenshot":
-            if not self.page_vision or not self.page_vision.enabled:
-                return {"error": "Vision analysis is not available. Set AGENTTRUST_VISION=true."}
-            b64 = self.browser_executor.take_screenshot()
-            if not b64:
-                return {"error": "Could not capture screenshot (no browser)."}
-            args = json.loads(function_call.arguments) if function_call.arguments else {}
-            question = args.get("question")
-            url = self.browser_executor.get_current_url() or ""
-            if question:
-                answer = self.page_vision.ask_about_page(b64, question, url=url)
-                print(f"\U0001f441\ufe0f  Vision Q&A: {question[:60]}")
-                return {"answer": answer or "Could not analyse.", "current_url": url}
-            else:
-                analysis = self.page_vision.analyse_screenshot(b64, url=url, force=True)
-                print(f"\U0001f441\ufe0f  Vision analysis: {(analysis or {}).get('page_type', '?')}")
-                return {**(analysis or {}), "current_url": url}
 
         # Handle browser action function (requires AgentTrust validation)
         elif function_name == "agenttrust_browser_action":

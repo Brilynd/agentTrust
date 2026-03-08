@@ -57,9 +57,6 @@ class AgentState(TypedDict, total=False):
     consecutive_failures: int
     total_actions: int
 
-    # --- Vision ---
-    vision_analysis: dict              # Structured screenshot analysis
-
     # --- Output ---
     final_response: str
 
@@ -84,7 +81,6 @@ READ_ONLY_ACTIONS = {
     "wait_for_element",
     "scroll_page",
     "call_external_api",
-    "analyse_page_screenshot",
 }
 
 MAX_ACTIONS = 25
@@ -330,34 +326,11 @@ def build_graph(agent):
         label = url[:80] if url else "(no page loaded)"
         print(f"  OBSERVE: {label}")
 
-        # --- Vision analysis (optional) ---
-        vision = None
-        if getattr(agent, 'page_vision', None):
-            pv = agent.page_vision
-            sparse = len(text.strip()) < 200
-            was_mutating = state.get('action_category') == 'mutating'
-            had_failure = state.get('consecutive_failures', 0) > 0
-            if pv.should_analyse(
-                after_navigation=was_mutating,
-                after_failure=had_failure,
-                sparse_text=sparse,
-                total_actions=state.get('total_actions', 0),
-            ):
-                try:
-                    b64 = executor.take_screenshot()
-                    if b64:
-                        vision = pv.analyse_screenshot(b64, url=url)
-                        if vision:
-                            print(f"  VISION: {vision.get('page_type', '?')} — {vision.get('summary', '')[:80]}")
-                except Exception as e:
-                    print(f"  VISION: failed ({e})")
-
         return {
             "current_url": url,
             "page_title": title,
             "page_text": text,
             "visible_elements": elements,
-            "vision_analysis": vision or {},
         }
 
     # ================================================================== #
@@ -380,19 +353,12 @@ def build_graph(agent):
             els = state["visible_elements"][:25]
             elements_str = json.dumps(els, separators=(",", ":"))
 
-        # Build observation block injected into the system prompt
-        vision_block = ""
-        va = state.get("vision_analysis") or {}
-        if va and getattr(agent, 'page_vision', None):
-            vision_block = "\n" + agent.page_vision.format_for_prompt(va) + "\n"
-
         observation = (
             f"\n[PAGE STATE]\n"
             f"URL: {state.get('current_url', 'not loaded')}\n"
             f"Title: {state.get('page_title', '')}\n"
             f"Content (truncated):\n{state.get('page_text', '')[:2000]}\n\n"
-            f"Interactive elements:\n{elements_str}\n"
-            f"{vision_block}\n"
+            f"Interactive elements:\n{elements_str}\n\n"
             f"[TASK PROGRESS]\n"
             f"Plan:\n{state.get('plan_text', '')}\n"
             f"Current goal ({goal_idx + 1}/{len(sub_goals)}): {current_goal}\n"
@@ -629,42 +595,6 @@ def build_graph(agent):
         if not failed and result.get("login_error"):
             failed = True
             fail_reason = result["login_error"]
-
-        # Vision-based verification for critical mutating actions
-        # when the tool reports success but we want a second opinion
-        last_name = state.get("last_action_name", "")
-        critical_actions = {"auto_login", "agenttrust_browser_action"}
-        pv = getattr(agent, 'page_vision', None)
-
-        if (
-            not failed
-            and last_name in critical_actions
-            and pv
-            and pv.enabled
-        ):
-            try:
-                executor = agent.browser_executor
-                if executor.browser:
-                    b64 = executor.take_screenshot()
-                    if b64:
-                        url = executor.get_current_url() or ""
-                        answer = pv.ask_about_page(
-                            b64,
-                            "Does this page show any error message, failure "
-                            "notice, 'incorrect password' banner, CAPTCHA, or "
-                            "other indication that the last action failed? "
-                            "Answer ONLY 'ok' if nothing is wrong, or "
-                            "'problem: <brief description>' if there is an issue.",
-                            url=url,
-                        )
-                        if answer and "problem" in answer.lower():
-                            failed = True
-                            fail_reason = f"Vision: {answer}"
-                            print(f"  VERIFY (vision): {answer}")
-                            # Invalidate cache so next observe gets fresh analysis
-                            pv.invalidate_cache(url)
-            except Exception as e:
-                print(f"  VERIFY: vision check skipped ({e})")
 
         consecutive = state.get("consecutive_failures", 0)
         if failed:
