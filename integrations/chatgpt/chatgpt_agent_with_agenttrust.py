@@ -573,17 +573,39 @@ class BrowserController:
         # One JS call: collect all interactive elements, check visibility and
         # viewport proximity, and return structured data.  Much faster than
         # dozens of Selenium find_elements + get_attribute round-trips.
-        # Compact JS: collect viewport-priority elements, return minimal data.
-        # Only text, id, and short href are sent — keeps token usage low.
+        # Enhanced JS: captures textarea, contenteditable, role-based inputs,
+        # flags overlay elements, and includes input type attribute.
         js = """
         const F = arguments[0];
-        const MAX = 40;
+        const MAX = 50;
         const vh = window.innerHeight;
         const buf = vh;
 
         const all = document.querySelectorAll(
-            'a,button,input,select,[role="button"],input[type="submit"]');
+            'a, button, input, select, textarea, ' +
+            '[contenteditable="true"], [contenteditable=""], ' +
+            '[role="button"], [role="search"], [role="searchbox"], ' +
+            '[role="combobox"], [role="textbox"], ' +
+            'input[type="submit"]');
         const out = [];
+
+        // Helper: check if element is inside a modal/overlay
+        function inOverlay(el) {
+            let p = el;
+            while (p && p !== document.body) {
+                const role = (p.getAttribute && p.getAttribute('role')) || '';
+                const cls = (p.className && typeof p.className === 'string') ? p.className.toLowerCase() : '';
+                if (role === 'dialog' || role === 'alertdialog' ||
+                    cls.includes('modal') || cls.includes('overlay') ||
+                    cls.includes('popup') || cls.includes('dialog') ||
+                    cls.includes('drawer') || cls.includes('lightbox') ||
+                    (p.getAttribute && p.getAttribute('aria-modal') === 'true')) {
+                    return true;
+                }
+                p = p.parentElement;
+            }
+            return false;
+        }
 
         for (let i = 0; i < all.length && out.length < MAX * 3; i++) {
             const el = all[i];
@@ -592,18 +614,26 @@ class BrowserController:
             if (el.offsetParent === null && el.tagName !== 'BODY') continue;
 
             const tag = el.tagName.toLowerCase();
+            const role = (el.getAttribute('role') || '').toLowerCase();
             let t;
             if (tag === 'a') t = 'link';
-            else if (tag === 'button') t = 'btn';
+            else if (tag === 'button' || role === 'button') t = 'btn';
             else if (tag === 'input') {
                 const it = (el.type||'').toLowerCase();
                 t = (it==='submit'||it==='button') ? 'btn' : 'in';
-            } else t = 'btn';
+            } else if (tag === 'textarea') t = 'in';
+            else if (tag === 'select') t = 'select';
+            else if (el.isContentEditable) t = 'in';
+            else if (role === 'search' || role === 'searchbox' ||
+                     role === 'combobox' || role === 'textbox') t = 'in';
+            else t = 'btn';
+
             if (F && t !== F && !(F==='button'&&t==='btn') && !(F==='input'&&t==='in')) continue;
 
             const txt = (el.innerText||el.textContent||'').trim().substring(0,60);
-            // Skip elements with no useful text and no id
-            if (!txt && !el.id && !el.name && !el.placeholder) continue;
+            const ariaLabel = el.getAttribute('aria-label') || '';
+            // Skip elements with no useful text and no identifiers
+            if (!txt && !el.id && !el.name && !el.placeholder && !ariaLabel && !role) continue;
 
             const near = (r.top < vh + buf && r.bottom > -buf) ? 1 : 0;
             // For links, keep only the pathname to save tokens
@@ -612,11 +642,17 @@ class BrowserController:
                 try { hp = new URL(el.href).pathname.substring(0,80); } catch(e) { hp = el.href.substring(0,80); }
             }
 
-            out.push({t,txt,id:el.id||'',nm:el.name||'',hp,
-                al:el.getAttribute('aria-label')||'',
-                ph:el.placeholder||'',
-                v:(el.value||'').substring(0,30),
-                n:near,y:Math.round(r.top)});
+            // Get input type for inputs
+            const inputType = (tag === 'input') ? (el.type || 'text').toLowerCase() : '';
+
+            out.push({t, txt, id:el.id||'', nm:el.name||'', hp,
+                al: ariaLabel,
+                ph: el.placeholder||'',
+                v: (el.value||'').substring(0,30),
+                it: inputType,
+                rl: role,
+                ov: inOverlay(el) ? 1 : 0,
+                n: near, y: Math.round(r.top)});
         }
         out.sort((a,b) => a.n!==b.n ? b.n-a.n : a.y-b.y);
         return out.slice(0, MAX);
@@ -634,6 +670,9 @@ class BrowserController:
                 if r.get("al"):  e["aria_label"] = r["al"]
                 if r.get("ph"):  e["placeholder"] = r["ph"]
                 if r.get("v"):   e["value"] = r["v"]
+                if r.get("it"):  e["input_type"] = r["it"]
+                if r.get("rl"):  e["role"] = r["rl"]
+                if r.get("ov"):  e["in_overlay"] = True
                 elements.append(e)
             return elements
         except Exception as e:
@@ -879,10 +918,11 @@ class BrowserController:
     
     def type_text(self, target: Dict[str, Any], text: str) -> Dict[str, Any]:
         """
-        Type text into an input field
+        Type text into an input field, textarea, or contenteditable element.
         
         Args:
-            target: dict identifying the input (id, name, placeholder, etc.)
+            target: dict identifying the input (id, name, placeholder,
+                    aria-label, type, role, selector, etc.)
             text: Text to type
         
         Returns:
@@ -892,24 +932,74 @@ class BrowserController:
         try:
             element = None
             
+            # 1. By ID (most specific)
             if target.get("id"):
                 try:
                     element = drv.find_element(By.ID, target["id"])
                 except NoSuchElementException:
                     pass
             
+            # 2. By name attribute
             if not element and target.get("name"):
                 try:
                     element = drv.find_element(By.NAME, target["name"])
                 except NoSuchElementException:
                     pass
             
+            # 3. By aria-label (broad: input, textarea, contenteditable)
+            if not element and target.get("aria-label"):
+                al = target["aria-label"]
+                for sel in [
+                    f"//input[@aria-label='{al}']",
+                    f"//textarea[@aria-label='{al}']",
+                    f"//*[@contenteditable][@aria-label='{al}']",
+                    f"//*[contains(@aria-label,'{al}')]",
+                ]:
+                    try:
+                        element = drv.find_element(By.XPATH, sel)
+                        if element.is_displayed():
+                            break
+                        element = None
+                    except NoSuchElementException:
+                        element = None
+            
+            # 4. By placeholder (broad: input + textarea, partial match)
             if not element and target.get("placeholder"):
+                ph = target["placeholder"]
+                for sel in [
+                    f"//input[@placeholder='{ph}']",
+                    f"//textarea[@placeholder='{ph}']",
+                    f"//input[contains(@placeholder,'{ph}')]",
+                    f"//textarea[contains(@placeholder,'{ph}')]",
+                ]:
+                    try:
+                        element = drv.find_element(By.XPATH, sel)
+                        if element.is_displayed():
+                            break
+                        element = None
+                    except NoSuchElementException:
+                        element = None
+            
+            # 5. By input type attribute (e.g. "search", "email", "text")
+            if not element and target.get("type"):
                 try:
-                    element = drv.find_element(By.XPATH, f"//input[@placeholder='{target['placeholder']}']")
+                    element = drv.find_element(
+                        By.CSS_SELECTOR, f"input[type='{target['type']}']"
+                    )
                 except NoSuchElementException:
                     pass
             
+            # 6. By role (searchbox, combobox, textbox)
+            if not element and target.get("role"):
+                role = target["role"]
+                try:
+                    element = drv.find_element(
+                        By.CSS_SELECTOR, f"[role='{role}']"
+                    )
+                except NoSuchElementException:
+                    pass
+            
+            # 7. By CSS selector (fallback)
             if not element and target.get("selector"):
                 try:
                     element = drv.find_element(By.CSS_SELECTOR, target["selector"])
@@ -917,8 +1007,14 @@ class BrowserController:
                     pass
             
             if element and element.is_displayed():
-                element.clear()
-                element.send_keys(text)
+                # Handle contenteditable differently
+                if element.get_attribute("contenteditable") in ("true", ""):
+                    element.click()
+                    import time; time.sleep(0.05)
+                    element.send_keys(text)
+                else:
+                    element.clear()
+                    element.send_keys(text)
                 return {"success": True, "message": f"Text typed successfully: {text[:50]}"}
             else:
                 return {"success": False, "message": "Input field not found or not visible"}
@@ -1602,29 +1698,26 @@ class BrowserActionExecutor:
             return {"status": "error", "message": str(e)}
 
     def _type_text_fallback(self, target: Dict[str, Any], text: str) -> Dict[str, Any]:
-        """Fallback: find an input by multiple strategies when standard lookup fails."""
+        """Fallback: find an input by multiple strategies when standard lookup fails.
+        
+        Searches across input, textarea, contenteditable, and role-based elements.
+        Uses partial matching for placeholders and aria-labels.
+        """
         drv = self.browser._actual_driver
         from selenium.webdriver.common.by import By
         element = None
 
-        # Try aria-label
+        # 1. Try aria-label (input, textarea, contenteditable — partial match)
         if target.get("aria-label"):
-            try:
-                element = drv.find_element(By.CSS_SELECTOR, f"input[aria-label='{target['aria-label']}']")
-            except Exception:
-                pass
-        # Try type attribute
-        if not element and target.get("type"):
-            try:
-                element = drv.find_element(By.CSS_SELECTOR, f"input[type='{target['type']}']")
-            except Exception:
-                pass
-        # Try role=searchbox or common search selectors
-        if not element:
-            for sel in ["input[role='searchbox']", "input[type='search']",
-                        "input[name='field-keywords']", "#twotabsearchtextbox",
-                        "input[aria-label*='Search']", "input[placeholder*='Search']",
-                        "input[name='q']", "input[name='search']"]:
+            al = target["aria-label"]
+            for sel in [
+                f"input[aria-label='{al}']",
+                f"textarea[aria-label='{al}']",
+                f"[contenteditable][aria-label='{al}']",
+                f"input[aria-label*='{al}']",
+                f"textarea[aria-label*='{al}']",
+                f"[contenteditable][aria-label*='{al}']",
+            ]:
                 try:
                     el = drv.find_element(By.CSS_SELECTOR, sel)
                     if el.is_displayed():
@@ -1633,10 +1726,97 @@ class BrowserActionExecutor:
                 except Exception:
                     continue
 
+        # 2. Try type attribute (input only)
+        if not element and target.get("type"):
+            try:
+                element = drv.find_element(By.CSS_SELECTOR, f"input[type='{target['type']}']")
+            except Exception:
+                pass
+
+        # 3. Try placeholder (input + textarea, partial match)
+        if not element and target.get("placeholder"):
+            ph = target["placeholder"]
+            for sel in [
+                f"input[placeholder='{ph}']",
+                f"textarea[placeholder='{ph}']",
+                f"input[placeholder*='{ph}']",
+                f"textarea[placeholder*='{ph}']",
+            ]:
+                try:
+                    el = drv.find_element(By.CSS_SELECTOR, sel)
+                    if el.is_displayed():
+                        element = el
+                        break
+                except Exception:
+                    continue
+
+        # 4. Try role attribute (searchbox, combobox, textbox)
+        if not element and target.get("role"):
+            role = target["role"]
+            for sel in [
+                f"input[role='{role}']",
+                f"[role='{role}']",
+            ]:
+                try:
+                    el = drv.find_element(By.CSS_SELECTOR, sel)
+                    if el.is_displayed():
+                        element = el
+                        break
+                except Exception:
+                    continue
+
+        # 5. Try well-known search input selectors
+        if not element:
+            for sel in [
+                "input[role='searchbox']", "input[role='combobox']",
+                "[role='searchbox']", "[role='combobox']", "[role='textbox']",
+                "input[type='search']",
+                "input[name='field-keywords']", "#twotabsearchtextbox",
+                "input[aria-label*='Search']", "input[placeholder*='Search']",
+                "textarea[aria-label*='Search']", "textarea[placeholder*='Search']",
+                "input[name='q']", "input[name='search']", "input[name='query']",
+                "textarea[name='q']",
+            ]:
+                try:
+                    el = drv.find_element(By.CSS_SELECTOR, sel)
+                    if el.is_displayed():
+                        element = el
+                        break
+                except Exception:
+                    continue
+
+        # 6. Try textarea elements broadly (e.g. chat inputs, comment boxes)
+        if not element:
+            try:
+                textareas = drv.find_elements(By.TAG_NAME, "textarea")
+                for ta in textareas:
+                    if ta.is_displayed():
+                        element = ta
+                        break
+            except Exception:
+                pass
+
+        # 7. Try contenteditable elements
+        if not element:
+            try:
+                editables = drv.find_elements(By.CSS_SELECTOR, "[contenteditable='true']")
+                for ce in editables:
+                    if ce.is_displayed():
+                        element = ce
+                        break
+            except Exception:
+                pass
+
         if element and element.is_displayed():
             try:
-                element.clear()
-                element.send_keys(text)
+                # Handle contenteditable differently
+                if element.get_attribute("contenteditable") in ("true", ""):
+                    element.click()
+                    import time; time.sleep(0.05)
+                    element.send_keys(text)
+                else:
+                    element.clear()
+                    element.send_keys(text)
                 return {"success": True, "message": f"Text typed (fallback): {text[:50]}"}
             except Exception as e:
                 return {"success": False, "message": f"Fallback type failed: {e}"}
@@ -1708,6 +1888,133 @@ class BrowserActionExecutor:
             return ""
         
         return self.browser.take_screenshot()
+
+    def dismiss_overlays(self) -> bool:
+        """
+        Detect and dismiss common overlays, popups, modals, and banners.
+        Returns True if any overlay was dismissed.
+        
+        Handles: cookie consent, account creation prompts, newsletter signups,
+        app download banners, credential picker, passkey prompts, GDPR banners,
+        generic modals, and more.
+        """
+        if not self.browser:
+            return False
+
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.common.exceptions import (
+            StaleElementReferenceException, ElementNotInteractableException
+        )
+
+        driver = self.browser._actual_driver
+        dismissed = False
+
+        # ── Phase 1: Click known close/dismiss buttons ──
+        close_selectors = [
+            # Generic close buttons
+            "button[aria-label='Close']", "button[aria-label='Dismiss']",
+            "button[aria-label='close']", "button[aria-label='dismiss']",
+            "button[aria-label='Close dialog']", "button[aria-label='Close modal']",
+            "[data-dismiss='modal']", "[data-bs-dismiss='modal']",
+            "button.modal-close", "button.close-modal", "button.dialog-close",
+            "a.modal-close", "a.close-modal",
+            ".modal .close", ".modal-header .close",
+            "button.btn-close", ".btn-close",
+
+            # Amazon-specific
+            "a[data-action='a-modal-close']", "button[data-action='a-modal-close']",
+            "button.a-modal-close", "a.a-modal-close",
+            "#ap-account-fixup-phone-skip-link",
+            "button[id*='passkey-cancel']", "button[id*='passkey-close']",
+            "a[id*='passkey-cancel']",
+
+            # Google credential picker
+            "#credential_picker_close", "#credential_picker_cancel",
+            "#credential_picker_iframe + div",
+
+            # Cookie consent / GDPR banners
+            "#onetrust-accept-btn-handler",         # OneTrust
+            "#onetrust-reject-all-handler",
+            ".onetrust-close-btn-handler",
+            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",  # CookieBot
+            "#CybotCookiebotDialogBodyButtonDecline",
+            "[data-cookiefirst-action='accept']",   # CookieFirst
+            "#cookie-banner-accept", "#cookie-accept",
+            ".cookie-consent-accept", ".cookie-banner__accept",
+            "button[data-testid='cookie-policy-dialog-accept-button']",
+            "#accept-cookie-notification",
+            ".cc-dismiss", ".cc-btn.cc-allow",      # CookieConsent (popular lib)
+
+            # Newsletter / signup popups
+            "button.newsletter-close", ".popup-close", ".newsletter-popup .close",
+            "[data-action='close-popup']", "[data-action='close-modal']",
+            ".signup-modal .close", ".promo-close",
+
+            # App download banners
+            ".smartbanner-close", "#smartbanner .sb-close",
+            ".app-banner-close", "[data-testid='app-banner-close']",
+
+            # "No thanks" / "Skip" / "Maybe later" links
+            "a.skip-link", "button.skip", "a.skip",
+            "button[id*='skip']", "a[id*='skip']",
+        ]
+
+        combined_selector = ", ".join(close_selectors)
+        try:
+            els = driver.find_elements(By.CSS_SELECTOR, combined_selector)
+            for el in els:
+                try:
+                    if el.is_displayed():
+                        el.click()
+                        dismissed = True
+                        time.sleep(0.15)
+                except (StaleElementReferenceException, ElementNotInteractableException):
+                    continue
+        except Exception:
+            pass
+
+        # ── Phase 2: Text-based button matching for common dismiss patterns ──
+        dismiss_phrases = [
+            "no thanks", "no, thanks", "not now", "maybe later",
+            "skip", "dismiss", "got it", "i understand",
+            "accept all", "accept cookies", "allow all",
+            "reject all", "decline", "close",
+        ]
+        try:
+            buttons = driver.find_elements(
+                By.CSS_SELECTOR,
+                "button, a[role='button'], div[role='button'], span[role='button']"
+            )
+            for btn in buttons:
+                try:
+                    if not btn.is_displayed():
+                        continue
+                    btn_text = (btn.text or "").strip().lower()
+                    if not btn_text:
+                        continue
+                    for phrase in dismiss_phrases:
+                        if phrase in btn_text and len(btn_text) < 40:
+                            btn.click()
+                            dismissed = True
+                            time.sleep(0.15)
+                            break
+                except (StaleElementReferenceException, ElementNotInteractableException):
+                    continue
+        except Exception:
+            pass
+
+        # ── Phase 3: Escape key fallback ──
+        if not dismissed:
+            try:
+                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                time.sleep(0.2)
+                # Check if something changed (e.g. modal closed)
+                dismissed = True
+            except Exception:
+                pass
+
+        return dismissed
 
     def auto_login(self, url: str, username: str, password: str):
         """
@@ -1878,40 +2185,8 @@ class BrowserActionExecutor:
             return None
 
         def _dismiss_overlays():
-            """Close QR-code dialogs, cookie banners, or other overlays. Fast path."""
-            combined_selector = ", ".join([
-                "a[data-action='a-modal-close']",
-                "button[data-action='a-modal-close']",
-                "button.a-modal-close", "a.a-modal-close",
-                "#ap-account-fixup-phone-skip-link",
-                "button[id*='passkey-cancel']", "button[id*='passkey-close']",
-                "a[id*='passkey-cancel']",
-                "#credential_picker_close", "#credential_picker_cancel",
-                "button[aria-label='Close']", "button[aria-label='Dismiss']",
-                "[data-dismiss='modal']",
-                "button.modal-close", "a.skip-link", "button.skip",
-            ])
-            dismissed = False
-            try:
-                els = driver.find_elements(By.CSS_SELECTOR, combined_selector)
-                for el in els:
-                    try:
-                        if el.is_displayed():
-                            el.click()
-                            dismissed = True
-                            time.sleep(0.1)
-                    except (StaleElementReferenceException, ElementNotInteractableException):
-                        continue
-            except Exception:
-                pass
-
-            if not dismissed:
-                try:
-                    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                except Exception:
-                    pass
-
-            return dismissed
+            """Close QR-code dialogs, cookie banners, or other overlays. Delegates to shared method."""
+            return self.dismiss_overlays()
 
         def _safe_click(el):
             """Click with JS fallback if normal click fails."""
@@ -2729,11 +3004,16 @@ class ChatGPTAgentWithAgentTrust:
             }},
             {"type": "function", "function": {
                 "name": "type_text",
-                "description": "Type text into an input field identified by id, name, placeholder, or CSS selector.",
+                "description": "Type text into an input field, textarea, or contenteditable element. Identify the target using id, name, placeholder, aria-label, input type, role, or CSS selector. For search boxes, use aria-label, role='searchbox', or type='search'. For textareas and rich editors, use aria-label or role='textbox'.",
                 "parameters": {"type": "object", "properties": {
                     "target": {"type": "object", "properties": {
-                        "id": {"type": "string"}, "name": {"type": "string"},
-                        "placeholder": {"type": "string"}, "selector": {"type": "string"}
+                        "id": {"type": "string", "description": "Element id attribute"},
+                        "name": {"type": "string", "description": "Element name attribute"},
+                        "placeholder": {"type": "string", "description": "Placeholder text (partial match supported)"},
+                        "aria-label": {"type": "string", "description": "Aria-label attribute (partial match supported)"},
+                        "type": {"type": "string", "description": "Input type: search, email, text, password, etc."},
+                        "role": {"type": "string", "description": "ARIA role: searchbox, combobox, textbox"},
+                        "selector": {"type": "string", "description": "CSS selector (last resort)"}
                     }},
                     "text": {"type": "string", "description": "Text to type"}
                 }, "required": ["target", "text"]}
@@ -2936,6 +3216,8 @@ class ChatGPTAgentWithAgentTrust:
             "page_title": "",
             "page_text": "",
             "visible_elements": [],
+            "page_vision": "",
+            "has_overlay": False,
             "turn_messages": [],
             "pending_tool_calls": [],
             "last_action_result": {},
@@ -3002,6 +3284,23 @@ PAGE CONTINUITY — VERY IMPORTANT:
 - When you listed items from a page (e.g. search results, product listings),
   the browser is STILL on that page. To act on one of those items, find and
   click its link on the CURRENT page.
+
+OVERLAY / POPUP HANDLING:
+- If you see overlays, modals, popups, cookie consent banners, account
+  creation prompts, or passkey/credential picker dialogs covering the page,
+  close them BEFORE doing anything else.
+- Look for close buttons (aria-label="Close", "Dismiss", "X") or text
+  buttons ("No thanks", "Skip", "Not now", "Decline").
+- Account creation popups and "sign up" modals should be CLOSED, not
+  filled in (unless the user explicitly asked to create an account).
+
+SEARCH INPUT IDENTIFICATION:
+- When typing into search boxes, use the most specific identifier:
+  aria-label (e.g. "Search"), role="searchbox" or role="combobox",
+  type="search", placeholder text, or name attribute.
+- Prefer aria-label and role over generic selectors for unique inputs.
+- Check the interactive elements list for input_type and role fields.
+- Use the type_text tool with aria-label, type, or role in the target.
 
 RULES:
 - ONLY act on what the user explicitly asked. Do NOT browse, search,

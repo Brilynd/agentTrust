@@ -45,6 +45,8 @@ class AgentState(TypedDict, total=False):
     page_title: str
     page_text: str                    # Truncated visible text
     visible_elements: list            # Interactive elements on page
+    page_vision: str                  # Vision LLM classification of the page
+    has_overlay: bool                 # Whether an overlay/popup was detected
 
     # --- Turn messages (OpenAI API) ---
     turn_messages: list               # Tool call/result pairs this turn
@@ -299,13 +301,15 @@ def build_graph(agent):
     #  OBSERVE node                                                       #
     # ================================================================== #
     def observe_node(state: AgentState) -> dict:
-        """Read current browser state. Pure function — no LLM call."""
+        """Read current browser state and classify via vision LLM."""
         executor = agent.browser_executor
 
         url = ""
         title = ""
         text = ""
         elements = []
+        page_vision = ""
+        has_overlay = False
 
         if executor.browser:
             try:
@@ -323,14 +327,93 @@ def build_graph(agent):
             except Exception:
                 pass
 
+            # --- Vision analysis: take screenshot and classify page ---
+            try:
+                screenshot_b64 = executor.take_screenshot()
+                if screenshot_b64:
+                    vision_resp = agent._chat_completion(
+                        model=agent.model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a page-state classifier for a browser automation agent. "
+                                    "Given a screenshot, respond with a SHORT label (max 20 words) in this format:\n"
+                                    "  <page_type> — <brief description>\n\n"
+                                    "page_type must be one of: login, dashboard, search, product, checkout, "
+                                    "settings, article, form, error, other\n\n"
+                                    "IMPORTANT: After the label, on a NEW LINE write OVERLAY: YES or OVERLAY: NO\n"
+                                    "Write OVERLAY: YES if there is ANY popup, modal, dialog, overlay, banner, "
+                                    "cookie consent, account creation prompt, newsletter signup, app download "
+                                    "prompt, or any element obscuring the main page content.\n\n"
+                                    "Example responses:\n"
+                                    "  search — Google search results for 'python tutorials'\n"
+                                    "  OVERLAY: NO\n\n"
+                                    "  login — Amazon sign-in page with email field\n"
+                                    "  OVERLAY: YES\n"
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": f"Current URL: {url}\nClassify this page:"},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/png;base64,{screenshot_b64}",
+                                            "detail": "low",
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                        temperature=0,
+                        max_tokens=60,
+                    )
+                    vision_text = (vision_resp.choices[0].message.content or "").strip()
+                    # Parse overlay flag
+                    if "OVERLAY: YES" in vision_text.upper():
+                        has_overlay = True
+                    # Extract the label (first line)
+                    page_vision = vision_text.split("\n")[0].strip()
+            except Exception as e:
+                # Vision is best-effort — never block the pipeline
+                page_vision = ""
+                print(f"  VISION (skipped): {e}")
+
+            # --- Auto-dismiss overlays if detected ---
+            if has_overlay:
+                try:
+                    dismissed = executor.dismiss_overlays()
+                    if dismissed:
+                        print(f"  OVERLAY: Auto-dismissed popup/overlay")
+                        # Re-read elements after dismissal
+                        time.sleep(0.3)
+                        try:
+                            elements = executor.get_visible_elements() or []
+                        except Exception:
+                            pass
+                        try:
+                            content = executor.get_page_content()
+                            text = content.get("text", "")[:3000]
+                        except Exception:
+                            pass
+                        has_overlay = False  # cleared
+                except Exception:
+                    pass
+
         label = url[:80] if url else "(no page loaded)"
         print(f"  OBSERVE: {label}")
+        if page_vision:
+            print(f"  VISION: {page_vision}")
 
         return {
             "current_url": url,
             "page_title": title,
             "page_text": text,
             "visible_elements": elements,
+            "page_vision": page_vision,
+            "has_overlay": has_overlay,
         }
 
     # ================================================================== #
@@ -350,13 +433,21 @@ def build_graph(agent):
         # Format visible elements compactly
         elements_str = ""
         if state.get("visible_elements"):
-            els = state["visible_elements"][:25]
+            els = state["visible_elements"][:30]
             elements_str = json.dumps(els, separators=(",", ":"))
+
+        # Vision context from screenshot analysis
+        vision_info = ""
+        if state.get("page_vision"):
+            vision_info = f"Vision analysis: {state['page_vision']}\n"
+        if state.get("has_overlay"):
+            vision_info += "⚠ OVERLAY DETECTED: A popup, modal, or banner is covering the page. Dismiss it before interacting with underlying content.\n"
 
         observation = (
             f"\n[PAGE STATE]\n"
             f"URL: {state.get('current_url', 'not loaded')}\n"
             f"Title: {state.get('page_title', '')}\n"
+            f"{vision_info}"
             f"Content (truncated):\n{state.get('page_text', '')[:2000]}\n\n"
             f"Interactive elements:\n{elements_str}\n\n"
             f"[TASK PROGRESS]\n"
@@ -370,11 +461,31 @@ def build_graph(agent):
             "You are a browser automation agent with FULL control of a real browser.\n"
             "You perform tasks by actually navigating, clicking, typing, and reading.\n\n"
             "WORKFLOW — follow strictly:\n"
-            "1. LOOK at the page state provided below.\n"
+            "1. LOOK at the page state AND vision analysis provided below.\n"
             "2. Pick ONE tool call that advances the current goal.\n"
             "3. Use the most SPECIFIC element identifier available:\n"
-            "   id > href > aria-label > text.\n"
+            "   id > name > aria-label > placeholder > href > text.\n"
             "4. Fill target objects completely (id, text, href, tagName, etc.).\n\n"
+            "OVERLAY / POPUP HANDLING:\n"
+            "- The system automatically dismisses common overlays (cookie banners,\n"
+            "  signup prompts, etc.) during page observation.\n"
+            "- If the vision analysis says OVERLAY DETECTED, it means an overlay\n"
+            "  is STILL present after auto-dismissal. You should:\n"
+            "  a) Look for close/dismiss buttons in the interactive elements\n"
+            "     (elements with in_overlay=true are inside the overlay).\n"
+            "  b) Click the close button BEFORE doing anything else.\n"
+            "  c) Do NOT interact with elements behind the overlay.\n"
+            "- Account creation popups, passkey prompts, and 'sign up' modals\n"
+            "  should be closed, NOT filled in (unless the user asked to sign up).\n\n"
+            "SEARCH INPUT IDENTIFICATION:\n"
+            "- When typing into search boxes, identify the correct input using:\n"
+            "  aria-label (e.g. 'Search'), role='searchbox' or role='combobox',\n"
+            "  type='search', placeholder text, or name attribute.\n"
+            "- Prefer aria-label and role over generic selectors.\n"
+            "- For unique/custom search inputs, check the 'input_type' and 'role'\n"
+            "  fields in the interactive elements list.\n"
+            "- Use the type_text tool with aria-label, type, or role in the target\n"
+            "  for reliable matching.\n\n"
             "RULES:\n"
             "- ONLY perform actions the user EXPLICITLY asked for. Do NOT\n"
             "  browse, search, or navigate on your own initiative.\n"
