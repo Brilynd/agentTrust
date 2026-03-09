@@ -218,6 +218,23 @@ async function migrate() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)
     `);
+
+    // Create user_connections table for Token Vault linked accounts
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_connections (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        provider VARCHAR(100) NOT NULL,
+        auth0_access_token TEXT,
+        auth0_refresh_token TEXT,
+        connected_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, provider)
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_connections_user_id ON user_connections(user_id)
+    `);
     
     console.log('Migrations completed successfully!');
     

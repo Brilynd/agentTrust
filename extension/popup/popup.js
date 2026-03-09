@@ -955,7 +955,14 @@ async function connectProvider(provider) {
       body: { provider }
     });
     if (res.success && res.authorizeUrl) {
-      window.open(res.authorizeUrl, '_blank');
+      const authWindow = window.open(res.authorizeUrl, '_blank');
+      // Poll until the auth window closes, then refresh connections
+      const pollClosed = setInterval(() => {
+        if (!authWindow || authWindow.closed) {
+          clearInterval(pollClosed);
+          loadConnections();
+        }
+      }, 1000);
     } else {
       showPermStatus(res.error || 'Token Vault not configured', 'error');
     }
@@ -965,7 +972,19 @@ async function connectProvider(provider) {
 }
 
 async function disconnectProvider(provider) {
-  showPermStatus('Disconnect not yet implemented', 'error');
+  try {
+    const res = await apiFetch(`/token-vault/connections/${encodeURIComponent(provider)}`, {
+      method: 'DELETE'
+    });
+    if (res.success) {
+      showPermStatus('Disconnected', 'success');
+      loadConnections();
+    } else {
+      showPermStatus(res.error || 'Failed to disconnect', 'error');
+    }
+  } catch {
+    showPermStatus('Failed to disconnect', 'error');
+  }
 }
 
 // ─── Routines ─────────────────────────────────────────

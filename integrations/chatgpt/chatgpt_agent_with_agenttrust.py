@@ -3469,11 +3469,30 @@ class ChatGPTAgentWithAgentTrust:
             }},
             {"type": "function", "function": {
                 "name": "call_external_api",
-                "description": "Call an external provider API (GitHub, Google, Slack, etc.) using Token Vault. Prefer this over browser automation for supported providers when performing API-level tasks like creating issues, reading repos, sending messages.",
+                "description": (
+                    "Call an external provider API (GitHub, Google Calendar, Slack, etc.) using Auth0 Token Vault. "
+                    "Prefer this over browser automation for supported providers when performing API-level tasks.\n\n"
+                    "GITHUB (provider='github'):\n"
+                    "  - List repos: GET https://api.github.com/user/repos\n"
+                    "  - Get repo: GET https://api.github.com/repos/{owner}/{repo}\n"
+                    "  - List issues: GET https://api.github.com/repos/{owner}/{repo}/issues\n"
+                    "  - Create issue: POST https://api.github.com/repos/{owner}/{repo}/issues body={title, body}\n"
+                    "  - List PRs: GET https://api.github.com/repos/{owner}/{repo}/pulls\n"
+                    "  - User profile: GET https://api.github.com/user\n\n"
+                    "GOOGLE CALENDAR (provider='google-oauth2'):\n"
+                    "  - List events: GET https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin={ISO}&timeMax={ISO}\n"
+                    "  - Create event: POST https://www.googleapis.com/calendar/v3/calendars/primary/events body={summary, start:{dateTime}, end:{dateTime}}\n"
+                    "  - Get event: GET https://www.googleapis.com/calendar/v3/calendars/primary/events/{eventId}\n"
+                    "  - Update event: PUT https://www.googleapis.com/calendar/v3/calendars/primary/events/{eventId}\n"
+                    "  - Delete event: DELETE https://www.googleapis.com/calendar/v3/calendars/primary/events/{eventId}\n"
+                    "  - List calendars: GET https://www.googleapis.com/calendar/v3/users/me/calendarList\n\n"
+                    "NOTE: timeMin/timeMax must be RFC 3339 format (e.g. 2026-03-09T00:00:00Z). "
+                    "Calendar event start/end use {dateTime: '...', timeZone: 'America/New_York'}."
+                ),
                 "parameters": {"type": "object", "properties": {
-                    "provider": {"type": "string", "description": "Provider name: github, google, slack, microsoft"},
+                    "provider": {"type": "string", "description": "Auth0 connection name: 'github' for GitHub, 'google-oauth2' for Google (Calendar, Drive, etc.), 'slack', 'microsoft'"},
                     "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "description": "HTTP method"},
-                    "endpoint": {"type": "string", "description": "Full API URL (e.g. https://api.github.com/user/repos)"},
+                    "endpoint": {"type": "string", "description": "Full API URL including query parameters (see examples in description)"},
                     "body": {"type": "object", "description": "Request body for POST/PUT/PATCH (optional)"}
                 }, "required": ["provider", "method", "endpoint"]}
             }},

@@ -55,6 +55,7 @@ class AgentTrustClient:
         
         self._token = None
         self._token_expiry = None
+        self._user_token = None
         self.current_session_id = None
         self.current_prompt_id = None
         
@@ -94,6 +95,21 @@ class AgentTrustClient:
         self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
         
         return self._token
+
+    def set_user_token(self, user_token: str) -> None:
+        """Set a user access token for Token Vault calls.
+
+        Token Vault exchanges require a token tied to a user identity (not an
+        M2M token).  When a user logs in through Auth0 Universal Login (via the
+        browser extension or a login page), pass their access token here so
+        that ``call_external_api`` can exchange it for provider tokens
+        (GitHub, Google, etc.).
+        """
+        self._user_token = user_token
+
+    def clear_user_token(self) -> None:
+        """Remove the stored user token."""
+        self._user_token = None
 
     def verify_connectivity(self) -> Dict[str, Any]:
         """Pre-flight check: backend reachable + Auth0 token obtainable.
@@ -635,13 +651,19 @@ class AgentTrustClient:
         body: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """Call an external provider API via the backend Token Vault proxy.
-        
+
+        Token Vault exchanges require a user access token (set via
+        ``set_user_token``) because the provider token is linked to a
+        user identity.  If a user token is available it is sent as
+        ``userToken`` in the payload so the backend uses it for the
+        exchange instead of the M2M bearer token.
+
         Args:
-            provider: Provider name (github, google, slack, etc.)
+            provider: Auth0 connection name (github, google-oauth2, slack, etc.)
             method: HTTP method (GET, POST, PUT, DELETE)
             endpoint: Full API URL (e.g. https://api.github.com/user/repos)
             body: Optional request body for POST/PUT
-            
+
         Returns:
             Dict with the API response data or error
         """
@@ -654,6 +676,8 @@ class AgentTrustClient:
                 "method": method.upper(),
                 "url": endpoint,
             }
+            if self._user_token:
+                payload["userToken"] = self._user_token
             if body:
                 payload["body"] = body
             if self.current_session_id:
