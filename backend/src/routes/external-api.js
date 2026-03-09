@@ -3,6 +3,35 @@ const router = express.Router();
 const axios = require('axios').default || require('axios');
 const { validateAction } = require('../middleware/auth');
 const { logAction } = require('../services/audit');
+const { createApproval } = require('./approvals');
+
+const HIGH_RISK_API_PATTERNS = [
+  '/repos/', '/orgs/', '/user/repos',
+  '/calendars/', '/acl',
+];
+const DESTRUCTIVE_URL_KEYWORDS = [
+  'delete', 'remove', 'destroy', 'deactivate', 'revoke', 'transfer',
+];
+
+function classifyApiRisk(method, url) {
+  const m = method.toUpperCase();
+  const urlLower = url.toLowerCase();
+
+  if (m === 'DELETE') return 'high';
+
+  if (m === 'GET') {
+    if (DESTRUCTIVE_URL_KEYWORDS.some(kw => urlLower.includes(kw))) return 'medium';
+    return 'low';
+  }
+
+  if (['POST', 'PUT', 'PATCH'].includes(m)) {
+    if (DESTRUCTIVE_URL_KEYWORDS.some(kw => urlLower.includes(kw))) return 'high';
+    if (HIGH_RISK_API_PATTERNS.some(p => urlLower.includes(p))) return 'medium';
+    return 'medium';
+  }
+
+  return 'low';
+}
 
 const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN;
 const AUTH0_CLIENT_ID = process.env.AUTH0_CLIENT_ID;
@@ -70,6 +99,39 @@ async function exchangeTokenViaTokenVault(provider, subjectToken) {
   return response.data.access_token;
 }
 
+const SENSITIVE_KEYS = new Set([
+  'access_token', 'refresh_token', 'token', 'secret', 'client_secret',
+  'private_key', 'api_key', 'authorization', 'cookie', 'session_token',
+  'x-auth-token',
+]);
+const MAX_RESPONSE_SIZE = 50000;
+
+function sanitizeApiResponse(data, depth = 0) {
+  if (depth > 10) return '[nested]';
+  if (data === null || data === undefined) return data;
+  if (typeof data === 'string') {
+    return data.length > 5000 ? data.substring(0, 5000) + '...[truncated]' : data;
+  }
+  if (typeof data !== 'object') return data;
+
+  if (Array.isArray(data)) {
+    const capped = data.length > 50 ? data.slice(0, 50) : data;
+    const result = capped.map(item => sanitizeApiResponse(item, depth + 1));
+    if (data.length > 50) result.push(`...[${data.length - 50} more items]`);
+    return result;
+  }
+
+  const cleaned = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+      cleaned[key] = '[REDACTED]';
+    } else {
+      cleaned[key] = sanitizeApiResponse(value, depth + 1);
+    }
+  }
+  return cleaned;
+}
+
 router.post('/call', validateAction, async (req, res) => {
   const { provider, method, url: apiUrl, body: apiBody, sessionId, promptId, userToken } = req.body;
 
@@ -89,8 +151,12 @@ router.post('/call', validateAction, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Invalid API URL' });
   }
 
+  const riskLevel = classifyApiRisk(method, apiUrl);
+  const requiresApproval = riskLevel === 'high';
+
+  let loggedAction;
   try {
-    await logAction({
+    loggedAction = await logAction({
       type: 'api_call',
       url: apiUrl,
       domain: apiDomain,
@@ -99,12 +165,37 @@ router.post('/call', validateAction, async (req, res) => {
       sessionId: sessionId || null,
       promptId: promptId || null,
       timestamp: new Date().toISOString(),
-      riskLevel: 'low',
-      status: 'allowed',
-      reason: `External API call (${provider})`
+      riskLevel,
+      status: requiresApproval ? 'step_up_required' : 'allowed',
+      reason: requiresApproval
+        ? `High-risk external API call (${method.toUpperCase()} ${provider}) requires approval`
+        : `External API call (${provider})`
     });
   } catch (logErr) {
     console.error('Failed to log external API call:', logErr);
+  }
+
+  if (requiresApproval) {
+    const approval = createApproval({
+      sessionId: sessionId || null,
+      actionId: loggedAction?.id || null,
+      type: 'api_call',
+      domain: apiDomain,
+      url: apiUrl,
+      riskLevel,
+      reason: `${method.toUpperCase()} ${apiUrl} — destructive API call requires approval`,
+      target: { provider, method: method.toUpperCase() }
+    });
+
+    return res.status(403).json({
+      success: false,
+      error: `High-risk API call requires user approval (${method.toUpperCase()} to ${provider})`,
+      requiresStepUp: true,
+      riskLevel,
+      actionId: loggedAction?.id,
+      approvalId: approval.id,
+      status: 'step_up_required'
+    });
   }
 
   // Get the provider access token.
@@ -178,7 +269,7 @@ router.post('/call', validateAction, async (req, res) => {
     res.json({
       success: true,
       status: response.status,
-      data: response.data
+      data: sanitizeApiResponse(response.data)
     });
   } catch (apiErr) {
     const status = apiErr.response?.status || 502;

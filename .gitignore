@@ -51,3 +51,6 @@ __pycache__/
 .venv/
 venv/
 .data/
+
+# Chrome profile (persisted between agent runs)
+.chrome-profile/

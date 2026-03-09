@@ -385,6 +385,14 @@ class BrowserController:
         options = webdriver.ChromeOptions()
         if headless:
             options.add_argument('--headless=new')
+        
+        chrome_profile = os.getenv("CHROME_PROFILE_DIR")
+        if not chrome_profile:
+            chrome_profile = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), ".chrome-profile"
+            )
+        options.add_argument(f'--user-data-dir={chrome_profile}')
+        
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-blink-features=AutomationControlled')
@@ -2183,12 +2191,23 @@ class BrowserActionExecutor:
                     "action_id": result.get("action_id"),
                     "risk_level": result.get("risk_level")
                 })
-                # Delegate to BrowserController — opens a NEW tab and
-                # navigates only that tab, leaving the current tab untouched.
                 tab_result = self.browser.open_new_tab(url, label)
                 tab_result["action_id"] = result.get("action_id")
                 tab_result["risk_level"] = result.get("risk_level")
                 tab_result["status"] = "allowed"
+
+                try:
+                    import time as _time
+                    _time.sleep(0.3)
+                    screenshot = self.browser.take_screenshot()
+                    tab_result["screenshot"] = screenshot
+                    if screenshot and result.get("action_id"):
+                        self.agenttrust._update_action_screenshot(
+                            result.get("action_id"), screenshot
+                        )
+                except Exception as e:
+                    print(f"⚠️  Failed to capture screenshot for new tab: {e}")
+
                 self._notify_extension("navigation", url, "allowed",
                                        risk_level=result.get("risk_level"),
                                        action_id=result.get("action_id"))
@@ -2207,7 +2226,15 @@ class BrowserActionExecutor:
         if not self.browser:
             return {"error": "Browser not initialized"}
 
-        return self.browser.switch_to_tab(label_or_index)
+        result = self.browser.switch_to_tab(label_or_index)
+        if result.get("success"):
+            try:
+                import time as _time
+                _time.sleep(0.15)
+                result["screenshot"] = self.browser.take_screenshot()
+            except Exception:
+                pass
+        return result
 
     def close_tab(self, label_or_index=None):
         """Close a tab — MANDATORY AgentTrust validation.
@@ -2237,6 +2264,20 @@ class BrowserActionExecutor:
                 tab_result = self.browser.close_tab(label_or_index)
                 tab_result["action_id"] = result.get("action_id")
                 tab_result["status"] = "allowed" if tab_result.get("success") else "error"
+
+                if tab_result.get("success"):
+                    try:
+                        import time as _time
+                        _time.sleep(0.15)
+                        screenshot = self.browser.take_screenshot()
+                        tab_result["screenshot"] = screenshot
+                        if screenshot and result.get("action_id"):
+                            self.agenttrust._update_action_screenshot(
+                                result.get("action_id"), screenshot
+                            )
+                    except Exception:
+                        pass
+
                 return tab_result
 
             return {"status": "error", "message": f"Unexpected status: {status}"}
@@ -3318,6 +3359,7 @@ class ChatGPTAgentWithAgentTrust:
         self._consecutive_failures = 0
         self._last_action_key = None
         self._tool_call_count = 0
+        self._cached_credentials = None
         self.model = os.getenv("OPENAI_MODEL", "gpt-4.1")
         self.model_fast = os.getenv("OPENAI_MODEL_FAST", "gpt-4.1-mini")
         self.model_nano = os.getenv("OPENAI_MODEL_NANO", "gpt-4.1-nano")
@@ -3475,11 +3517,11 @@ class ChatGPTAgentWithAgentTrust:
             }},
             {"type": "function", "function": {
                 "name": "auto_login",
-                "description": "Perform a complete login flow on the CURRENT page. IMPORTANT: Navigate to the website's login/sign-in page FIRST before calling this. Handles multi-step login forms (Google, Microsoft, Amazon) that show a continue/next button between username and password. Dismisses QR-code popups and overlays automatically. Use after get_saved_credentials or after the user provides credentials.",
+                "description": "Perform a complete login flow on the CURRENT page. IMPORTANT: Navigate to the website's login/sign-in page FIRST before calling this. Handles multi-step login forms (Google, Microsoft, Amazon) that show a continue/next button between username and password. Dismisses QR-code popups and overlays automatically. If you just called get_saved_credentials and credentials were found, call auto_login WITHOUT username/password — the saved credentials will be used automatically and securely. Only pass username/password if the user provided them manually.",
                 "parameters": {"type": "object", "properties": {
-                    "username": {"type": "string", "description": "Username or email to enter"},
-                    "password": {"type": "string", "description": "Password to enter"}
-                }, "required": ["username", "password"]}
+                    "username": {"type": "string", "description": "Username or email (omit if using saved credentials from get_saved_credentials)"},
+                    "password": {"type": "string", "description": "Password (omit if using saved credentials from get_saved_credentials)"}
+                }}
             }},
             {"type": "function", "function": {
                 "name": "call_external_api",
@@ -4072,16 +4114,23 @@ ROUTINES:
             creds = self.agenttrust.get_credentials(domain)
             if creds:
                 print(f"🔑 Found saved credentials for {domain}")
-                return {"found": True, "domain": domain, "username": creds["username"], "password": creds["password"],
-                        "hint": "Use auto_login tool to fill in the login form. It handles multi-step forms automatically."}
+                self._cached_credentials = creds
+                masked_user = creds["username"][:3] + "***" if len(creds["username"]) > 3 else "***"
+                return {"found": True, "domain": domain, "username_hint": masked_user,
+                        "hint": "Credentials securely loaded. Call auto_login with domain='" + domain + "' to log in. Do NOT type the password manually."}
             else:
                 print(f"🔑 No saved credentials for {domain}")
+                self._cached_credentials = None
                 return {"found": False, "domain": domain, "message": "No saved credentials. Ask the user for login details."}
 
         elif function_name == "auto_login":
             args = json.loads(function_call.arguments) if function_call.arguments else {}
             username = args.get("username", "")
             password = args.get("password", "")
+            if (not username or not password) and getattr(self, '_cached_credentials', None):
+                username = self._cached_credentials.get("username", username)
+                password = self._cached_credentials.get("password", password)
+                self._cached_credentials = None
             if not username or not password:
                 return {"success": False, "message": "Both username and password are required"}
             current_url = self.browser_executor.browser.get_current_url() if self.browser_executor.browser else ""

@@ -9,7 +9,16 @@
     "confirm",
     "purchase",
     "buy",
-    "pay"
+    "pay",
+    "account",
+    "profile",
+    "settings",
+    "password",
+    "billing",
+    "payment",
+    "security",
+    "deactivate",
+    "disable"
   ],
   "medium_risk_keywords": [
     "submit",

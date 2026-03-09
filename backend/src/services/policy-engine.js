@@ -5,17 +5,21 @@ const fs = require('fs').promises;
 const path = require('path');
 
 let policies = null;
+let policiesLoadedAt = 0;
+const POLICY_CACHE_TTL_MS = 5000;
 
 async function loadPolicies() {
-  if (policies) return policies;
+  if (policies && (Date.now() - policiesLoadedAt) < POLICY_CACHE_TTL_MS) {
+    return policies;
+  }
   
   try {
     const policyPath = path.join(__dirname, '../../config/policies.json');
     const data = await fs.readFile(policyPath, 'utf8');
     policies = JSON.parse(data);
+    policiesLoadedAt = Date.now();
     return policies;
   } catch (error) {
-    // Return default policies if file doesn't exist
     return getDefaultPolicies();
   }
 }
@@ -24,8 +28,10 @@ function getDefaultPolicies() {
   return {
     allowed_domains: [],
     blocked_domains: [],
-    high_risk_keywords: ['delete', 'remove', 'merge', 'transfer', 'confirm'],
-    medium_risk_keywords: ['submit', 'post', 'send'],
+    high_risk_keywords: ['delete', 'remove', 'merge', 'transfer', 'confirm',
+      'account', 'profile', 'settings', 'password', 'billing',
+      'payment', 'security', 'deactivate', 'disable'],
+    medium_risk_keywords: ['submit', 'post', 'send', 'update', 'edit'],
     financial_domains: ['bank', 'paypal', 'stripe', 'venmo'],
     requires_step_up: ['high'],
     domain_trust_profiles: {}
@@ -59,7 +65,10 @@ async function classifyRisk(actionData) {
   // High risk: keywords in element text, URL path, or element attributes
   const highRiskUrlPatterns = [
     '/delete', '/remove', '/destroy', '/settings/admin',
-    '/transfer', '/merge', '/close', '/deactivate'
+    '/transfer', '/merge', '/close', '/deactivate',
+    '/account', '/profile', '/settings', '/security',
+    '/billing', '/payment', '/password', '/preferences',
+    '/admin', '/manage',
   ];
   
   if (policies.high_risk_keywords.some(keyword => allText.includes(keyword))) {
@@ -177,9 +186,10 @@ async function getPolicies() {
 }
 
 async function updatePolicies(newPolicies) {
-  policies = { ...policies, ...newPolicies };
+  const current = await loadPolicies();
+  policies = { ...current, ...newPolicies };
+  policiesLoadedAt = Date.now();
   
-  // Save to file
   const policyPath = path.join(__dirname, '../../config/policies.json');
   await fs.writeFile(policyPath, JSON.stringify(policies, null, 2));
 }
