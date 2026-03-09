@@ -3318,7 +3318,9 @@ class ChatGPTAgentWithAgentTrust:
         self._consecutive_failures = 0
         self._last_action_key = None
         self._tool_call_count = 0
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4.1")
+        self.model_fast = os.getenv("OPENAI_MODEL_FAST", "gpt-4.1-mini")
+        self.model_nano = os.getenv("OPENAI_MODEL_NANO", "gpt-4.1-nano")
 
         # Action history RAG (optional — improves planning with past task patterns)
         self.action_rag = None
@@ -3351,22 +3353,34 @@ class ChatGPTAgentWithAgentTrust:
     # Rate-limit-aware API call wrapper
     # ------------------------------------------------------------------ #
     def _chat_completion(self, **kwargs):
-        """Call OpenAI chat completions with automatic rate-limit retry."""
+        """Call OpenAI chat completions with automatic rate-limit retry and model fallback."""
         import time as _time
         max_retries = 4
+        original_model = kwargs.get("model", self.model)
         for attempt in range(max_retries):
             try:
                 return self.openai.chat.completions.create(**kwargs)
             except Exception as e:
                 err_str = str(e)
-                # Retry on rate limit (429) with exponential backoff
-                if "429" in err_str or "rate_limit" in err_str.lower():
-                    wait = 2 ** attempt  # 1, 2, 4, 8 seconds
-                    print(f"  ⏳ Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
-                    _time.sleep(wait)
-                    continue
-                raise  # Non-rate-limit errors propagate immediately
-        # Final attempt — let the exception propagate if it fails again
+                if "429" not in err_str and "rate_limit" not in err_str.lower():
+                    raise
+                is_too_large = "too large" in err_str.lower() or "Requested" in err_str
+                if is_too_large:
+                    if kwargs.get("model") != self.model_fast:
+                        kwargs["model"] = self.model_fast
+                        print(f"  ↘️  Request too large for {original_model}, falling back to {self.model_fast}")
+                        continue
+                    if "messages" in kwargs and len(kwargs["messages"]) > 3:
+                        msgs = kwargs["messages"]
+                        kept_system = [m for m in msgs[:2] if m.get("role") == "system"]
+                        non_system = [m for m in msgs if m.get("role") != "system"]
+                        trim_count = max(2, len(non_system) // 3)
+                        kwargs["messages"] = kept_system + non_system[trim_count:]
+                        print(f"  ✂️  Trimmed {trim_count} older messages (attempt {attempt + 1}/{max_retries})")
+                        continue
+                wait = 2 ** attempt
+                print(f"  ⏳ Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+                _time.sleep(wait)
         return self.openai.chat.completions.create(**kwargs)
 
     # ------------------------------------------------------------------ #
@@ -3578,7 +3592,7 @@ class ChatGPTAgentWithAgentTrust:
         self.conversation_history.append({"role": "assistant", "content": response_text + state_suffix})
 
         # Keep conversation history bounded to avoid exceeding token limits
-        MAX_HISTORY_TURNS = 10
+        MAX_HISTORY_TURNS = 20
         if len(self.conversation_history) > MAX_HISTORY_TURNS * 2:
             self.conversation_history = self.conversation_history[-(MAX_HISTORY_TURNS * 2):]
 
@@ -3932,11 +3946,14 @@ ROUTINES:
                     self._consecutive_failures = 0
                     self._last_action_key = action_key
                 
+                result_str = json.dumps(result, default=str)
+                if len(result_str) > 12000:
+                    result_str = result_str[:12000] + '…[truncated]'
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "name": tool_call.function.name,
-                    "content": json.dumps(result, default=str)
+                    "content": result_str
                 })
 
             if _auth0_fatal:

@@ -1,6 +1,6 @@
 # AgentTrust — Identity & Audit Layer for Agentic Browsers
 
-AgentTrust is a production-grade governance platform for AI agents operating in web browsers. It provides identity-bound, policy-enforced, auditable execution so that AI agents can safely interact with real web services — GitHub, Amazon, Slack, banking — without uncontrolled access.
+AgentTrust is a production-grade governance platform for AI agents operating in web browsers. It provides identity-bound, policy-enforced, auditable execution so that AI agents can safely interact with real web services — GitHub, Google Calendar, Amazon, Slack, banking — without uncontrolled access.
 
 Instead of building another agent that does tasks, AgentTrust builds **the infrastructure layer** that makes autonomous agents safe to deploy.
 
@@ -14,6 +14,8 @@ AI agents can reason and make decisions, but they cannot safely interact with re
 
 AgentTrust sits between the AI agent and the browser, enforcing identity, policy, and audit on every action before it executes. The agent must check with AgentTrust before performing any browser action — navigation, click, form submission — and AgentTrust decides whether to allow, deny, or escalate for human approval.
 
+For supported providers (GitHub, Google Calendar), the agent can call external APIs directly through Auth0's identity infrastructure, bypassing the browser entirely when appropriate.
+
 ---
 
 ## Architecture
@@ -22,7 +24,8 @@ AgentTrust sits between the AI agent and the browser, enforcing identity, policy
 ┌─────────────────────────────────────────────────────────┐
 │                   User / Operator                       │
 │         (Chrome Extension — monitor, approve,           │
-│          manage policies, run routines)                  │
+│          manage policies, run routines,                  │
+│          connect OAuth accounts)                        │
 └────────────────────────┬────────────────────────────────┘
                          │  Approvals / Commands / Config
                          ▼
@@ -34,18 +37,23 @@ AgentTrust sits between the AI agent and the browser, enforcing identity, policy
 │  • Risk classification    • Cryptographic audit chain    │
 │  • Step-up approvals      • Credential vault            │
 │  • Session management     • Routine storage             │
-│  • Command queue          • Token exchange              │
+│  • Command queue          • Token exchange               │
+│  • External API proxy     • Auth0 Management API         │
+│  • User connection store  • OAuth callback handler       │
 └────────────────────────┬────────────────────────────────┘
                          │  validate / log / approve
                          ▼
 ┌─────────────────────────────────────────────────────────┐
-│              ChatGPT Agent (Python)                      │
-│   OpenAI GPT-4o + Selenium WebDriver                    │
+│              AI Agent (Python)                           │
+│   Multi-model: GPT-4.1 + GPT-4.1-mini + GPT-4.1-nano  │
+│   LangGraph state machine + Selenium WebDriver          │
 │                                                         │
 │  • AgentTrust client      • Browser controller          │
 │  • Intercepted WebDriver  • Auto-login engine           │
 │  • Routine replay engine  • Credential resolver         │
-│  • Auth0 Token Vault      • Extension auto-login        │
+│  • External API calls     • Action history RAG          │
+│  • Graph agent pipeline   • API-first routing           │
+│     (PLAN → OBSERVE → ACT → VERIFY)                    │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -53,11 +61,11 @@ AgentTrust sits between the AI agent and the browser, enforcing identity, policy
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| **Backend API** | Node.js, Express, PostgreSQL | Policy enforcement, audit logging, session management, credential vault, routine storage, command/approval queues |
-| **Chrome Extension** | Manifest V3 | Real-time monitoring dashboard, step-up approval UI, policy management, credential management, routine management, chat interface |
-| **ChatGPT Agent** | Python, OpenAI GPT-4o, Selenium | AI-driven browser automation with mandatory AgentTrust validation on every action |
-| **Auth0 Integration** | M2M tokens, Token Vault | Agent identity, scoped tokens, token exchange for step-up and external APIs |
-| **Database** | PostgreSQL (AWS RDS supported) | Actions, sessions, prompts, credentials (AES-256-GCM encrypted), routines, users, audit chain |
+| **Backend API** | Node.js, Express, PostgreSQL | Policy enforcement, audit logging, session management, credential vault, routine storage, external API proxy, OAuth account linking |
+| **Chrome Extension** | Manifest V3 | Real-time monitoring dashboard, step-up approval UI, policy management, credential management, routine management, chat interface, OAuth account connection |
+| **AI Agent** | Python, OpenAI GPT-4.1, Selenium, LangGraph | AI-driven browser automation with mandatory AgentTrust validation on every action, API-first external service calls |
+| **Auth0 Integration** | M2M tokens, Management API, OAuth | Agent identity, scoped tokens, provider token retrieval, user account linking |
+| **Database** | PostgreSQL (AWS RDS supported) | Actions, sessions, prompts, credentials (AES-256-GCM encrypted), routines, users, user connections, audit chain |
 
 ---
 
@@ -157,19 +165,79 @@ Record, save, and replay browser action sequences deterministically — without 
 - **Chat UI integration** — run routines via `/run <routine_name>` in the chat panel
 - **Full CRUD** — create, edit, delete, and search routines from the extension
 
-### 9. Real-Time Monitoring Dashboard
+### 9. External API Calls (API-First Architecture)
+
+For supported providers, the agent calls external APIs directly instead of automating the browser:
+
+- **API-first routing** — the planner and agent system prompt prioritize `call_external_api` over browser automation for GitHub and Google Calendar tasks
+- **Auth0 Management API** — retrieves provider access tokens from user identity records; no Token Vault exchange grant required
+- **Automatic token resolution** — the backend looks up the user's stored Auth0 JWT, extracts the `sub` claim, and fetches the provider token via the Management API
+- **Token Vault fallback** — if Management API is unavailable, falls back to standard Token Vault token exchange
+- **Supported providers**:
+  - **GitHub** — repos, issues, PRs, user profile, organizations (`api.github.com`)
+  - **Google Calendar** — events, scheduling, availability (`googleapis.com/calendar`)
+
+### 10. Connected OAuth Accounts
+
+Users link their GitHub and Google accounts through the extension, granting the agent API access:
+
+- **OAuth flow via extension** — click "Connect" in the Permissions tab to initiate Auth0 social login
+- **Stored in database** — Auth0 access tokens and refresh tokens persisted in the `user_connections` table
+- **Disconnect support** — one-click disconnect per provider
+- **Auto-refresh UI** — connection list refreshes automatically after completing OAuth
+- **Scoped permissions** — GitHub requests `repo read:user user:email`; Google requests Calendar and profile scopes
+
+### 11. LangGraph Agent Pipeline
+
+The agent uses a structured state-machine graph (via LangGraph) for reliable multi-step task execution:
+
+```
+CLASSIFY → PLAN → OBSERVE → ACT → VERIFY → (loop or complete)
+```
+
+- **Intent classifier** (gpt-4.1-nano) — determines BROWSER vs CHAT intent in microseconds
+- **Planner** (gpt-4.1-mini) — breaks user requests into 2-6 concrete sub-goals
+- **Observer** — captures page state, visible elements, screenshots, tab info
+- **Actor** (gpt-4.1) — selects and executes the best tool call for the current goal
+- **Verifier** — confirms actions succeeded or triggers retries (up to 3 attempts per goal)
+- **CAPTCHA detection** (gpt-4.1-mini) — identifies and handles checkbox CAPTCHAs via vision
+
+### 12. Multi-Model Architecture
+
+Different model tiers for different tasks, optimizing cost and speed:
+
+| Task | Model | TPM | Rationale |
+|------|-------|-----|-----------|
+| Action selection & reasoning | `gpt-4.1` | 450K | Best instruction following for complex decisions |
+| Planning & CAPTCHA detection | `gpt-4.1-mini` | 2M | Fast and cheap for structured outputs |
+| Intent classification | `gpt-4.1-nano` | 2M | One-word output; near-instant response |
+| Chat responses | `gpt-4.1-mini` | 2M | Conversational answers don't need the heavy model |
+
+All models are configurable via environment variables (`OPENAI_MODEL`, `OPENAI_MODEL_FAST`, `OPENAI_MODEL_NANO`).
+
+Rate-limit retry logic automatically falls back to the mini model if the primary model hits token limits, then trims older messages as a last resort.
+
+### 13. Action History RAG
+
+Past successful task patterns are stored and retrieved to improve planning:
+
+- **Embedding-based retrieval** — user requests are matched against historical action sequences
+- **Top-K similar tasks** — the 3 most similar past tasks are injected into the planner and agent prompts
+- **Continuous learning** — every completed task is indexed for future retrieval
+
+### 14. Real-Time Monitoring Dashboard
 
 The Chrome extension popup provides a live dashboard:
 
 - **Monitor tab** — session list, action feed with risk badges, screenshot viewer, filters by risk/type/domain
 - **Chat tab** — conversation view showing User Request → ChatGPT Response → Action Screenshot, with `/run` command support
 - **Routines tab** — routine list, search, create/edit/delete, import from session, one-click execution
-- **Permissions tab** — manage allowed/blocked/financial domains, high-risk keywords, step-up toggles, saved credentials, connected OAuth accounts
+- **Permissions tab** — manage allowed/blocked/financial domains, high-risk keywords, step-up toggles, saved credentials, connected OAuth accounts (GitHub, Google)
 - **Pop-out window** — detach the panel into a standalone window that persists across page navigations
 - **Live auto-refresh** — toggle real-time polling for new actions
 - **Approval banner** — step-up approval prompts appear inline with approve/deny buttons
 
-### 10. Session Management
+### 15. Session Management
 
 Each agent run creates a distinct session for organized tracking:
 
@@ -178,7 +246,7 @@ Each agent run creates a distinct session for organized tracking:
 - Sessions are listed and browsable in the Monitor tab
 - Routines are executed within the context of the current session
 
-### 11. Prompt Tracking
+### 16. Prompt Tracking
 
 User prompts and ChatGPT responses are stored and linked to their resulting actions:
 
@@ -187,7 +255,7 @@ User prompts and ChatGPT responses are stored and linked to their resulting acti
 - ChatGPT's response is updated on the prompt record after generation
 - The Chat tab renders the full prompt → response → action → screenshot flow
 
-### 12. Command Queue & Long Polling
+### 17. Command Queue & Long Polling
 
 Bidirectional communication between the extension and the agent:
 
@@ -195,15 +263,6 @@ Bidirectional communication between the extension and the agent:
 - Agent long-polls `GET /api/commands/pending` with configurable timeout
 - Instant delivery when the agent is already polling; queued otherwise
 - Same pattern for approvals: agent long-polls `GET /api/approvals/:id/wait`
-
-### 13. Auth0 Token Vault Integration
-
-External API access via Auth0 Token Vault:
-
-- Token exchange for provider-specific tokens (GitHub, Google, Slack)
-- Auth0 manages OAuth flows, token refresh, and consent
-- Step-up token exchange for elevated privileges
-- Connected accounts managed via the extension Permissions tab
 
 ---
 
@@ -232,12 +291,12 @@ agentTrust/
 │   │   │   ├── auth.js               # User login/register, token issue
 │   │   │   ├── commands.js           # Agent command queue + long polling
 │   │   │   ├── credentials.js        # Encrypted credential vault CRUD
-│   │   │   ├── external-api.js       # Proxied external API calls
+│   │   │   ├── external-api.js       # External API proxy (Management API + Token Vault)
 │   │   │   ├── policies.js           # Policy CRUD
 │   │   │   ├── prompts.js            # Prompt storage + response update
 │   │   │   ├── routines.js           # Routine CRUD, from-session, execute
 │   │   │   ├── sessions.js           # Session create/end/list
-│   │   │   ├── token-vault.js        # Auth0 Token Vault endpoints
+│   │   │   ├── token-vault.js        # OAuth connect/disconnect, callback, connections
 │   │   │   └── users.js              # User management
 │   │   ├── services/
 │   │   │   ├── audit.js              # Audit log + hash chain logic
@@ -251,7 +310,7 @@ agentTrust/
 │   ├── config/
 │   │   └── policies.json             # Default policy configuration
 │   ├── migrations/
-│   │   └── migrate.js                # Database migration runner
+│   │   └── migrate.js                # Database migration runner (incl. user_connections)
 │   ├── scripts/                      # DB setup scripts
 │   └── package.json
 │
@@ -264,7 +323,7 @@ agentTrust/
 │   │   └── action-capture.js         # DOM event interception
 │   ├── popup/
 │   │   ├── popup.html                # Dashboard UI (4 tabs)
-│   │   ├── popup.js                  # All client-side logic
+│   │   ├── popup.js                  # All client-side logic (incl. OAuth account linking)
 │   │   └── popup.css                 # Styles
 │   ├── stepup/
 │   │   ├── stepup.html               # Step-up approval page
@@ -276,8 +335,8 @@ agentTrust/
 │   └── assets/                       # Icons (16, 32, 128)
 │
 ├── integrations/
-│   └── chatgpt/                      # ChatGPT Agent Integration
-│       ├── chatgpt_agent_with_agenttrust.py   # Main agent (3100+ lines)
+│   └── chatgpt/                      # AI Agent Integration
+│       ├── chatgpt_agent_with_agenttrust.py   # Main agent (4500+ lines)
 │       │   ├── InterceptedWebDriver           # Mandatory validation wrapper
 │       │   ├── InterceptedWebElement           # Click/type interception
 │       │   ├── BrowserController               # Selenium browser operations
@@ -288,15 +347,23 @@ agentTrust/
 │       │   │   ├── auto_login()               # Multi-step login engine
 │       │   │   ├── replay_routine()           # Deterministic routine replay
 │       │   │   └── _notify_extension()        # Real-time DOM events
-│       │   └── ChatGPTAgentWithAgentTrust     # OpenAI chat loop + tool calling
+│       │   └── ChatGPTAgentWithAgentTrust     # Multi-model chat loop + tool calling
+│       ├── graph_agent.py                     # LangGraph state machine
+│       │   ├── build_graph()                  # CLASSIFY → PLAN → OBSERVE → ACT → VERIFY
+│       │   ├── plan_node()                    # Task decomposition (gpt-4.1-mini)
+│       │   ├── observe_node()                 # Page state capture
+│       │   ├── agent_node()                   # Action selection (gpt-4.1)
+│       │   └── verify_node()                  # Result verification + retry
 │       ├── agenttrust_client.py               # Python API client
 │       │   ├── Auth0 M2M token management
 │       │   ├── execute_action()
 │       │   ├── Session management
 │       │   ├── Prompt storage
 │       │   ├── Credential lookup
+│       │   ├── External API calls (call_external_api)
 │       │   ├── Step-up approval polling
 │       │   └── Async screenshot upload
+│       ├── action_history_rag.py              # Embedding-based task pattern retrieval
 │       ├── auth0_token_vault.py               # Token Vault client
 │       ├── requirements.txt
 │       └── test_agent.py
@@ -320,7 +387,7 @@ agentTrust/
 - **PostgreSQL** 14+ (local or AWS RDS)
 - **Auth0** account with M2M application configured
 - **Google Chrome** browser
-- **OpenAI API key** (GPT-4o access)
+- **OpenAI API key** (Tier 2+ recommended for comfortable TPM limits)
 
 ### 1. Clone and Install
 
@@ -344,8 +411,8 @@ pip install -r requirements.txt
 ```env
 # Auth0
 AUTH0_DOMAIN=your-tenant.us.auth0.com
-AUTH0_CLIENT_ID=your_m2m_client_id
-AUTH0_CLIENT_SECRET=your_m2m_client_secret
+AUTH0_CLIENT_ID=your_client_id
+AUTH0_CLIENT_SECRET=your_client_secret
 AUTH0_AUDIENCE=https://agenttrust.api
 
 # Database
@@ -366,13 +433,15 @@ RATE_LIMIT_MAX_REQUESTS=10000
 ```env
 # OpenAI
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o
+OPENAI_MODEL=gpt-4.1            # Main model (action selection, reasoning)
+OPENAI_MODEL_FAST=gpt-4.1-mini  # Fast model (planning, chat, captcha)
+OPENAI_MODEL_NANO=gpt-4.1-nano  # Nano model (intent classification)
 
 # AgentTrust
 AGENTTRUST_API_URL=http://localhost:3000/api
 AUTH0_DOMAIN=your-tenant.us.auth0.com
-AUTH0_CLIENT_ID=your_m2m_client_id
-AUTH0_CLIENT_SECRET=your_m2m_client_secret
+AUTH0_CLIENT_ID=your_client_id
+AUTH0_CLIENT_SECRET=your_client_secret
 AUTH0_AUDIENCE=https://agenttrust.api
 
 # Optional: auto-load extension and sign in
@@ -389,21 +458,32 @@ npm run setup-db
 # Or: npm run migrate
 ```
 
-### 4. Load the Chrome Extension
+This creates all required tables including `user_connections` for linked OAuth accounts.
+
+### 4. Configure Auth0
+
+1. Create an **Application** (Regular Web Application) in Auth0 Dashboard
+2. Enable **Client Credentials** grant type under Advanced Settings → Grant Types
+3. Create an **API** with identifier `https://agenttrust.api`
+4. Under **Applications → APIs → Auth0 Management API → Machine to Machine Applications**, authorize your application with scopes: `read:users`, `read:user_idp_tokens`
+5. Set up **Social Connections** for GitHub and Google with purpose set to "Authentication and Connected Accounts for Token Vault"
+6. Add `http://localhost:3000/api/token-vault/callback` to the application's **Allowed Callback URLs**
+
+### 5. Load the Chrome Extension
 
 1. Open `chrome://extensions/` in Chrome
 2. Enable **Developer mode**
 3. Click **Load unpacked** and select the `extension/` folder
 
-### 5. Start the Backend
+### 6. Start the Backend
 
 ```bash
 cd backend
-npm start
+npm run dev
 # Server runs on http://localhost:3000
 ```
 
-### 6. Run the Agent
+### 7. Run the Agent
 
 ```bash
 cd integrations/chatgpt
@@ -481,6 +561,20 @@ The agent will:
 | `GET` | `/api/policies` | User | Get current policies |
 | `PUT` | `/api/policies` | User | Update policies |
 
+### External API
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/external/call` | M2M | Proxy external API call (GitHub, Google) via provider token |
+
+### Token Vault / Connected Accounts
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/token-vault/exchange` | M2M | Token exchange for provider access |
+| `POST` | `/api/token-vault/connect` | User | Initiate OAuth connection for a provider |
+| `GET` | `/api/token-vault/callback` | None | OAuth callback handler |
+| `GET` | `/api/token-vault/connections` | User | List connected providers |
+| `DELETE` | `/api/token-vault/connections/:provider` | User | Disconnect a provider |
+
 ### Audit
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
@@ -508,21 +602,24 @@ The agent will:
 - **Input sanitization** (express-validator, mongo-sanitize, HPP)
 - **bcrypt** password hashing for user accounts
 - **Passkey/WebAuthn suppression** — Chrome DevTools Protocol and JavaScript injection prevent native browser dialogs from interfering with automation
+- **Provider tokens never stored in LLM context** — retrieved server-side via Auth0 Management API
 
 ---
 
 ## How the Agent Works
 
 1. **User sends a message** via the Chat tab or the agent receives a command
-2. **Prompt is stored** in the database via AgentTrust API
-3. **OpenAI GPT-4o processes the message** with a system prompt that enforces tool use
-4. **Agent calls tools** (navigate, click, type, auto_login, etc.)
-5. **Each tool call validates with AgentTrust** — `POST /api/actions` checks policy, classifies risk, logs to audit chain
-6. **If allowed**, the browser action executes and a screenshot is captured
-7. **If step-up required**, the agent long-polls while the user approves/denies in the extension
-8. **If denied**, the agent reports the denial to ChatGPT, which adapts its approach
-9. **Results flow back** to ChatGPT for the next reasoning step
-10. **Extension updates in real time** via DOM events dispatched by the agent
+2. **Intent classification** (gpt-4.1-nano) — determines if the task needs the browser or can be answered conversationally
+3. **Planning** (gpt-4.1-mini) — breaks the request into 2-6 sub-goals; API tasks are prioritized over browser automation
+4. **RAG context** — similar past tasks are retrieved and injected as planning hints
+5. **Observation** — captures current page state, visible elements, screenshot, and tab info
+6. **Action selection** (gpt-4.1) — picks the best tool call for the current sub-goal
+7. **AgentTrust validation** — `POST /api/actions` checks policy, classifies risk, logs to audit chain
+8. **Execution** — if allowed, the browser action executes and a screenshot is captured; for API tasks, the backend proxies the request via Auth0
+9. **Verification** — confirms the action succeeded or triggers retries (up to 3 per goal)
+10. **Step-up flow** — if required, the agent long-polls while the user approves/denies in the extension
+11. **Results flow back** to the LLM for the next reasoning step
+12. **Extension updates in real time** via DOM events dispatched by the agent
 
 ---
 
@@ -532,12 +629,12 @@ AgentTrust is built for the **Auth0 "Authorized to Act"** hackathon, directly ad
 
 | Hackathon Requirement | AgentTrust Implementation |
 |----------------------|--------------------------|
-| **Token Vault** | `auth0_token_vault.py` — exchanges tokens for external API access via Auth0 Token Vault |
-| **OAuth flows** | Handled by Auth0; agents exchange tokens without managing refresh tokens |
+| **Token Vault** | `external-api.js` + `auth0_token_vault.py` — exchanges tokens for external API access via Auth0 Management API and Token Vault |
+| **OAuth flows** | Users connect GitHub/Google accounts via extension; Auth0 manages consent and token storage |
 | **Agent identity** | Auth0 M2M authentication — every action is identity-bound |
 | **Secure tool calling** | Three-tier scope model with pre-execution validation |
 | **Step-up authentication** | Real-time approval flow with long-polling and auto-expiry |
-| **Consent delegation** | Auth0 Connected Accounts for third-party API consent |
+| **Consent delegation** | Auth0 Connected Accounts for third-party API consent; provider-specific scopes (repo, calendar) |
 | **Audit trail** | SHA-256 hash chain with full action context and screenshots |
 
 ---
@@ -546,11 +643,12 @@ AgentTrust is built for the **Auth0 "Authorized to Act"** hackathon, directly ad
 
 | Layer | Technology |
 |-------|-----------|
-| AI Agent | Python 3.9+, OpenAI GPT-4o |
+| AI Agent | Python 3.9+, OpenAI GPT-4.1 / GPT-4.1-mini / GPT-4.1-nano |
+| Agent Framework | LangGraph (state machine: PLAN → OBSERVE → ACT → VERIFY) |
 | Browser Automation | Selenium 4.41, Chrome DevTools Protocol |
 | Backend | Node.js 18+, Express 4 |
 | Database | PostgreSQL 14+ (AWS RDS compatible) |
-| Authentication | Auth0 (M2M + Token Vault), JWT, bcrypt |
+| Authentication | Auth0 (M2M + Management API + Social Connections), JWT, bcrypt |
 | Encryption | AES-256-GCM (credentials), SHA-256 (audit chain) |
 | Extension | Chrome Manifest V3 |
 | Security | Helmet, express-rate-limit, CORS, HPP, mongo-sanitize |

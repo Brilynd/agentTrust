@@ -169,7 +169,7 @@ def build_graph(agent):
 
         try:
             gate_resp = agent._chat_completion(
-                model=agent.model,
+                model=agent.model_nano,
                 messages=[
                     {
                         "role": "system",
@@ -214,7 +214,7 @@ def build_graph(agent):
             # No browser needed — answer conversationally
             try:
                 chat_resp = agent._chat_completion(
-                    model=agent.model,
+                    model=agent.model_fast,
                     messages=(
                         [{"role": "system", "content": "You are a helpful assistant."}]
                         + list(state.get("conversation_history") or [])
@@ -351,7 +351,7 @@ def build_graph(agent):
 
         try:
             response = agent._chat_completion(
-                model=agent.model,
+                model=agent.model_fast,
                 messages=[
                     {
                         "role": "system",
@@ -444,7 +444,7 @@ def build_graph(agent):
                     screenshot_b64 = executor.take_screenshot()
                     if screenshot_b64:
                         captcha_resp = agent._chat_completion(
-                            model=agent.model,
+                            model=agent.model_fast,
                             messages=[
                                 {
                                     "role": "system",
@@ -563,11 +563,12 @@ def build_graph(agent):
         )
         remaining = sub_goals[goal_idx + 1 :] if goal_idx + 1 < len(sub_goals) else []
 
-        # Format visible elements compactly
         elements_str = ""
         if state.get("visible_elements"):
-            els = state["visible_elements"][:30]
+            els = state["visible_elements"][:50]
             elements_str = json.dumps(els, separators=(",", ":"))
+            if len(elements_str) > 8000:
+                elements_str = elements_str[:8000] + "…]"
 
         # Vision context from screenshot analysis
         vision_info = ""
@@ -594,7 +595,7 @@ def build_graph(agent):
             f"Title: {state.get('page_title', '')}\n"
             f"{vision_info}"
             f"{tabs_info}"
-            f"Content (truncated):\n{state.get('page_text', '')[:2000]}\n\n"
+            f"Content (truncated):\n{state.get('page_text', '')[:4000]}\n\n"
             f"Interactive elements:\n{elements_str}\n\n"
             f"[TASK PROGRESS]\n"
             f"Plan:\n{state.get('plan_text', '')}\n"
