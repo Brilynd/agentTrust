@@ -391,6 +391,14 @@ class BrowserController:
             chrome_profile = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), ".chrome-profile"
             )
+        # Remove stale lock files from previous unclean shutdowns
+        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            lock_path = os.path.join(chrome_profile, lock_name)
+            try:
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+            except OSError:
+                pass
         options.add_argument(f'--user-data-dir={chrome_profile}')
         
         options.add_argument('--no-sandbox')
@@ -558,6 +566,14 @@ class BrowserController:
         self.current_url = self._actual_driver.current_url
         return {"success": True, "url": self.current_url}
     
+    def is_alive(self) -> bool:
+        """Check if the browser/ChromeDriver session is still running."""
+        try:
+            _ = self._actual_driver.current_url
+            return True
+        except Exception:
+            return False
+
     def get_current_url(self) -> str:
         """Get current page URL"""
         self.current_url = self._actual_driver.current_url
@@ -1444,6 +1460,8 @@ class BrowserActionExecutor:
             PermissionError: If AgentTrust denies the action
             ValueError: If AgentTrust validation fails
         """
+        if self.browser and not self.browser.is_alive():
+            return {"status": "error", "message": "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."}
         # MANDATORY: Validate with AgentTrust first
         result = self.agenttrust.execute_action(
             action_type="click",
@@ -1549,6 +1567,8 @@ class BrowserActionExecutor:
             PermissionError: If AgentTrust denies the action
             ValueError: If AgentTrust validation fails
         """
+        if self.browser and not self.browser.is_alive():
+            return {"status": "error", "message": "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."}
         # MANDATORY: Validate with AgentTrust first
         result = self.agenttrust.execute_action(
             action_type="form_submit",
@@ -1654,6 +1674,8 @@ class BrowserActionExecutor:
             PermissionError: If AgentTrust denies the action
             ValueError: If AgentTrust validation fails
         """
+        if self.browser and not self.browser.is_alive():
+            return {"status": "error", "message": "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."}
         # Resolve relative paths before validation
         if url and not url.startswith(("http://", "https://", "about:", "data:")):
             try:
@@ -1791,6 +1813,14 @@ class BrowserActionExecutor:
             )
         return resp
     
+    def _check_browser(self) -> Optional[str]:
+        """Return an error message if the browser is unusable, or None if OK."""
+        if not self.browser:
+            return "Browser not initialized"
+        if not self.browser.is_alive():
+            return "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."
+        return None
+
     def get_page_content(self, include_html: bool = False) -> Dict[str, Any]:
         """
         Get current page content - NO AgentTrust validation needed (read-only)
@@ -1798,8 +1828,9 @@ class BrowserActionExecutor:
         Returns:
             dict with page content, title, url, text, and optionally html
         """
-        if not self.browser:
-            return {"error": "Browser not initialized"}
+        err = self._check_browser()
+        if err:
+            return {"error": err}
         
         return self.browser.get_page_content(include_html=include_html)
     
@@ -1813,14 +1844,16 @@ class BrowserActionExecutor:
         Returns:
             List of visible elements
         """
-        if not self.browser:
+        err = self._check_browser()
+        if err:
             return []
         
         return self.browser.get_visible_elements(element_type)
     
     def get_current_url(self) -> str:
         """Get current page URL - NO AgentTrust validation needed (read-only)"""
-        if not self.browser:
+        err = self._check_browser()
+        if err:
             return ""
         
         return self.browser.get_current_url()
@@ -1885,6 +1918,8 @@ class BrowserActionExecutor:
         """
         if not self.browser:
             return {"error": "Browser not initialized"}
+        if not self.browser.is_alive():
+            return {"error": "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."}
         
         current_url = self.browser.get_current_url()
         
@@ -3337,9 +3372,15 @@ class ChatGPTAgentWithAgentTrust:
                 self.browser_executor.browser = browser_controller
                 print("✅ Browser automation enabled with MANDATORY AgentTrust interception")
             except ImportError:
-                print("⚠️  Browser automation disabled (Selenium not available)")
+                print("❌ Browser automation requires Selenium. Install with: pip install selenium")
+                sys.exit(1)
             except Exception as e:
-                print(f"⚠️  Browser automation disabled: {e}")
+                print(f"❌ Browser failed to start: {e}")
+                print("   Common fixes:")
+                print("   1. Close any other Chrome instances using the same profile")
+                print("   2. Delete the .chrome-profile folder and restart")
+                print("   3. Update ChromeDriver: pip install --upgrade selenium")
+                sys.exit(1)
         
         self.agenttrust = agenttrust_client  # Keep reference for audit log queries
         
@@ -3745,6 +3786,11 @@ class ChatGPTAgentWithAgentTrust:
             result = self._graph.invoke(initial_state)
             return result.get("final_response", "Task completed.")
         except Exception as e:
+            err_str = str(e)
+            if "No connection could be made" in err_str or "Connection refused" in err_str.lower():
+                print("❌ Browser session has died (Chrome/ChromeDriver crashed).")
+                print("   The agent cannot continue. Please restart the script.")
+                return "Browser crashed — Chrome/ChromeDriver is no longer running. Please restart the agent."
             print(f"⚠️  LangGraph error ({e}), falling back to legacy loop")
             import traceback
             traceback.print_exc()

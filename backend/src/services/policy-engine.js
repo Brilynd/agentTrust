@@ -88,6 +88,22 @@ async function classifyRisk(actionData) {
     riskScore += 1;
   }
 
+  // Clicks on form control elements (buttons, submit inputs, selects)
+  // get elevated risk since they can trigger state changes
+  const FORM_CONTROL_TAGS = ['button', 'select', 'option', 'input'];
+  const FORM_ACTION_TEXT = ['submit', 'save', 'confirm', 'apply', 'continue',
+    'next', 'proceed', 'agree', 'accept', 'authorize', 'sign in','send', 'send money', 'send payment',
+    'log in', 'login', 'register', 'sign up', 'checkout', 'place order'];
+  if (type === 'click') {
+    const tagLower = (target?.tagName || '').toLowerCase();
+    if (FORM_CONTROL_TAGS.includes(tagLower)) {
+      riskScore += 1;
+    }
+    if (FORM_ACTION_TEXT.some(ft => targetText.includes(ft))) {
+      riskScore += 1;
+    }
+  }
+
   // Form input — typing into fields. Sensitive fields (password, card)
   // get higher risk; plain text inputs stay low.
   if (type === 'form_input') {
@@ -153,12 +169,17 @@ async function checkPolicy(actionData, agentScopes) {
     }
   }
   
-  // Check scope requirements — offer step-up approval instead of flat denial
-  if (actionData.type === 'form_submit' && !agentScopes.includes('browser.form.submit')) {
+  // Check scope requirements — offer step-up approval instead of flat denial.
+  // This applies to form_submit AND clicks on form control elements
+  // (buttons, submit inputs) that could trigger state changes.
+  const isFormControl = actionData.type === 'click' &&
+    ['button', 'select', 'input'].includes((actionData.target?.tagName || '').toLowerCase());
+  if ((actionData.type === 'form_submit' || isFormControl) &&
+      !agentScopes.includes('browser.form.submit')) {
     return {
       allowed: false,
       requiresStepUp: true,
-      reason: 'Form submission requires user approval (missing browser.form.submit scope)'
+      reason: 'Form interaction requires user approval'
     };
   }
 
