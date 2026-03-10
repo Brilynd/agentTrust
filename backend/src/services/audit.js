@@ -4,6 +4,7 @@
 const { createHash } = require('../utils/crypto');
 const { Action } = require('../models/action');
 const pool = require('../config/database');
+const { cwLog } = require('./cloudwatch');
 
 // Cache for previous hash (for chain continuity)
 let previousHashCache = new Map();
@@ -71,6 +72,21 @@ async function logAction(actionData) {
   
   const savedAction = await Action.create(loggedAction);
   previousHashCache.set(agentId, hash);
+
+  // Send to CloudWatch (fire-and-forget)
+  cwLog.action({
+    id,
+    agentId,
+    sessionId: sessionId || null,
+    type,
+    domain,
+    url,
+    riskLevel,
+    status: status || 'allowed',
+    reason,
+    hash
+  });
+
   return savedAction;
 }
 
