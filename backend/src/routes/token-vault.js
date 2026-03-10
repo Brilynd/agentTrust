@@ -3,6 +3,7 @@ const router = express.Router();
 const axios = require('axios').default || require('axios');
 const pool = require('../config/database');
 const { authenticateUser, validateAction } = require('../middleware/auth');
+const { cwLog } = require('../services/cloudwatch');
 
 const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN;
 const AUTH0_CLIENT_ID = process.env.AUTH0_CLIENT_ID;
@@ -145,6 +146,9 @@ router.get('/callback', async (req, res) => {
          DO UPDATE SET auth0_access_token = $3, auth0_refresh_token = $4, connected_at = NOW()`,
         [userId, provider, access_token || null, refresh_token || null]
       );
+      // Send to CloudWatch (fire-and-forget — no tokens)
+      cwLog.connection({ userId, provider });
+
       console.log(`Token Vault: stored ${provider} connection for user ${userId}`);
     }
 

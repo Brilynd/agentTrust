@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { authenticateUser, validateAction } = require('../middleware/auth');
 const pool = require('../config/database');
 const { encryptJSON, decryptJSON } = require('../utils/crypto');
+const { cwLog } = require('../services/cloudwatch');
 
 let _tableChecked = false;
 async function ensureTable() {
@@ -88,6 +89,9 @@ router.post('/', authenticateUser, async (req, res) => {
        scope === 'global' ? 'global' : 'private',
        JSON.stringify(steps), tags || []]
     );
+
+    // Send to CloudWatch (fire-and-forget)
+    cwLog.routine({ id, name, userId: req.user.userId, scope: scope || 'private', stepCount: steps.length });
 
     res.status(201).json({
       success: true,

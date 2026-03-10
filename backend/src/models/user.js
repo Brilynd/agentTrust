@@ -3,6 +3,7 @@
 
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
+const { cwLog } = require('../services/cloudwatch');
 
 class User {
   constructor(data) {
@@ -35,6 +36,10 @@ class User {
       const user = new User(result.rows[0]);
       // Don't return password hash
       delete user.passwordHash;
+
+      // Send to CloudWatch (fire-and-forget — no sensitive data)
+      cwLog.user({ id: user.id, email: user.email });
+
       return user;
     } catch (error) {
       if (error.code === '23505') { // Unique violation

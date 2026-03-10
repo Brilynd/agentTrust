@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const { cwLog } = require('../services/cloudwatch');
 
 class Prompt {
   constructor(data) {
@@ -28,7 +29,12 @@ class Prompt {
     ];
 
     const result = await pool.query(query, values);
-    return new Prompt(result.rows[0]);
+    const prompt = new Prompt(result.rows[0]);
+
+    // Send to CloudWatch (fire-and-forget)
+    cwLog.prompt({ id, agentId: data.agentId, sessionId: data.sessionId || null });
+
+    return prompt;
   }
 
   static async findBySession(sessionId) {

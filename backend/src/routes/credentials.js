@@ -5,6 +5,7 @@ const { authenticateUser, validateAction } = require('../middleware/auth');
 const pool = require('../config/database');
 
 const { encryptJSON, decryptJSON } = require('../utils/crypto');
+const { cwLog } = require('../services/cloudwatch');
 
 function normalizeDomain(input) {
   if (!input) return '';
@@ -83,6 +84,9 @@ router.post('/', authenticateUser, async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [id, req.user.userId, normalizedDomain, username, encrypted, iv, label || null]
     );
+
+    // Send to CloudWatch (fire-and-forget — no password)
+    cwLog.credential({ id, domain: normalizedDomain, username, userId: req.user.userId });
 
     res.status(201).json({
       success: true,

@@ -2,6 +2,7 @@
 // Database model for action sessions
 
 const pool = require('../config/database');
+const { cwLog } = require('../services/cloudwatch');
 
 class Session {
   constructor(data) {
@@ -27,7 +28,12 @@ class Session {
     
     try {
       const result = await pool.query(query, values);
-      return new Session(result.rows[0]);
+      const session = new Session(result.rows[0]);
+
+      // Send to CloudWatch (fire-and-forget)
+      cwLog.session({ id, agentId, userId });
+
+      return session;
     } catch (error) {
       console.error('Error creating session:', error);
       throw error;
