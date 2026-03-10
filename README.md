@@ -1,20 +1,60 @@
-# AgentTrust — Identity & Audit Layer for Agentic Browsers
+<div align="center">
 
-AgentTrust is a production-grade governance platform for AI agents operating in web browsers. It provides identity-bound, policy-enforced, auditable execution so that AI agents can safely interact with real web services — GitHub, Google Calendar, Amazon, Slack, banking — without uncontrolled access.
+# AgentTrust
 
-Instead of building another agent that does tasks, AgentTrust builds **the infrastructure layer** that makes autonomous agents safe to deploy.
+**Identity & Audit Layer for Agentic Browsers**
+
+[![Auth0](https://img.shields.io/badge/Auth0-Authorized_to_Act-EB5424?style=for-the-badge&logo=auth0&logoColor=white)](https://auth0.com)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
+[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![OpenAI](https://img.shields.io/badge/GPT--4.1-Multi--Model-412991?style=for-the-badge&logo=openai&logoColor=white)](https://openai.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-AWS_RDS-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://aws.amazon.com/rds/)
+[![Chrome](https://img.shields.io/badge/Chrome-Extension_MV3-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+
+</div>
 
 ---
 
-## The Problem
+> **Built for the Auth0 "Authorized to Act" Hackathon** — AgentTrust proves that autonomous AI agents and production-grade security are not mutually exclusive. Every browser action is identity-bound, policy-enforced, and cryptographically audited before it executes.
 
-AI agents can reason and make decisions, but they cannot safely interact with real web services because there is no way to govern what they do. Most agents are either confined to sandboxes or given uncontrolled access. Neither is acceptable for production environments.
+---
 
-## The Solution
+## What is AgentTrust?
 
-AgentTrust sits between the AI agent and the browser, enforcing identity, policy, and audit on every action before it executes. The agent must check with AgentTrust before performing any browser action — navigation, click, form submission — and AgentTrust decides whether to allow, deny, or escalate for human approval.
+AI agents can reason, but they can't be trusted. Today's agents are either sandboxed into uselessness or given uncontrolled access to real accounts. Neither is deployable.
 
-For supported providers (GitHub, Google Calendar), the agent can call external APIs directly through Auth0's identity infrastructure, bypassing the browser entirely when appropriate.
+**AgentTrust is the missing infrastructure layer.** It sits between the AI agent and the browser, enforcing identity, policy, and audit on every single action — click, navigation, form submission — before it executes. For supported providers like GitHub and Google Calendar, the agent calls APIs directly through Auth0's identity infrastructure, bypassing the browser entirely.
+
+We didn't build another agent. We built **the governance platform that makes agents safe to deploy.**
+
+### Highlights
+
+| | |
+|---|---|
+| **Zero-trust execution** | Every action requires an Auth0 M2M JWT. No anonymous execution, ever. |
+| **Pre-execution policy engine** | Risk classification (low / medium / high) with keyword, URL, and form-field analysis — before the action runs |
+| **Human-in-the-loop** | High-risk actions trigger real-time step-up approval via the Chrome extension |
+| **Cryptographic audit trail** | SHA-256 hash chain links every action with agent identity, session, risk level, and screenshot |
+| **API-first external access** | GitHub and Google Calendar via Auth0 Management API — no browser scraping |
+| **Credential vault** | AES-256-GCM encrypted storage. Passwords never reach the LLM context. |
+| **Multi-model pipeline** | GPT-4.1 for reasoning, GPT-4.1-mini for planning, GPT-4.1-nano for classification |
+
+---
+
+## Auth0 Integration
+
+AgentTrust is built on Auth0 as its identity backbone. Every trust decision flows through Auth0's infrastructure.
+
+| Hackathon Requirement | Implementation |
+|----------------------|----------------|
+| **Token Vault** | `external-api.js` exchanges tokens for GitHub/Google API access via Auth0 Management API + Token Vault fallback |
+| **OAuth flows** | Users connect GitHub/Google accounts through the extension; Auth0 manages consent, token issuance, and refresh |
+| **Agent identity** | Auth0 M2M authentication — every action carries a verifiable JWT with agent identity and scopes |
+| **Secure tool calling** | Three-tier scope model (`browser.basic`, `browser.form.submit`, `browser.high_risk`) enforced pre-execution |
+| **Step-up authentication** | Real-time approval flow with long-polling, auto-expiry (2 min TTL), and `approved_override` audit status |
+| **Consent delegation** | Auth0 Connected Accounts for third-party API consent with provider-specific scopes (repo, calendar) |
+| **Audit trail** | SHA-256 hash chain with full action context, agent identity, and screenshots — verifiable at any time |
 
 ---
 
@@ -22,13 +62,12 @@ For supported providers (GitHub, Google Calendar), the agent can call external A
 
 ### High-Level Network Diagram
 
-> To regenerate, open `docs/architecture-diagram.html` in Chrome and click **Export PNG**.
-
 <p align="center">
   <img src="docs/agenttrust-architecture.png" alt="AgentTrust Architecture Diagram" width="100%" />
 </p>
 
-### Data Flow: Browser Action (click, navigate, form submit)
+<details>
+<summary><strong>Data Flow: Browser Action</strong> (click, navigate, form submit)</summary>
 
 ```
 Agent                    Backend                     Extension
@@ -89,7 +128,10 @@ Agent                    Backend                     Extension
   │                         │                            │
 ```
 
-### Data Flow: External API Call (GitHub / Google Calendar)
+</details>
+
+<details>
+<summary><strong>Data Flow: External API Call</strong> (GitHub / Google Calendar)</summary>
 
 ```
 Agent                    Backend                  Auth0         Provider API
@@ -136,7 +178,10 @@ Agent                    Backend                  Auth0         Provider API
   │      (sanitized)        │                       │                │
 ```
 
-### Endpoint Security Matrix
+</details>
+
+<details>
+<summary><strong>Endpoint Security Matrix</strong> (click to expand)</summary>
 
 Every request passes through the global middleware stack before reaching any route handler:
 
@@ -157,30 +202,39 @@ Route-level authentication and authorization:
 |---------------|------------|----------------------|
 | **POST /api/actions** | M2M JWT (Auth0 JWKS) | `enforcePolicy` middleware: risk classification on every action; high-risk → step-up approval; SHA-256 hash chain audit; blocked domains flat-denied |
 | **PATCH /api/actions/:id** | M2M JWT | Agent ownership verified (action.agentId must match token sub) |
-| **POST /api/external/call** | M2M JWT | `classifyApiRisk`: DELETE → high (requires approval), POST/PUT/PATCH → medium, GET → low; destructive URL keywords escalate to high; response sanitized (tokens, secrets stripped); arrays capped at 50 items |
-| **GET /api/credentials/lookup** | M2M JWT | Returns credentials for auto-login; **passwords never sent to LLM** — stored in internal cache, redacted from tool results; domain-fuzzy matching |
-| **CRUD /api/credentials** | User JWT | AES-256-GCM encryption at rest; per-credential IV; passwords masked in list responses; user-scoped access |
+| **POST /api/external/call** | M2M JWT | `classifyApiRisk`: DELETE → high (requires approval), POST/PUT/PATCH → medium, GET → low; destructive URL keywords escalate; response sanitized |
+| **GET /api/credentials/lookup** | M2M JWT | Returns credentials for auto-login; **passwords never sent to LLM** — stored in internal cache, redacted from tool results |
+| **CRUD /api/credentials** | User JWT | AES-256-GCM encryption at rest; per-credential IV; passwords masked in list responses; user-scoped |
 | **POST /api/auth/login** | None (public) | bcrypt password verification; rate-limited; returns short-lived JWT |
 | **POST /api/auth/register** | None (public) | bcrypt password hashing (salt rounds); rate-limited |
 | **GET /api/approvals/:id/wait** | M2M JWT | Long-poll with configurable timeout; approvals auto-expire after 2 min |
 | **POST /api/approvals/:id/respond** | User JWT | Only authenticated users can approve/deny; prevents agent self-approval |
-| **GET /api/token-vault/callback** | None (OAuth) | State parameter validated (JSON with provider + userId); tokens stored encrypted in DB |
-| **POST /api/token-vault/connect** | User JWT | Initiates Auth0 OAuth with scoped permissions; audience parameter ensures JWT (not opaque) tokens |
+| **GET /api/token-vault/callback** | None (OAuth) | State parameter validated; tokens stored encrypted in DB |
+| **POST /api/token-vault/connect** | User JWT | Initiates Auth0 OAuth with scoped permissions; audience parameter ensures JWT tokens |
 | **GET /api/audit/chain** | M2M JWT | Read-only; SHA-256 chain integrity verifiable |
-| **CRUD /api/routines** | User JWT | Owner-only mutation (update/delete); non-owner global routines require upfront domain validation |
+| **CRUD /api/routines** | User JWT | Owner-only mutation; non-owner global routines require upfront domain validation |
 | **POST /api/commands** | User JWT | Only authenticated extension users can send commands to the agent |
 | **GET /api/commands/pending** | M2M JWT | Only authenticated agents can receive commands; long-poll prevents busy-waiting |
-| **GET/PUT /api/policies** | User JWT (extension), M2M JWT (agent read) | Policy changes take effect within 5s (TTL cache); file-persisted |
+| **GET/PUT /api/policies** | User JWT / M2M JWT | Policy changes take effect within 5s (TTL cache); file-persisted |
 
-### Components
+</details>
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Backend API** | Node.js, Express, PostgreSQL | Policy enforcement, audit logging, session management, credential vault, routine storage, external API proxy, OAuth account linking |
-| **Chrome Extension** | Manifest V3 | Real-time monitoring dashboard, step-up approval UI, policy management, credential management, routine management, chat interface, OAuth account connection |
-| **AI Agent** | Python, OpenAI GPT-4.1, Selenium, LangGraph | AI-driven browser automation with mandatory AgentTrust validation on every action, API-first external service calls |
-| **Auth0 Integration** | M2M tokens, Management API, OAuth | Agent identity, scoped tokens, provider token retrieval, user account linking |
-| **Database** | PostgreSQL on AWS RDS | Actions, sessions, prompts, credentials (AES-256-GCM encrypted), routines, users, user connections, audit chain — encrypted at rest, TLS in transit |
+---
+
+## How the Agent Works
+
+1. **User sends a message** via the Chat tab or the agent receives a command
+2. **Intent classification** (gpt-4.1-nano) — determines if the task needs the browser or is conversational
+3. **Planning** (gpt-4.1-mini) — breaks the request into 2-6 sub-goals; API tasks prioritized over browser automation
+4. **RAG context** — similar past tasks retrieved and injected as planning hints
+5. **Observation** — captures current page state, visible elements, screenshot, and tab info
+6. **Action selection** (gpt-4.1) — picks the best tool call for the current sub-goal
+7. **AgentTrust validation** — `POST /api/actions` checks policy, classifies risk, logs to audit chain
+8. **Execution** — if allowed, the browser action executes and a screenshot is captured; API tasks are proxied via Auth0
+9. **Verification** — confirms the action succeeded or triggers retries (up to 3 per goal)
+10. **Step-up flow** — if required, the agent long-polls while the user approves/denies in the extension
+11. **Results flow back** to the LLM for the next reasoning step
+12. **Extension updates in real time** via DOM events dispatched by the agent
 
 ---
 
@@ -381,7 +435,8 @@ Bidirectional communication between the extension and the agent:
 
 ---
 
-## Project Structure
+<details>
+<summary><h2>Project Structure</h2></summary>
 
 ```
 agentTrust/
@@ -490,6 +545,8 @@ agentTrust/
     ├── policies.md
     └── security.md
 ```
+
+</details>
 
 ---
 
@@ -614,7 +671,8 @@ The agent will:
 
 ---
 
-## API Reference
+<details>
+<summary><h2>API Reference</h2></summary>
 
 ### Actions
 | Method | Endpoint | Auth | Description |
@@ -703,54 +761,7 @@ The agent will:
 | `POST` | `/api/auth/register` | None | User registration |
 | `POST` | `/api/auth/stepup` | M2M | Request step-up token |
 
----
-
-## Security
-
-- **Auth0 M2M JWT** validation on all agent-facing endpoints (JWKS-based)
-- **User JWT** validation on all extension-facing endpoints
-- **AES-256-GCM** encryption for credential storage with per-credential IVs
-- **SHA-256 hash chain** for tamper-evident audit logs
-- **Helmet** security headers
-- **Rate limiting** (configurable per IP)
-- **CORS** whitelisting
-- **Input sanitization** (express-validator, mongo-sanitize, HPP)
-- **bcrypt** password hashing for user accounts
-- **Passkey/WebAuthn suppression** — Chrome DevTools Protocol and JavaScript injection prevent native browser dialogs from interfering with automation
-- **Provider tokens never stored in LLM context** — retrieved server-side via Auth0 Management API
-
----
-
-## How the Agent Works
-
-1. **User sends a message** via the Chat tab or the agent receives a command
-2. **Intent classification** (gpt-4.1-nano) — determines if the task needs the browser or can be answered conversationally
-3. **Planning** (gpt-4.1-mini) — breaks the request into 2-6 sub-goals; API tasks are prioritized over browser automation
-4. **RAG context** — similar past tasks are retrieved and injected as planning hints
-5. **Observation** — captures current page state, visible elements, screenshot, and tab info
-6. **Action selection** (gpt-4.1) — picks the best tool call for the current sub-goal
-7. **AgentTrust validation** — `POST /api/actions` checks policy, classifies risk, logs to audit chain
-8. **Execution** — if allowed, the browser action executes and a screenshot is captured; for API tasks, the backend proxies the request via Auth0
-9. **Verification** — confirms the action succeeded or triggers retries (up to 3 per goal)
-10. **Step-up flow** — if required, the agent long-polls while the user approves/denies in the extension
-11. **Results flow back** to the LLM for the next reasoning step
-12. **Extension updates in real time** via DOM events dispatched by the agent
-
----
-
-## Auth0 Hackathon Alignment
-
-AgentTrust is built for the **Auth0 "Authorized to Act"** hackathon, directly addressing the trust deficit that prevents AI agents from production deployment.
-
-| Hackathon Requirement | AgentTrust Implementation |
-|----------------------|--------------------------|
-| **Token Vault** | `external-api.js` + `auth0_token_vault.py` — exchanges tokens for external API access via Auth0 Management API and Token Vault |
-| **OAuth flows** | Users connect GitHub/Google accounts via extension; Auth0 manages consent and token storage |
-| **Agent identity** | Auth0 M2M authentication — every action is identity-bound |
-| **Secure tool calling** | Three-tier scope model with pre-execution validation |
-| **Step-up authentication** | Real-time approval flow with long-polling and auto-expiry |
-| **Consent delegation** | Auth0 Connected Accounts for third-party API consent; provider-specific scopes (repo, calendar) |
-| **Audit trail** | SHA-256 hash chain with full action context and screenshots |
+</details>
 
 ---
 
@@ -770,6 +781,10 @@ AgentTrust is built for the **Auth0 "Authorized to Act"** hackathon, directly ad
 
 ---
 
-## License
+<div align="center">
 
-MIT
+**AgentTrust** — because autonomous agents need accountability, not just capability.
+
+MIT License
+
+</div>
