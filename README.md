@@ -20,42 +20,157 @@ For supported providers (GitHub, Google Calendar), the agent can call external A
 
 ## Architecture
 
+### High-Level Network Diagram
+
+> To regenerate, open `docs/architecture-diagram.html` in Chrome and click **Export PNG**.
+
+<p align="center">
+  <img src="docs/agenttrust-architecture.png" alt="AgentTrust Architecture Diagram" width="100%" />
+</p>
+
+### Data Flow: Browser Action (click, navigate, form submit)
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   User / Operator                       │
-│         (Chrome Extension — monitor, approve,           │
-│          manage policies, run routines,                  │
-│          connect OAuth accounts)                        │
-└────────────────────────┬────────────────────────────────┘
-                         │  Approvals / Commands / Config
-                         ▼
-┌─────────────────────────────────────────────────────────┐
-│              AgentTrust Backend API                      │
-│   Node.js + Express + PostgreSQL                        │
-│                                                         │
-│  • Auth0 JWT validation   • Policy engine               │
-│  • Risk classification    • Cryptographic audit chain    │
-│  • Step-up approvals      • Credential vault            │
-│  • Session management     • Routine storage             │
-│  • Command queue          • Token exchange               │
-│  • External API proxy     • Auth0 Management API         │
-│  • User connection store  • OAuth callback handler       │
-└────────────────────────┬────────────────────────────────┘
-                         │  validate / log / approve
-                         ▼
-┌─────────────────────────────────────────────────────────┐
-│              AI Agent (Python)                           │
-│   Multi-model: GPT-4.1 + GPT-4.1-mini + GPT-4.1-nano  │
-│   LangGraph state machine + Selenium WebDriver          │
-│                                                         │
-│  • AgentTrust client      • Browser controller          │
-│  • Intercepted WebDriver  • Auto-login engine           │
-│  • Routine replay engine  • Credential resolver         │
-│  • External API calls     • Action history RAG          │
-│  • Graph agent pipeline   • API-first routing           │
-│     (PLAN → OBSERVE → ACT → VERIFY)                    │
-└─────────────────────────────────────────────────────────┘
+Agent                    Backend                     Extension
+  │                         │                            │
+  │ 1. POST /api/actions    │                            │
+  │    {type, url, target}  │                            │
+  │    [M2M JWT Bearer]     │                            │
+  │ ───────────────────────>│                            │
+  │                         │ 2. validateAction()        │
+  │                         │    verify Auth0 JWT        │
+  │                         │    via JWKS                │
+  │                         │                            │
+  │                         │ 3. enforcePolicy()         │
+  │                         │    classifyRisk() ─────┐   │
+  │                         │    ┌───────────────────┘   │
+  │                         │    │ • domain check        │
+  │                         │    │ • keyword matching     │
+  │                         │    │ • URL pattern scan     │
+  │                         │    │ • form field analysis  │
+  │                         │    │ • form control detect  │
+  │                         │    ▼                        │
+  │                         │  riskLevel: low|med|high    │
+  │                         │                            │
+  │                         │ 4. checkPolicy()           │
+  │                         │    scope verification      │
+  │                         │                            │
+  │                  ┌──────┤ 5a. If ALLOWED:            │
+  │                  │      │     logAction() → hash     │
+  │  6a. 201 OK ◄───┘      │     chain + DB write       │
+  │  {action_id,            │                            │
+  │   riskLevel}            │                            │
+  │                         │                            │
+  │  7. Execute in browser  │                            │
+  │  8. Screenshot capture  │                            │
+  │  9. PATCH screenshot    │                            │
+  │  10. DOM event ─────────┼───────────────────────────>│
+  │                         │                     11. Update popup
+  │                         │                         badge/log
+  │                  ┌──────┤                            │
+  │                  │      │ 5b. If HIGH RISK:          │
+  │  6b. 403 ◄──────┘      │     createApproval()       │
+  │  {approvalId,           │                            │
+  │   requiresStepUp}       │                            │
+  │                         │              ◄─────────────│ User sees banner
+  │  12. GET /approvals/    │                            │
+  │      :id/wait           │              ◄─────────────│ POST /approvals/
+  │  (long-poll 60s)        │                            │   :id/respond
+  │ ───────────────────────>│                            │   {approved: true}
+  │                         │                            │
+  │  13. {approved: true} ◄─┤                            │
+  │                         │                            │
+  │  14. Retry POST         │                            │
+  │      /api/actions       │                            │
+  │      + approvalId       │                            │
+  │ ───────────────────────>│ 15. Verify approval        │
+  │                         │     → status:              │
+  │  16. 201 OK ◄───────────┤       approved_override    │
+  │                         │                            │
 ```
+
+### Data Flow: External API Call (GitHub / Google Calendar)
+
+```
+Agent                    Backend                  Auth0         Provider API
+  │                         │                       │                │
+  │ 1. POST /api/           │                       │                │
+  │    external/call        │                       │                │
+  │    {provider, method,   │                       │                │
+  │     url}                │                       │                │
+  │    [M2M JWT Bearer]     │                       │                │
+  │ ───────────────────────>│                       │                │
+  │                         │ 2. validateAction()   │                │
+  │                         │                       │                │
+  │                         │ 3. classifyApiRisk()  │                │
+  │                         │    DELETE → high      │                │
+  │                         │    POST/PUT → medium  │                │
+  │                         │    GET → low          │                │
+  │                         │                       │                │
+  │                         │ 4. If high: return    │                │
+  │                         │    403 + approvalId   │                │
+  │                         │    (same step-up flow │                │
+  │                         │     as browser actions)│               │
+  │                         │                       │                │
+  │                         │ 5. Token resolution:  │                │
+  │                         │    DB → auth0_access_ │                │
+  │                         │         token (JWT)   │                │
+  │                         │    extract sub claim  │                │
+  │                         │ ─────────────────────>│                │
+  │                         │ 6. GET /api/v2/       │                │
+  │                         │    users/{sub}        │                │
+  │                         │    [Mgmt API Bearer]  │                │
+  │                         │ <─────────────────────│                │
+  │                         │ 7. Extract provider   │                │
+  │                         │    access_token from  │                │
+  │                         │    identities[]       │                │
+  │                         │                       │                │
+  │                         │ 8. Proxy API call ────┼───────────────>│
+  │                         │    [Provider Bearer]  │                │
+  │                         │ <─────────────────────┼────────────────│
+  │                         │                       │                │
+  │                         │ 9. sanitizeApiResponse│                │
+  │                         │    strip tokens,      │                │
+  │                         │    secrets, truncate   │                │
+  │  10. {data} ◄───────────┤                       │                │
+  │      (sanitized)        │                       │                │
+```
+
+### Endpoint Security Matrix
+
+Every request passes through the global middleware stack before reaching any route handler:
+
+| Layer | Protection |
+|-------|-----------|
+| **Helmet** | CSP, X-Frame-Options, X-Content-Type-Options, HSTS, referrer policy |
+| **CORS** | Whitelist-only origins (backend URL + extension ID) |
+| **Rate limiter** | Configurable per-IP limit (default: 10,000 req / 15 min) |
+| **Body parser** | 10 MB request size cap |
+| **mongo-sanitize** | Strips `$` and `.` operators from input (NoSQL injection) |
+| **HPP** | Blocks HTTP parameter pollution |
+| **Request ID** | Unique ID injected into every request for tracing |
+| **Input validation** | Sanitizes strings, rejects malformed payloads |
+
+Route-level authentication and authorization:
+
+| Endpoint Group | Auth Method | Key Security Measures |
+|---------------|------------|----------------------|
+| **POST /api/actions** | M2M JWT (Auth0 JWKS) | `enforcePolicy` middleware: risk classification on every action; high-risk → step-up approval; SHA-256 hash chain audit; blocked domains flat-denied |
+| **PATCH /api/actions/:id** | M2M JWT | Agent ownership verified (action.agentId must match token sub) |
+| **POST /api/external/call** | M2M JWT | `classifyApiRisk`: DELETE → high (requires approval), POST/PUT/PATCH → medium, GET → low; destructive URL keywords escalate to high; response sanitized (tokens, secrets stripped); arrays capped at 50 items |
+| **GET /api/credentials/lookup** | M2M JWT | Returns credentials for auto-login; **passwords never sent to LLM** — stored in internal cache, redacted from tool results; domain-fuzzy matching |
+| **CRUD /api/credentials** | User JWT | AES-256-GCM encryption at rest; per-credential IV; passwords masked in list responses; user-scoped access |
+| **POST /api/auth/login** | None (public) | bcrypt password verification; rate-limited; returns short-lived JWT |
+| **POST /api/auth/register** | None (public) | bcrypt password hashing (salt rounds); rate-limited |
+| **GET /api/approvals/:id/wait** | M2M JWT | Long-poll with configurable timeout; approvals auto-expire after 2 min |
+| **POST /api/approvals/:id/respond** | User JWT | Only authenticated users can approve/deny; prevents agent self-approval |
+| **GET /api/token-vault/callback** | None (OAuth) | State parameter validated (JSON with provider + userId); tokens stored encrypted in DB |
+| **POST /api/token-vault/connect** | User JWT | Initiates Auth0 OAuth with scoped permissions; audience parameter ensures JWT (not opaque) tokens |
+| **GET /api/audit/chain** | M2M JWT | Read-only; SHA-256 chain integrity verifiable |
+| **CRUD /api/routines** | User JWT | Owner-only mutation (update/delete); non-owner global routines require upfront domain validation |
+| **POST /api/commands** | User JWT | Only authenticated extension users can send commands to the agent |
+| **GET /api/commands/pending** | M2M JWT | Only authenticated agents can receive commands; long-poll prevents busy-waiting |
+| **GET/PUT /api/policies** | User JWT (extension), M2M JWT (agent read) | Policy changes take effect within 5s (TTL cache); file-persisted |
 
 ### Components
 
@@ -65,7 +180,7 @@ For supported providers (GitHub, Google Calendar), the agent can call external A
 | **Chrome Extension** | Manifest V3 | Real-time monitoring dashboard, step-up approval UI, policy management, credential management, routine management, chat interface, OAuth account connection |
 | **AI Agent** | Python, OpenAI GPT-4.1, Selenium, LangGraph | AI-driven browser automation with mandatory AgentTrust validation on every action, API-first external service calls |
 | **Auth0 Integration** | M2M tokens, Management API, OAuth | Agent identity, scoped tokens, provider token retrieval, user account linking |
-| **Database** | PostgreSQL (AWS RDS supported) | Actions, sessions, prompts, credentials (AES-256-GCM encrypted), routines, users, user connections, audit chain |
+| **Database** | PostgreSQL on AWS RDS | Actions, sessions, prompts, credentials (AES-256-GCM encrypted), routines, users, user connections, audit chain — encrypted at rest, TLS in transit |
 
 ---
 
@@ -384,7 +499,7 @@ agentTrust/
 
 - **Node.js** 18+ and npm
 - **Python** 3.9+ with pip
-- **PostgreSQL** 14+ (local or AWS RDS)
+- **PostgreSQL** 14+ on AWS RDS (or local for development)
 - **Auth0** account with M2M application configured
 - **Google Chrome** browser
 - **OpenAI API key** (Tier 2+ recommended for comfortable TPM limits)
@@ -647,7 +762,7 @@ AgentTrust is built for the **Auth0 "Authorized to Act"** hackathon, directly ad
 | Agent Framework | LangGraph (state machine: PLAN → OBSERVE → ACT → VERIFY) |
 | Browser Automation | Selenium 4.41, Chrome DevTools Protocol |
 | Backend | Node.js 18+, Express 4 |
-| Database | PostgreSQL 14+ (AWS RDS compatible) |
+| Database | PostgreSQL 14+ on AWS RDS (TLS in transit, encrypted at rest) |
 | Authentication | Auth0 (M2M + Management API + Social Connections), JWT, bcrypt |
 | Encryption | AES-256-GCM (credentials), SHA-256 (audit chain) |
 | Extension | Chrome Manifest V3 |

@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentTrust — Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&family=SF+Pro+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #FFFFFF;
+    --text: #1D1D1F;
+    --text-secondary: #86868B;
+    --text-tertiary: #AEAEB2;
+    --card-bg: #FFFFFF;
+    --card-border: rgba(0,0,0,0.06);
+    --card-shadow: 0 2px 12px rgba(0,0,0,0.04), 0 0.5px 2px rgba(0,0,0,0.06);
+    --card-shadow-hover: 0 8px 30px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.06);
+    --radius: 20px;
+    --radius-sm: 12px;
+    --radius-xs: 8px;
+
+    --auth0: #FF6D00;
+    --openai: #10A37F;
+    --provider: #0071E3;
+    --aws: #FF9900;
+    --agent: #30D158;
+    --extension: #BF5AF2;
+    --public: #FF453A;
+    --slate: #8E8E93;
+    --backend: #0071E3;
+    --risk-low: #30D158;
+    --risk-med: #FF9F0A;
+    --risk-high: #FF453A;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    background: #FFFFFF;
+    color: var(--text);
+    padding: 80px 60px;
+    min-width: 1440px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Typography ── */
+  h1 {
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    text-align: center;
+    margin-bottom: 8px;
+    color: #1D1D1F;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 21px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+    margin-bottom: 64px;
+  }
+  .section-label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--card-border), transparent);
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    margin-bottom: 56px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+  .legend-line {
+    width: 28px;
+    height: 2px;
+    border-radius: 1px;
+  }
+  .legend-line-dashed {
+    width: 28px;
+    height: 0;
+    border-top: 2px dashed var(--public);
+  }
+
+  /* ── Zone ── */
+  .zone {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    box-shadow: var(--card-shadow);
+    padding: 32px;
+    margin-bottom: 20px;
+    position: relative;
+  }
+
+  /* ── External cards ── */
+  .ext-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  .ext-card {
+    border-radius: var(--radius-sm);
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+    color: #FFF;
+  }
+  .ext-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(145deg, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0) 60%);
+    pointer-events: none;
+  }
+  .ext-card-title {
+    font-size: 17px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    letter-spacing: -0.01em;
+  }
+  .ext-card ul {
+    list-style: none;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.7;
+    opacity: 0.9;
+  }
+  .bg-auth0 { background: linear-gradient(145deg, #FF6D00, #E65100); }
+  .bg-openai { background: linear-gradient(145deg, #10A37F, #0D8A6A); }
+  .bg-provider { background: linear-gradient(145deg, #0071E3, #0058B0); }
+  .bg-aws { background: linear-gradient(145deg, #FF9900, #E68A00); }
+
+  /* ── Connectors ── */
+  .connectors {
+    display: flex;
+    justify-content: space-around;
+    padding: 0 80px;
+    height: 64px;
+    align-items: center;
+    position: relative;
+  }
+  .connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .conn-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin-bottom: 4px;
+    white-space: nowrap;
+  }
+  .conn-stem {
+    width: 2px;
+    height: 24px;
+    border-radius: 1px;
+  }
+  .conn-tip {
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+  }
+
+  /* ── Middleware strip ── */
+  .mw-strip {
+    background: linear-gradient(135deg, #F5F5F7, #EBEBED);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 18px 24px;
+    margin-bottom: 20px;
+  }
+  .mw-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .mw-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .mw-chip {
+    background: #FFF;
+    border: 1px solid var(--card-border);
+    border-radius: 100px;
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  /* ── Route groups ── */
+  .routes-grid {
+    display: grid;
+    grid-template-columns: 5fr 5fr 3fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .route-col {
+    border-radius: var(--radius-sm);
+    padding: 20px 22px;
+    border: 1px solid var(--card-border);
+  }
+  .route-col-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .route-col-title .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .route-col ul {
+    list-style: none;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+    line-height: 2.1;
+    color: #48484A;
+    font-weight: 400;
+  }
+  .route-col ul li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .route-method {
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    min-width: 40px;
+  }
+  .rc-agent { background: #F0FFF4; }
+  .rc-agent .route-col-title { color: #166534; }
+  .rc-agent .route-method { color: #15803D; }
+  .rc-ext { background: #FAF5FF; }
+  .rc-ext .route-col-title { color: #6B21A8; }
+  .rc-ext .route-method { color: #7E22CE; }
+  .rc-pub { background: #FFF5F5; }
+  .rc-pub .route-col-title { color: #991B1B; }
+  .rc-pub .route-method { color: #DC2626; }
+
+  /* ── Risk badges ── */
+  .badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 100px;
+    font-size: 9px;
+    font-weight: 700;
+    font-family: -apple-system, 'SF Pro Text', sans-serif;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    line-height: 1.4;
+  }
+  .badge-low { background: #DCFCE7; color: #166534; }
+  .badge-med { background: #FEF3C7; color: #92400E; }
+  .badge-high { background: #FEE2E2; color: #991B1B; }
+
+  /* ── Arrow label on routes ── */
+  .arrow-label {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: -apple-system, 'SF Pro Text', sans-serif;
+    font-weight: 500;
+    margin-left: 4px;
+  }
+
+  /* ── Internal services ── */
+  .int-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .int-card {
+    background: #F5F5F7;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-xs);
+    padding: 16px 18px;
+  }
+  .int-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .int-card-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* ── Data at rest ── */
+  .data-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  .data-cell {
+    background: linear-gradient(145deg, #FFFBEB, #FFF8E1);
+    border: 1px solid #FDE68A66;
+    border-radius: var(--radius-xs);
+    padding: 14px 16px;
+    text-align: center;
+  }
+  .data-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #92400E;
+    font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    margin-bottom: 2px;
+  }
+  .data-enc {
+    font-size: 10px;
+    color: #B45309;
+    font-weight: 500;
+  }
+
+  /* ── Bottom row ── */
+  .bottom-grid {
+    display: grid;
+    grid-template-columns: 1fr 120px 1fr;
+    gap: 0;
+    align-items: stretch;
+  }
+  .zone-agent-bg { background: linear-gradient(180deg, #F0FFF4, #ECFDF5); border-color: #BBF7D0; }
+  .zone-ext-bg { background: linear-gradient(180deg, #FAF5FF, #F5F3FF); border-color: #E9D5FF; }
+
+  .client-card {
+    border-radius: var(--radius-xs);
+    padding: 18px 20px;
+    margin-bottom: 12px;
+  }
+  .client-card-agent { background: #FFF; border: 1px solid #BBF7D0; }
+  .client-card-ext { background: #FFF; border: 1px solid #E9D5FF; }
+  .client-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    letter-spacing: -0.01em;
+  }
+  .client-list {
+    list-style: none;
+    font-size: 12px;
+    line-height: 1.9;
+  }
+  .client-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: #48484A;
+  }
+  .client-list li::before {
+    content: '›';
+    font-weight: 600;
+    opacity: 0.3;
+  }
+
+  .chrome-card {
+    background: #FFF;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-xs);
+    padding: 18px 20px;
+    text-align: center;
+  }
+  .chrome-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .chrome-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* ── Middle connector column ── */
+  .mid-connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    padding-bottom: 36px;
+  }
+  .mid-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-align: center;
+    margin-bottom: 8px;
+    line-height: 1.5;
+  }
+  .mid-line {
+    width: 100%;
+    height: 0;
+    border-top: 2px dashed #C7C7CC;
+    margin-bottom: 4px;
+  }
+  .mid-sub {
+    font-size: 9px;
+    color: var(--text-tertiary);
+    text-align: center;
+  }
+
+  /* ── Vertical connector ── */
+  .v-conn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 0;
+  }
+  .v-conn-label {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+  }
+  .v-conn-stem {
+    width: 1.5px;
+    height: 16px;
+    background: #C7C7CC;
+  }
+  .v-conn-tip {
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #C7C7CC;
+  }
+
+  /* ── Color ref panel ── */
+  .ref-panel {
+    margin-top: 64px;
+    padding: 40px;
+    background: #FFF;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    box-shadow: var(--card-shadow);
+  }
+  .ref-title {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 8px;
+  }
+  .ref-sub {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 32px;
+  }
+  .ref-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 32px;
+  }
+  .ref-group-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
+  .ref-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .ref-swatch {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08);
+  }
+  .ref-name {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 500;
+  }
+  .ref-hex {
+    font-size: 12px;
+    font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: auto;
+  }
+
+  /* ── SVG export button ── */
+  .export-bar {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 100;
+    display: flex;
+    gap: 10px;
+  }
+  .export-btn {
+    background: #1D1D1F;
+    color: #FFF;
+    border: none;
+    border-radius: 100px;
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .export-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  }
+  .export-btn:active { transform: scale(0.97); }
+  .export-btn.secondary {
+    background: #FFF;
+    color: #1D1D1F;
+    border: 1px solid #D1D1D6;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+
+  /* ── Print / export cleanup ── */
+  @media print {
+    body { padding: 20px; min-width: auto; }
+    .export-bar { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Export buttons -->
+<div class="export-bar">
+  <button class="export-btn" onclick="exportSVG()">Export SVG (for Figma)</button>
+  <button class="export-btn secondary" onclick="exportPNG()">Export PNG</button>
+</div>
+
+<h1>AgentTrust</h1>
+<p class="subtitle">Network Architecture — Identity & Audit Layer for Agentic Browsers</p>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--auth0)"></div>Auth0 / External</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--agent)"></div>Agent (M2M JWT)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--extension)"></div>Extension (User JWT)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--provider)"></div>Provider APIs</div>
+  <div class="legend-item"><div class="legend-line-dashed"></div>Public (no auth)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--aws)"></div>AWS RDS</div>
+  <div class="legend-item"><span class="badges"><span class="badge badge-low">LOW</span><span class="badge badge-med">MED</span><span class="badge badge-high">HIGH</span></span> Risk Level</div>
+</div>
+
+<!-- ═══ EXTERNAL SERVICES ═══ -->
+<div class="section-label" style="color:var(--text-secondary)">External Services</div>
+<div class="ext-grid" style="margin-bottom:0;">
+  <div class="ext-card bg-auth0">
+    <div class="ext-card-title">Auth0 IdP</div>
+    <ul><li>JWKS public keys</li><li>M2M token issuance</li><li>OAuth social login</li><li>Management API v2</li></ul>
+  </div>
+  <div class="ext-card bg-openai">
+    <div class="ext-card-title">OpenAI API</div>
+    <ul><li>GPT-4.1 — reasoning</li><li>GPT-4.1-mini — planning</li><li>GPT-4.1-nano — classify</li></ul>
+  </div>
+  <div class="ext-card bg-provider">
+    <div class="ext-card-title">Provider APIs</div>
+    <ul><li>api.github.com</li><li>googleapis.com/calendar</li></ul>
+  </div>
+  <div class="ext-card bg-aws">
+    <div class="ext-card-title">AWS RDS PostgreSQL</div>
+    <ul><li>TLS/SSL in transit</li><li>AES-256 at rest</li><li>VPC-isolated</li><li>IAM authentication</li></ul>
+  </div>
+</div>
+
+<!-- Connectors -->
+<div class="connectors">
+  <div class="connector">
+    <div class="conn-label" style="color:var(--auth0)">HTTPS · JWT + JWKS</div>
+    <div class="conn-stem" style="background:var(--auth0)"></div>
+    <div class="conn-tip" style="border-top-color:var(--auth0)"></div>
+  </div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--openai)">HTTPS · API Key Bearer</div>
+    <div class="conn-stem" style="background:var(--openai)"></div>
+    <div class="conn-tip" style="border-top-color:var(--openai)"></div>
+  </div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--provider)">HTTPS · OAuth Bearer</div>
+    <div class="conn-stem" style="background:var(--provider)"></div>
+    <div class="conn-tip" style="border-top-color:var(--provider)"></div>
+  </div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--aws)">SQL over TLS · pg SSL</div>
+    <div class="conn-stem" style="background:var(--aws)"></div>
+    <div class="conn-tip" style="border-top-color:var(--aws)"></div>
+  </div>
+</div>
+
+<!-- ═══ BACKEND ═══ -->
+<div class="section-label" style="color:var(--backend)">Local Network · localhost</div>
+<div class="zone" style="border-color:#0071E322;">
+  <div class="section-label" style="color:var(--backend); margin-bottom:16px;">AgentTrust Backend API · :3000 · Node.js + Express</div>
+
+  <!-- Middleware -->
+  <div class="mw-strip">
+    <div class="mw-title">Global Middleware — applied to every request</div>
+    <div class="mw-chips">
+      <span class="mw-chip">Helmet (CSP · HSTS · X-Frame)</span>
+      <span class="mw-chip">CORS whitelist</span>
+      <span class="mw-chip">Rate limiter · 10K/15min</span>
+      <span class="mw-chip">Body parser · 10MB</span>
+      <span class="mw-chip">mongo-sanitize</span>
+      <span class="mw-chip">HPP protection</span>
+      <span class="mw-chip">Request ID</span>
+      <span class="mw-chip">Input validation</span>
+    </div>
+  </div>
+
+  <!-- Routes -->
+  <div class="routes-grid">
+    <div class="route-col rc-agent">
+      <div class="route-col-title"><div class="dot" style="background:var(--agent)"></div>Agent-Facing · M2M JWT via Auth0 JWKS</div>
+      <ul>
+        <li><span class="route-method">POST</span> /api/actions <span class="arrow-label">→ enforcePolicy</span> <span class="badges"><span class="badge badge-low">LOW</span><span class="badge badge-med">MED</span><span class="badge badge-high">HIGH</span></span></li>
+        <li><span class="route-method">GET</span> /api/actions <span class="arrow-label">→ validateAction</span> <span class="badges"><span class="badge badge-low">LOW</span></span></li>
+        <li><span class="route-method">PATCH</span> /api/actions/:id <span class="arrow-label">→ owner check</span> <span class="badges"><span class="badge badge-low">LOW</span></span></li>
+        <li><span class="route-method">POST</span> /api/external/call <span class="arrow-label">→ classifyApiRisk</span> <span class="badges"><span class="badge badge-med">MED</span><span class="badge badge-high">HIGH</span></span></li>
+        <li><span class="route-method">POST</span> /api/sessions <span class="arrow-label">→ validateAction</span> <span class="badges"><span class="badge badge-low">LOW</span></span></li>
+        <li><span class="route-method">POST</span> /api/prompts <span class="arrow-label">→ validateAction</span> <span class="badges"><span class="badge badge-low">LOW</span></span></li>
+        <li><span class="route-method">GET</span> /api/commands/pending <span class="arrow-label">→ long-poll</span> <span class="badges"><span class="badge badge-low">LOW</span></span></li>
+        <li><span class="route-method">GET</span> /api/approvals/:id/wait <span class="arrow-label">→ long-poll</span> <span class="badges"><span class="badge badge-low">LOW</span></span></li>
+        <li><span class="route-method">GET</span> /api/credentials/lookup <span class="arrow-label">→ validateAction</span> <span class="badges"><span class="badge badge-med">MED</span></span></li>
+        <li><span class="route-method">GET</span> /api/audit/chain <span class="arrow-label">→ validateAction</span> <span class="badges"><span class="badge badge-low">LOW</span></span></li>
+        <li><span class="route-method">POST</span> /api/auth/stepup <span class="arrow-label">→ validateAction</span> <span class="badges"><span class="badge badge-high">HIGH</span></span></li>
+      </ul>
+    </div>
+    <div class="route-col rc-ext">
+      <div class="route-col-title"><div class="dot" style="background:var(--extension)"></div>Extension-Facing · User JWT · bcrypt</div>
+      <ul>
+        <li><span class="route-method">GET</span> /api/actions/user <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">GET</span> /api/sessions <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">POST</span> /api/commands <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">GET</span> /api/approvals/pending <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">POST</span> /api/approvals/:id/respond <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">CRUD</span> /api/credentials <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">CRUD</span> /api/routines <span class="arrow-label">→ owner checks</span></li>
+        <li><span class="route-method">G|P</span> /api/policies <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">POST</span> /api/token-vault/connect <span class="arrow-label">→ authenticateUser</span></li>
+        <li><span class="route-method">GET</span> /api/token-vault/connections</li>
+        <li><span class="route-method">DEL</span> /api/token-vault/conn/:p</li>
+      </ul>
+    </div>
+    <div class="route-col rc-pub">
+      <div class="route-col-title"><div class="dot" style="background:var(--public)"></div>Public · No Auth</div>
+      <ul>
+        <li><span class="route-method">POST</span> /api/auth/login <span class="arrow-label">→ bcrypt</span></li>
+        <li><span class="route-method">POST</span> /api/auth/register <span class="arrow-label">→ bcrypt</span></li>
+        <li><span class="route-method">GET</span> /api/token-vault/callback <span class="arrow-label">→ state</span></li>
+        <li><span class="route-method">GET</span> /health</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Internal Services -->
+  <div class="section-label" style="color:var(--text-secondary); font-size:11px;">Internal Services</div>
+  <div class="int-grid">
+    <div class="int-card">
+      <div class="int-card-title">Policy Engine</div>
+      <div class="int-card-desc">Risk classification · keyword matching · URL patterns · form control detection</div>
+    </div>
+    <div class="int-card">
+      <div class="int-card-title">Audit Service</div>
+      <div class="int-card-desc">SHA-256 hash chain · tamper-evident action logging · screenshots</div>
+    </div>
+    <div class="int-card">
+      <div class="int-card-title">Auth0 Service</div>
+      <div class="int-card-desc">JWKS key rotation · JWT validation cache · token refresh</div>
+    </div>
+    <div class="int-card">
+      <div class="int-card-title">Approval Queue</div>
+      <div class="int-card-desc">In-memory pending approvals · 2-min TTL · auto-expiry</div>
+    </div>
+  </div>
+
+  <!-- Data at Rest -->
+  <div class="section-label" style="color:var(--aws); font-size:11px;">Data at Rest · AWS RDS PostgreSQL</div>
+  <div class="data-grid">
+    <div class="data-cell"><div class="data-name">actions</div><div class="data-enc">SHA-256 hash chain</div></div>
+    <div class="data-cell"><div class="data-name">credentials</div><div class="data-enc">AES-256-GCM · per-row IV</div></div>
+    <div class="data-cell"><div class="data-name">users</div><div class="data-enc">bcrypt-hashed passwords</div></div>
+    <div class="data-cell"><div class="data-name">user_connections</div><div class="data-enc">OAuth tokens (Auth0)</div></div>
+    <div class="data-cell"><div class="data-name">sessions</div><div class="data-enc">Session state</div></div>
+    <div class="data-cell"><div class="data-name">prompts</div><div class="data-enc">User + agent text</div></div>
+    <div class="data-cell"><div class="data-name">routines</div><div class="data-enc">Action sequences</div></div>
+    <div class="data-cell"><div class="data-name">commands</div><div class="data-enc">Pending queue</div></div>
+  </div>
+</div>
+
+<!-- Connectors: Backend → Agent/Extension -->
+<div class="connectors" style="height:48px; padding: 0 200px;">
+  <div class="connector">
+    <div class="conn-label" style="color:var(--agent)">HTTP :3000 · M2M JWT</div>
+    <div class="conn-stem" style="background:var(--agent)"></div>
+    <div class="conn-tip" style="border-top-color:var(--agent)"></div>
+  </div>
+  <div style="width:240px"></div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--extension)">HTTP :3000 · User JWT</div>
+    <div class="conn-stem" style="background:var(--extension)"></div>
+    <div class="conn-tip" style="border-top-color:var(--extension)"></div>
+  </div>
+</div>
+
+<!-- ═══ BOTTOM: Agent / Chrome / Extension ═══ -->
+<div class="bottom-grid">
+  <!-- Agent -->
+  <div class="zone zone-agent-bg" style="margin-bottom:0;">
+    <div class="section-label" style="color:#166534; font-size:11px;">AI Agent · Python · GPT-4.1 + LangGraph + Selenium</div>
+    <div class="client-card client-card-agent">
+      <div class="client-title" style="color:#166534">AgentTrust Client</div>
+      <ul class="client-list">
+        <li>Auth0 M2M token cache</li>
+        <li>Session management</li>
+        <li>Action execution + validation</li>
+        <li>Step-up approval polling (60s)</li>
+        <li>Credential lookup (redacted from LLM)</li>
+        <li>External API calls (GitHub, Google)</li>
+      </ul>
+    </div>
+    <div class="v-conn">
+      <div class="v-conn-label">Selenium WebDriver</div>
+      <div class="v-conn-stem"></div>
+      <div class="v-conn-tip"></div>
+    </div>
+    <div class="chrome-card">
+      <div class="chrome-title">Chrome (Intercepted)</div>
+      <div class="chrome-sub">InterceptedWebDriver wrapper enforces<br>AgentTrust validation on every action</div>
+    </div>
+  </div>
+
+  <!-- Middle connector -->
+  <div class="mid-connector">
+    <div class="mid-label">DOM events<br><span style="font-size:9px;opacity:0.6">agenttrust-action-logged</span></div>
+    <div class="mid-line"></div>
+    <div class="mid-sub">Chrome → Extension</div>
+  </div>
+
+  <!-- Extension -->
+  <div class="zone zone-ext-bg" style="margin-bottom:0;">
+    <div class="section-label" style="color:#6B21A8; font-size:11px;">Chrome Extension · Manifest V3</div>
+    <div class="client-card client-card-ext">
+      <div class="client-title" style="color:#6B21A8">Service Worker · popup.js</div>
+      <ul class="client-list">
+        <li>Monitor — action feed, risk badges, screenshots</li>
+        <li>Chat — send prompts, view responses</li>
+        <li>Routines — CRUD, replay, from-session</li>
+        <li>Permissions — domains, keywords, credentials</li>
+        <li>OAuth connections (GitHub, Google)</li>
+        <li>Step-up — approve / deny banner</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ COLOR REFERENCE ═══ -->
+<div class="ref-panel">
+  <div class="ref-title">Color Reference</div>
+  <div class="ref-sub">Copy these hex values directly into Figma. All zones use their light-mode tint as backgrounds.</div>
+  <div class="ref-grid">
+    <div>
+      <div class="ref-group-title">Zone Backgrounds</div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FFF3E0"></div><div class="ref-name">External Services</div><div class="ref-hex">#FFF3E0</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#E3F2FD"></div><div class="ref-name">Backend API</div><div class="ref-hex">#E3F2FD</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#E8F5E9"></div><div class="ref-name">Agent (Python)</div><div class="ref-hex">#E8F5E9</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#F3E5F5"></div><div class="ref-name">Extension</div><div class="ref-hex">#F3E5F5</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FFF8E1"></div><div class="ref-name">AWS RDS</div><div class="ref-hex">#FFF8E1</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#F5F5F7"></div><div class="ref-name">Middleware / Neutral</div><div class="ref-hex">#F5F5F7</div></div>
+    </div>
+    <div>
+      <div class="ref-group-title">Connection Lines</div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#2E7D32"></div><div class="ref-name">M2M JWT (solid)</div><div class="ref-hex">#2E7D32</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#7B1FA2"></div><div class="ref-name">User JWT (solid)</div><div class="ref-hex">#7B1FA2</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FF453A"></div><div class="ref-name">Public (dashed)</div><div class="ref-hex">#FF453A</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FF6D00"></div><div class="ref-name">Auth0 HTTPS (solid)</div><div class="ref-hex">#FF6D00</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#0071E3"></div><div class="ref-name">Provider OAuth (solid)</div><div class="ref-hex">#0071E3</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#8E8E93"></div><div class="ref-name">Internal / Selenium</div><div class="ref-hex">#8E8E93</div></div>
+    </div>
+    <div>
+      <div class="ref-group-title">Component Cards & Badges</div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FF6D00"></div><div class="ref-name">Auth0 card</div><div class="ref-hex">#FF6D00</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#10A37F"></div><div class="ref-name">OpenAI card</div><div class="ref-hex">#10A37F</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#0071E3"></div><div class="ref-name">Provider card</div><div class="ref-hex">#0071E3</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FF9900"></div><div class="ref-name">AWS card</div><div class="ref-hex">#FF9900</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#30D158"></div><div class="ref-name">Risk: Low</div><div class="ref-hex">#30D158</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FF9F0A"></div><div class="ref-name">Risk: Medium</div><div class="ref-hex">#FF9F0A</div></div>
+      <div class="ref-row"><div class="ref-swatch" style="background:#FF453A"></div><div class="ref-name">Risk: High</div><div class="ref-hex">#FF453A</div></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script>
+const exportBtns = document.querySelector('.export-bar');
+const refPanel = document.querySelector('.ref-panel');
+
+async function capture(opts = {}) {
+  const includeRef = opts.includeRef || false;
+  exportBtns.style.display = 'none';
+  if (!includeRef) refPanel.style.display = 'none';
+
+  const canvas = await html2canvas(document.body, {
+    scale: 3,
+    useCORS: true,
+    backgroundColor: '#FFFFFF',
+    logging: false,
+    windowWidth: document.body.scrollWidth,
+    windowHeight: document.body.scrollHeight,
+  });
+
+  exportBtns.style.display = 'flex';
+  if (!includeRef) refPanel.style.display = '';
+
+  return canvas;
+}
+
+async function exportPNG() {
+  const canvas = await capture();
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = 'agenttrust-architecture.png';
+  a.click();
+}
+
+async function exportSVG() {
+  const canvas = await capture();
+  const w = canvas.width / 3;
+  const h = canvas.height / 3;
+  const dataUrl = canvas.toDataURL('image/png');
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <image width="${w}" height="${h}" xlink:href="${dataUrl}" />
+</svg>`;
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'agenttrust-architecture.svg';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+
+</body>
+</html>
