@@ -37,6 +37,8 @@ class Action {
     this.status = data.status || 'allowed';
     this.screenshot = data.screenshot;
     this.promptId = data.prompt_id || data.promptId;
+    this.parentActionId = data.parent_action_id || data.parentActionId || null;
+    this.subOrder = data.sub_order != null ? data.sub_order : (data.subOrder != null ? data.subOrder : null);
     this.createdAt = data.created_at;
 
     // Decrypt form_data if it was stored with an IV (encrypted)
@@ -78,7 +80,9 @@ class Action {
       reason,
       status,
       screenshot,
-      promptId
+      promptId,
+      parentActionId,
+      subOrder
     } = data;
 
     // Encrypt form_data before storing
@@ -94,8 +98,9 @@ class Action {
       INSERT INTO actions (
         id, agent_id, session_id, type, timestamp, domain, url, risk_level,
         hash, previous_hash, target, form_data, form_data_iv, scopes,
-        step_up_required, reason, status, screenshot, prompt_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        step_up_required, reason, status, screenshot, prompt_id,
+        parent_action_id, sub_order
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
       RETURNING *
     `;
     
@@ -118,7 +123,9 @@ class Action {
       reason || null,
       status || 'allowed',
       screenshot || null,
-      promptId || null
+      promptId || null,
+      parentActionId || null,
+      subOrder != null ? subOrder : null
     ];
     
     try {

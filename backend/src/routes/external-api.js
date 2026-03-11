@@ -12,6 +12,10 @@ const HIGH_RISK_API_PATTERNS = [
 const DESTRUCTIVE_URL_KEYWORDS = [
   'delete', 'remove', 'destroy', 'deactivate', 'revoke', 'transfer',
 ];
+const IMPACT_URL_KEYWORDS = [
+  'send', 'comment', 'issue', 'message', 'event',
+  'invite', 'publish', 'mail', 'email', 'review',
+];
 
 function classifyApiRisk(method, url) {
   const m = method.toUpperCase();
@@ -26,6 +30,7 @@ function classifyApiRisk(method, url) {
 
   if (['POST', 'PUT', 'PATCH'].includes(m)) {
     if (DESTRUCTIVE_URL_KEYWORDS.some(kw => urlLower.includes(kw))) return 'high';
+    if (IMPACT_URL_KEYWORDS.some(kw => urlLower.includes(kw))) return 'high';
     if (HIGH_RISK_API_PATTERNS.some(p => urlLower.includes(p))) return 'medium';
     return 'medium';
   }
@@ -132,6 +137,34 @@ function sanitizeApiResponse(data, depth = 0) {
   return cleaned;
 }
 
+function _buildApiImpactSummary(method, url, provider, body) {
+  const m = method.toUpperCase();
+  const urlLower = url.toLowerCase();
+  const parts = [];
+
+  if (m === 'DELETE') parts.push('Delete');
+  else if (m === 'POST') parts.push('Create');
+  else if (['PUT', 'PATCH'].includes(m)) parts.push('Update');
+
+  if (urlLower.includes('/issues')) parts.push('issue');
+  else if (urlLower.includes('/comments')) parts.push('comment');
+  else if (urlLower.includes('/pulls')) parts.push('pull request');
+  else if (urlLower.includes('/repos')) parts.push('repository');
+  else if (urlLower.includes('/events')) parts.push('calendar event');
+  else if (urlLower.includes('/messages') || urlLower.includes('/send')) parts.push('message');
+  else parts.push('resource');
+
+  parts.push(`on ${provider}`);
+
+  if (body && typeof body === 'object') {
+    if (body.title) parts.push(`"${String(body.title).substring(0, 60)}"`);
+    else if (body.subject) parts.push(`"${String(body.subject).substring(0, 60)}"`);
+    else if (body.summary) parts.push(`"${String(body.summary).substring(0, 60)}"`);
+  }
+
+  return parts.join(' ');
+}
+
 router.post('/call', validateAction, async (req, res) => {
   const { provider, method, url: apiUrl, body: apiBody, sessionId, promptId, userToken } = req.body;
 
@@ -176,6 +209,16 @@ router.post('/call', validateAction, async (req, res) => {
   }
 
   if (requiresApproval) {
+    let bodyPreview = null;
+    if (apiBody) {
+      try {
+        const s = typeof apiBody === 'string' ? apiBody : JSON.stringify(apiBody, null, 2);
+        bodyPreview = s.length > 500 ? s.substring(0, 500) + '...' : s;
+      } catch { bodyPreview = '[unreadable body]'; }
+    }
+
+    const impactSummary = _buildApiImpactSummary(method, apiUrl, provider, apiBody);
+
     const approval = createApproval({
       sessionId: sessionId || null,
       actionId: loggedAction?.id || null,
@@ -183,8 +226,10 @@ router.post('/call', validateAction, async (req, res) => {
       domain: apiDomain,
       url: apiUrl,
       riskLevel,
-      reason: `${method.toUpperCase()} ${apiUrl} — destructive API call requires approval`,
-      target: { provider, method: method.toUpperCase() }
+      reason: `${method.toUpperCase()} ${apiUrl} — requires approval`,
+      target: { provider, method: method.toUpperCase() },
+      preview: bodyPreview ? { method: method.toUpperCase(), url: apiUrl, body: bodyPreview } : { method: method.toUpperCase(), url: apiUrl },
+      impactSummary
     });
 
     return res.status(403).json({

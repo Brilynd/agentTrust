@@ -7,6 +7,51 @@ const { logAction } = require('../services/audit');
 const { Session } = require('../models/session');
 const { createApproval } = require('../routes/approvals');
 
+const PREVIEW_SENSITIVE_KEYS = new Set(['password', 'passwd', 'secret', 'token', 'credit_card', 'cvv', 'ssn']);
+
+function _buildActionPreview(actionData) {
+  const formData = actionData.form?.fields || actionData.formData || actionData.form;
+  if (!formData || typeof formData !== 'object') return null;
+
+  const preview = {};
+  const entries = Object.entries(formData);
+  for (const [key, val] of entries.slice(0, 10)) {
+    if (PREVIEW_SENSITIVE_KEYS.has(key.toLowerCase())) {
+      preview[key] = '***';
+    } else if (typeof val === 'string') {
+      preview[key] = val.length > 200 ? val.substring(0, 200) + '...' : val;
+    } else if (val && typeof val === 'object' && val.value) {
+      preview[key] = PREVIEW_SENSITIVE_KEYS.has(key.toLowerCase()) ? '***' : String(val.value).substring(0, 200);
+    } else {
+      preview[key] = val;
+    }
+  }
+  if (entries.length > 10) preview['...'] = `${entries.length - 10} more fields`;
+  return preview;
+}
+
+function _buildActionImpactSummary(actionData) {
+  const type = actionData.type;
+  const domain = actionData.domain || '';
+  const urlLower = (actionData.url || '').toLowerCase();
+  const targetText = (actionData.target?.text || '').toLowerCase();
+
+  if (type === 'form_submit') {
+    if (urlLower.includes('/send') || urlLower.includes('/compose') || targetText.includes('send'))
+      return `Send message on ${domain}`;
+    if (urlLower.includes('/comment') || targetText.includes('comment'))
+      return `Post comment on ${domain}`;
+    if (urlLower.includes('/issue') || urlLower.includes('/new'))
+      return `Create new item on ${domain}`;
+    return `Submit form on ${domain}`;
+  }
+  if (type === 'click') {
+    const text = actionData.target?.text || 'button';
+    return `Click "${String(text).substring(0, 40)}" on ${domain}`;
+  }
+  return `${type} on ${domain}`;
+}
+
 async function enforcePolicy(req, res, next) {
   try {
     const actionData = req.body;
@@ -95,6 +140,9 @@ async function enforcePolicy(req, res, next) {
       const isBlockedDomain = policyCheck.reason && policyCheck.reason.includes('blocked by policy');
 
       if (!isBlockedDomain) {
+        const preview = _buildActionPreview(actionData);
+        const impactSummary = _buildActionImpactSummary(actionData);
+
         const approval = createApproval({
           sessionId: session?.id || actionData.sessionId || null,
           actionId: loggedAction?.id || null,
@@ -103,7 +151,9 @@ async function enforcePolicy(req, res, next) {
           url: actionData.url,
           riskLevel: riskLevel,
           reason: policyCheck.reason || 'Action requires approval',
-          target: actionData.target || null
+          target: actionData.target || null,
+          preview,
+          impactSummary
         });
 
         return res.status(403).json({

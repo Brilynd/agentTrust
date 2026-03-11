@@ -922,6 +922,57 @@ body.popout .feed-body {
   word-break: break-word;
 }
 
+.approval-impact {
+  font-size: 11px;
+  font-weight: 600;
+  color: #78350f;
+  line-height: 1.4;
+}
+
+.approval-preview {
+  background: rgba(255,255,255,.65);
+  border-radius: var(--radius-sm);
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.approval-preview-header {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #92400e;
+  margin-bottom: 4px;
+}
+
+.approval-preview-body {
+  font-size: 11px;
+  color: #1a1d26;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+}
+
+.approval-preview-body.truncated {
+  max-height: 80px;
+  overflow: hidden;
+}
+
+.approval-preview-toggle {
+  display: inline-block;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--c-primary);
+  padding: 2px 0;
+  margin-top: 2px;
+}
+
 .approval-actions {
   display: flex;
   gap: 6px;

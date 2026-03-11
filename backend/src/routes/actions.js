@@ -248,6 +248,53 @@ router.patch('/:actionId', validateAction, async (req, res) => {
   }
 });
 
+// Log sub-actions (child steps of a parent action, e.g. auto_login sub-steps)
+router.post('/sub', validateAction, async (req, res) => {
+  try {
+    const { parentActionId, steps } = req.body;
+    if (!parentActionId || !Array.isArray(steps) || steps.length === 0) {
+      return res.status(400).json({ success: false, error: 'parentActionId and steps array are required' });
+    }
+
+    const { Action } = require('../models/action');
+    const parent = await Action.findById(parentActionId);
+    if (!parent) {
+      return res.status(404).json({ success: false, error: 'Parent action not found' });
+    }
+
+    const { logAction } = require('../services/audit');
+    const created = [];
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const logged = await logAction({
+        agentId: req.agent.id,
+        sessionId: parent.sessionId || null,
+        type: step.subType || step.sub_type || 'sub_action',
+        domain: parent.domain,
+        url: step.url || parent.url,
+        riskLevel: 'low',
+        target: step.target || null,
+        formData: step.value != null ? { value: step.value, field: step.field } : null,
+        scopes: [],
+        stepUpRequired: false,
+        reason: step.label || null,
+        status: 'allowed',
+        promptId: parent.promptId || null,
+        parentActionId,
+        subOrder: step.order != null ? step.order : i + 1,
+        timestamp: new Date().toISOString()
+      });
+      created.push({ id: logged.id, subOrder: i + 1 });
+    }
+
+    res.status(201).json({ success: true, subActions: created, count: created.length });
+  } catch (error) {
+    console.error('Failed to log sub-actions:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Log an action from the extension (user auth) — used for error/failed
 // actions that the agent couldn't log via M2M because the API call itself failed.
 router.post('/extension-log', require('../middleware/auth').authenticateUser, async (req, res) => {

@@ -173,6 +173,7 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
     // Fetch actions for the session (include form_data_iv for decryption)
     let query = `SELECT id, type, url, domain, target, form_data, form_data_iv, status
                  FROM actions WHERE session_id = $1 AND status IN ('allowed', 'approved_override')
+                   AND parent_action_id IS NULL
                  ORDER BY timestamp ASC`;
     const result = await pool.query(query, [sessionId]);
 
@@ -185,6 +186,22 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
     if (selectedActionIds && Array.isArray(selectedActionIds) && selectedActionIds.length > 0) {
       const idSet = new Set(selectedActionIds);
       actions = actions.filter(a => idSet.has(a.id));
+    }
+
+    // Pre-fetch all sub-actions (children) for auto_login parent actions in this session
+    const parentIds = actions.map(a => a.id);
+    let subActionMap = {};
+    if (parentIds.length > 0) {
+      const subQuery = `SELECT id, type, url, domain, target, form_data, form_data_iv, status,
+                               parent_action_id, sub_order, reason
+                        FROM actions WHERE parent_action_id = ANY($1)
+                        ORDER BY sub_order ASC, timestamp ASC`;
+      const subResult = await pool.query(subQuery, [parentIds]);
+      for (const row of subResult.rows) {
+        const pid = row.parent_action_id;
+        if (!subActionMap[pid]) subActionMap[pid] = [];
+        subActionMap[pid].push(row);
+      }
     }
 
     function decryptFormData(row) {
@@ -217,29 +234,58 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
       }
     }
 
-    const steps = actions.map((a, i) => {
+    const steps = [];
+    let stepOrder = 0;
+
+    for (const a of actions) {
       const target = typeof a.target === 'string' ? JSON.parse(a.target) : a.target;
       const formData = decryptFormData(a);
 
-      // Re-encrypt form data for storage inside the routine steps JSONB
-      // so credentials are never stored in plaintext in routines table
-      let encFormData = null;
-      if (formData != null) {
-        const { encrypted, iv } = encryptJSON(formData);
-        encFormData = { _enc: encrypted, _iv: iv };
-      }
+      // Check if this action has granular sub-steps (e.g. auto_login)
+      const children = subActionMap[a.id];
+      if (children && children.length > 0) {
+        for (const child of children) {
+          stepOrder++;
+          const childTarget = typeof child.target === 'string' ? JSON.parse(child.target) : child.target;
+          const childFormData = decryptFormData(child);
 
-      return {
-        order: i + 1,
-        type: 'action',
-        actionType: a.type,
-        url: a.url,
-        domain: a.domain,
-        target: target || null,
-        formData: encFormData,
-        label: labelForAction(a, formData)
-      };
-    });
+          let encChildFormData = null;
+          if (childFormData != null) {
+            const { encrypted, iv } = encryptJSON(childFormData);
+            encChildFormData = { _enc: encrypted, _iv: iv };
+          }
+
+          steps.push({
+            order: stepOrder,
+            type: 'action',
+            actionType: child.type,
+            url: child.url || a.url,
+            domain: child.domain || a.domain,
+            target: childTarget || null,
+            formData: encChildFormData,
+            label: child.reason || `Sub-step ${child.sub_order || stepOrder}`
+          });
+        }
+      } else {
+        stepOrder++;
+        let encFormData = null;
+        if (formData != null) {
+          const { encrypted, iv } = encryptJSON(formData);
+          encFormData = { _enc: encrypted, _iv: iv };
+        }
+
+        steps.push({
+          order: stepOrder,
+          type: 'action',
+          actionType: a.type,
+          url: a.url,
+          domain: a.domain,
+          target: target || null,
+          formData: encFormData,
+          label: labelForAction(a, formData)
+        });
+      }
+    }
 
     const id = `rtn_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     await pool.query(

@@ -42,7 +42,9 @@ async function logAction(actionData) {
     reason,
     status,
     screenshot,
-    promptId
+    promptId,
+    parentActionId,
+    subOrder
   } = actionData;
   
   const previousHash = await getPreviousHash(agentId);
@@ -67,7 +69,9 @@ async function logAction(actionData) {
     reason,
     status: status || 'allowed',
     screenshot: screenshot || null,
-    promptId: promptId || null
+    promptId: promptId || null,
+    parentActionId: parentActionId || null,
+    subOrder: subOrder != null ? subOrder : null
   };
   
   const savedAction = await Action.create(loggedAction);

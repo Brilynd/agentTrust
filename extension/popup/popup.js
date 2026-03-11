@@ -788,6 +788,57 @@ async function pollApprovals() {
 function showApprovalBanner(approval) {
   const desc = `${fmtType(approval.type)} on ${esc(approval.domain || 'unknown domain')} — Risk: ${approval.riskLevel || 'unknown'}`;
   $('approvalDesc').innerHTML = desc + (approval.reason ? `<br>${esc(approval.reason)}` : '');
+
+  // Impact summary
+  const impactEl = $('approvalImpact');
+  if (approval.impactSummary) {
+    impactEl.textContent = approval.impactSummary;
+    impactEl.hidden = false;
+  } else {
+    impactEl.hidden = true;
+  }
+
+  // Content preview
+  const previewContainer = $('approvalPreview');
+  const previewBody = $('approvalPreviewBody');
+  const previewToggle = $('approvalPreviewToggle');
+
+  if (approval.preview) {
+    let previewText = '';
+    const pv = approval.preview;
+    if (typeof pv === 'object') {
+      if (pv.method && pv.url) {
+        previewText += `${pv.method} ${pv.url}\n`;
+      }
+      if (pv.body) {
+        previewText += pv.body;
+      } else {
+        const entries = Object.entries(pv).filter(([k]) => k !== 'method' && k !== 'url');
+        previewText += entries.map(([k, v]) => `${k}: ${v}`).join('\n');
+      }
+    } else {
+      previewText = String(pv);
+    }
+
+    previewBody.textContent = previewText;
+    previewContainer.hidden = false;
+
+    if (previewText.length > 300) {
+      previewBody.classList.add('truncated');
+      previewToggle.hidden = false;
+      previewToggle.textContent = 'Show more';
+      previewToggle.onclick = () => {
+        const expanded = previewBody.classList.toggle('truncated');
+        previewToggle.textContent = expanded ? 'Show more' : 'Show less';
+      };
+    } else {
+      previewBody.classList.remove('truncated');
+      previewToggle.hidden = true;
+    }
+  } else {
+    previewContainer.hidden = true;
+  }
+
   $('approvalBanner').hidden = false;
   $('approvalDot').hidden = false;
 }
@@ -795,6 +846,7 @@ function showApprovalBanner(approval) {
 function hideApprovalBanner() {
   $('approvalBanner').hidden = true;
   $('approvalDot').hidden = true;
+  $('approvalPreview').hidden = true;
 }
 
 async function respondToApproval(approved) {

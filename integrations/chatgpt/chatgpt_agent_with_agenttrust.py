@@ -2478,6 +2478,29 @@ class BrowserActionExecutor:
         driver = self.browser._actual_driver
         steps_log = []
 
+        def _el_descriptor(el):
+            """Build a replayable element descriptor from a Selenium WebElement."""
+            try:
+                tag = (el.tag_name or "").lower()
+                attrs = {}
+                for attr in ("id", "name", "type", "placeholder", "aria-label", "class", "role"):
+                    val = el.get_attribute(attr)
+                    if val:
+                        attrs[attr] = val.strip()
+                css = ""
+                try:
+                    if attrs.get("id"):
+                        css = f"#{attrs['id']}"
+                    elif attrs.get("name"):
+                        css = f"{tag}[name='{attrs['name']}']"
+                    elif attrs.get("type"):
+                        css = f"{tag}[type='{attrs['type']}']"
+                except Exception:
+                    pass
+                return {"tagName": tag, "css": css, **attrs}
+            except Exception:
+                return {"tagName": "unknown"}
+
         # ── Helpers ──────────────────────────────────────────────
 
         def _wait_ready(seconds=0.3):
@@ -2701,7 +2724,7 @@ class BrowserActionExecutor:
             # Step 1: Dismiss any overlays (QR code, cookie banners, etc.)
             _wait_ready(0.1)
             if _dismiss_overlays():
-                steps_log.append("Dismissed overlay/popup")
+                steps_log.append({"sub_type": "dismiss_overlay", "label": "Dismissed overlay/popup"})
                 _wait_ready(0.1)
 
             # Step 2: Detect current login state
@@ -2710,17 +2733,17 @@ class BrowserActionExecutor:
 
             if password_el and not username_el:
                 _safe_type(password_el, password)
-                steps_log.append("Entered password (password-only page)")
+                steps_log.append({"sub_type": "type_text", "target": _el_descriptor(password_el), "field": "password", "value": "***", "label": "Entered password (password-only page)"})
             elif password_el and username_el:
                 _safe_type(username_el, username)
-                steps_log.append("Entered username/email")
+                steps_log.append({"sub_type": "type_text", "target": _el_descriptor(username_el), "field": "username", "value": username[:3] + "***", "label": "Entered username/email"})
                 password_el = _find_input("password")
                 if password_el:
                     _safe_type(password_el, password)
-                    steps_log.append("Entered password (single-step form)")
+                    steps_log.append({"sub_type": "type_text", "target": _el_descriptor(password_el), "field": "password", "value": "***", "label": "Entered password (single-step form)"})
             elif username_el:
                 _safe_type(username_el, username)
-                steps_log.append("Entered username/email")
+                steps_log.append({"sub_type": "type_text", "target": _el_descriptor(username_el), "field": "username", "value": username[:3] + "***", "label": "Entered username/email"})
                 _wait_ready(0.1)
 
                 continue_btn = _find_continue_button()
@@ -2730,14 +2753,15 @@ class BrowserActionExecutor:
                         btn_text = (continue_btn.text or "").strip()[:30]
                     except StaleElementReferenceException:
                         pass
+                    btn_desc = _el_descriptor(continue_btn)
                     _safe_click(continue_btn)
-                    steps_log.append(f"Clicked continue/next: '{btn_text}'")
+                    steps_log.append({"sub_type": "click", "target": btn_desc, "label": f"Clicked continue/next: '{btn_text}'"})
                 else:
                     try:
                         username_el.send_keys(Keys.RETURN)
                     except StaleElementReferenceException:
                         driver.find_element(By.TAG_NAME, "body").send_keys(Keys.RETURN)
-                    steps_log.append("Pressed Enter after username")
+                    steps_log.append({"sub_type": "press_key", "value": "Enter", "label": "Pressed Enter after username"})
 
                 # Wait for password field — use WebDriverWait instead of fixed sleeps
                 password_el = None
@@ -2756,7 +2780,7 @@ class BrowserActionExecutor:
 
                 if password_el:
                     _safe_type(password_el, password)
-                    steps_log.append("Entered password (after continue)")
+                    steps_log.append({"sub_type": "type_text", "target": _el_descriptor(password_el), "field": "password", "value": "***", "label": "Entered password (after continue)"})
                 else:
                     screenshot = self.take_screenshot()
                     if screenshot and action_id:
@@ -2775,10 +2799,10 @@ class BrowserActionExecutor:
                 password_el = _find_input("password")
                 if password_el:
                     _safe_type(password_el, password)
-                    steps_log.append("Entered password (after overlay dismiss)")
+                    steps_log.append({"sub_type": "type_text", "target": _el_descriptor(password_el), "field": "password", "value": "***", "label": "Entered password (after overlay dismiss)"})
                 elif username_el:
                     _safe_type(username_el, username)
-                    steps_log.append("Entered username (after overlay dismiss)")
+                    steps_log.append({"sub_type": "type_text", "target": _el_descriptor(username_el), "field": "username", "value": username[:3] + "***", "label": "Entered username (after overlay dismiss)"})
                 else:
                     screenshot = self.take_screenshot()
                     if screenshot and action_id:
@@ -2799,7 +2823,7 @@ class BrowserActionExecutor:
             if pw_for_submit:
                 try:
                     pw_for_submit.send_keys(Keys.RETURN)
-                    steps_log.append("Pressed Enter on password field to submit")
+                    steps_log.append({"sub_type": "press_key", "target": _el_descriptor(pw_for_submit), "value": "Enter", "label": "Pressed Enter on password field to submit"})
                 except StaleElementReferenceException:
                     submit_btn = _find_continue_button()
                     if submit_btn:
@@ -2808,11 +2832,12 @@ class BrowserActionExecutor:
                             btn_text = (submit_btn.text or "").strip()[:30]
                         except StaleElementReferenceException:
                             pass
+                        btn_desc = _el_descriptor(submit_btn)
                         _safe_click(submit_btn)
-                        steps_log.append(f"Clicked submit: '{btn_text}'")
+                        steps_log.append({"sub_type": "click", "target": btn_desc, "label": f"Clicked submit: '{btn_text}'"})
                     else:
                         driver.find_element(By.TAG_NAME, "body").send_keys(Keys.RETURN)
-                        steps_log.append("Pressed Enter to submit")
+                        steps_log.append({"sub_type": "press_key", "value": "Enter", "label": "Pressed Enter to submit"})
             else:
                 submit_btn = _find_continue_button()
                 if submit_btn:
@@ -2821,11 +2846,12 @@ class BrowserActionExecutor:
                         btn_text = (submit_btn.text or "").strip()[:30]
                     except StaleElementReferenceException:
                         pass
+                    btn_desc = _el_descriptor(submit_btn)
                     _safe_click(submit_btn)
-                    steps_log.append(f"Clicked submit: '{btn_text}'")
+                    steps_log.append({"sub_type": "click", "target": btn_desc, "label": f"Clicked submit: '{btn_text}'"})
                 else:
                     driver.find_element(By.TAG_NAME, "body").send_keys(Keys.RETURN)
-                    steps_log.append("Pressed Enter to submit")
+                    steps_log.append({"sub_type": "press_key", "value": "Enter", "label": "Pressed Enter to submit"})
 
             # Step 4: Wait for navigation / page load
             # Multi-step logins (Google, Microsoft) may redirect through
@@ -2847,10 +2873,10 @@ class BrowserActionExecutor:
 
             # Dismiss any post-login overlays (e.g. "stay signed in?" prompts)
             if _dismiss_overlays():
-                steps_log.append("Dismissed post-login overlay")
+                steps_log.append({"sub_type": "dismiss_overlay", "label": "Dismissed post-login overlay"})
 
             new_url = driver.current_url
-            steps_log.append(f"Page after login: {new_url}")
+            steps_log.append({"sub_type": "wait_navigation", "url": new_url, "label": f"Page after login: {new_url}"})
 
             # Capture final screenshot
             screenshot = self.take_screenshot()
@@ -2892,7 +2918,7 @@ class BrowserActionExecutor:
                     if phrase in page_text:
                         login_failed = True
                         failure_reason = f"Page shows error: '{phrase}'"
-                        steps_log.append(f"⚠️ Detected login error: '{phrase}'")
+                        steps_log.append({"sub_type": "wait_navigation", "label": f"Detected login error: '{phrase}'"})
                         break
             except Exception:
                 pass
@@ -2909,7 +2935,7 @@ class BrowserActionExecutor:
                         # URL didn't change AND password field is still there
                         login_failed = True
                         failure_reason = "Still on login page after submitting"
-                        steps_log.append("⚠️ Password field still visible — login likely failed")
+                        steps_log.append({"sub_type": "wait_navigation", "label": "Password field still visible - login likely failed"})
                 except Exception:
                     pass
 
@@ -2929,6 +2955,18 @@ class BrowserActionExecutor:
                     "message": f"Login form was submitted but appears to have failed: {failure_reason}. "
                                "Check the page for error details and try a different approach."
                 }
+
+            # Persist sub-steps so routines can replay them individually
+            if action_id and steps_log:
+                try:
+                    numbered = []
+                    for idx, s in enumerate(steps_log):
+                        entry = s if isinstance(s, dict) else {"sub_type": "unknown", "label": str(s)}
+                        entry["order"] = idx + 1
+                        numbered.append(entry)
+                    self.agenttrust.log_sub_actions(action_id, numbered)
+                except Exception:
+                    pass
 
             return {
                 "success": True, "status": "allowed",
@@ -3267,6 +3305,114 @@ class BrowserActionExecutor:
                         results.append({"step": i, "status": "skipped",
                                         "reason": f"No credentials found for {domain or login_url}"})
                         continue
+
+                elif action_type == "type_text":
+                    self._wait_page_ready(timeout=10)
+                    if not target and not form_data:
+                        results.append({"step": i, "status": "skipped", "reason": "no target for type_text"})
+                        continue
+                    el_target = target or {}
+                    text_value = ""
+                    field_type = (form_data or {}).get("field", "") if form_data else (el_target.get("field", ""))
+                    raw_val = (form_data or {}).get("value", "") if form_data else ""
+                    if field_type == "password" or "***" in str(raw_val):
+                        lookup_domain = domain or ""
+                        if not lookup_domain and url:
+                            try:
+                                from urllib.parse import urlparse
+                                lookup_domain = urlparse(url).hostname or ""
+                            except Exception:
+                                pass
+                        if lookup_domain:
+                            cred_user, cred_pass = self._resolve_credentials(lookup_domain)
+                            text_value = cred_pass if field_type == "password" else cred_user
+                        if not text_value:
+                            results.append({"step": i, "status": "skipped", "reason": f"No credentials for {domain}"})
+                            continue
+                    elif field_type == "username" and ("***" in str(raw_val) or not raw_val):
+                        lookup_domain = domain or ""
+                        if not lookup_domain and url:
+                            try:
+                                from urllib.parse import urlparse
+                                lookup_domain = urlparse(url).hostname or ""
+                            except Exception:
+                                pass
+                        if lookup_domain:
+                            cred_user, _ = self._resolve_credentials(lookup_domain)
+                            text_value = cred_user
+                        if not text_value:
+                            results.append({"step": i, "status": "skipped", "reason": f"No credentials for {domain}"})
+                            continue
+                    else:
+                        text_value = raw_val
+
+                    from selenium.webdriver.common.by import By
+                    driver = self.browser._actual_driver
+                    el = None
+                    css = el_target.get("css", "")
+                    if css:
+                        try:
+                            el = driver.find_element(By.CSS_SELECTOR, css)
+                        except Exception:
+                            pass
+                    if not el and el_target.get("name"):
+                        try:
+                            el = driver.find_element(By.NAME, el_target["name"])
+                        except Exception:
+                            pass
+                    if not el and el_target.get("id"):
+                        try:
+                            el = driver.find_element(By.ID, el_target["id"])
+                        except Exception:
+                            pass
+                    if el:
+                        try:
+                            el.clear()
+                        except Exception:
+                            pass
+                        el.send_keys(text_value)
+                        result = {"status": "allowed", "success": True}
+                    else:
+                        print(f"           WARNING: Could not find target element for type_text")
+                        results.append({"step": i, "status": "error", "error": "Target element not found"})
+                        continue
+
+                elif action_type == "press_key":
+                    self._wait_page_ready(timeout=5)
+                    key_name = ""
+                    if form_data and form_data.get("value"):
+                        key_name = form_data["value"]
+                    elif target and target.get("value"):
+                        key_name = target["value"]
+                    else:
+                        key_name = "Enter"
+
+                    from selenium.webdriver.common.by import By
+                    from selenium.webdriver.common.keys import Keys as K
+                    key_map = {"Enter": K.RETURN, "Tab": K.TAB, "Escape": K.ESCAPE}
+                    key_to_send = key_map.get(key_name, key_name)
+
+                    driver = self.browser._actual_driver
+                    el = None
+                    if target and target.get("css"):
+                        try:
+                            el = driver.find_element(By.CSS_SELECTOR, target["css"])
+                        except Exception:
+                            pass
+                    if el:
+                        el.send_keys(key_to_send)
+                    else:
+                        driver.find_element(By.TAG_NAME, "body").send_keys(key_to_send)
+                    result = {"status": "allowed", "success": True}
+
+                elif action_type == "dismiss_overlay":
+                    self.dismiss_overlays()
+                    result = {"status": "allowed", "success": True}
+
+                elif action_type == "wait_navigation":
+                    self._wait_page_ready(timeout=15)
+                    result = {"status": "allowed", "success": True}
+
                 else:
                     results.append({"step": i, "status": "skipped", "reason": f"unknown type: {action_type}"})
                     continue

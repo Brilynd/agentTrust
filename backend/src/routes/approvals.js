@@ -11,7 +11,7 @@ const approvalWaiters = new Map();
 
 let approvalCounter = 0;
 
-function createApproval({ sessionId, actionId, type, domain, url, riskLevel, reason, target }) {
+function createApproval({ sessionId, actionId, type, domain, url, riskLevel, reason, target, preview, impactSummary }) {
   const id = `approval_${Date.now()}_${++approvalCounter}`;
   const approval = {
     id,
@@ -23,6 +23,8 @@ function createApproval({ sessionId, actionId, type, domain, url, riskLevel, rea
     riskLevel,
     reason,
     target: target || null,
+    preview: preview || null,
+    impactSummary: impactSummary || null,
     status: 'pending',
     createdAt: new Date().toISOString()
   };

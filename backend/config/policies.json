@@ -39,5 +39,30 @@
   "requires_step_up": [
     "high"
   ],
-  "domain_trust_profiles": {}
+  "domain_trust_profiles": {},
+  "impact_keywords": [
+    "send",
+    "email",
+    "message",
+    "compose",
+    "reply",
+    "forward",
+    "publish",
+    "comment",
+    "invite",
+    "create issue",
+    "new message",
+    "post"
+  ],
+  "content_actions": [
+    "/mail/send",
+    "/messages/new",
+    "/issues/new",
+    "/compose",
+    "/send",
+    "/comments",
+    "/events",
+    "/publish",
+    "/invite"
+  ]
 }

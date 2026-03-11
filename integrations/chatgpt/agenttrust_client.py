@@ -468,6 +468,55 @@ class AgentTrustClient:
                 pass
         threading.Thread(target=_upload, daemon=True).start()
     
+    def log_sub_actions(self, parent_action_id: str, steps: list) -> Optional[Dict]:
+        """
+        Persist sub-action steps (e.g. individual auto_login interactions)
+        as children of an existing parent action.
+
+        Args:
+            parent_action_id: The id of the parent action these belong to.
+            steps: List of dicts, each with keys:
+                sub_type  – type_text | click | press_key | dismiss_overlay | wait_navigation
+                target    – element descriptor dict (optional)
+                value     – typed text or key name (optional, passwords redacted)
+                field     – field purpose like "username" or "password" (optional)
+                label     – human-readable description
+                order     – 1-based sequence number
+        """
+        if self.dev_mode or not parent_action_id or not steps:
+            return None
+        try:
+            token = self._get_token()
+            payload = {
+                "parentActionId": parent_action_id,
+                "steps": [
+                    {
+                        "subType": s.get("sub_type", "sub_action"),
+                        "target": s.get("target"),
+                        "value": s.get("value"),
+                        "field": s.get("field"),
+                        "label": s.get("label", ""),
+                        "order": s.get("order", i + 1),
+                        "url": s.get("url"),
+                    }
+                    for i, s in enumerate(steps)
+                ]
+            }
+            resp = requests.post(
+                f"{self.api_url}/actions/sub",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=10
+            )
+            if resp.status_code == 201:
+                return resp.json()
+        except Exception as e:
+            print(f"[AgentTrust] Failed to log sub-actions: {e}")
+        return None
+
     def store_prompt(self, content: str, session_id: Optional[str] = None) -> Optional[str]:
         """Store a user prompt and return the prompt ID."""
         if self.dev_mode:

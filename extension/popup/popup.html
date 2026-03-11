@@ -90,7 +90,13 @@
           <div class="approval-details">
             <strong>Step-Up Approval Required</strong>
             <span id="approvalDesc" class="approval-desc"></span>
+            <span id="approvalImpact" class="approval-impact" hidden></span>
           </div>
+        </div>
+        <div id="approvalPreview" class="approval-preview" hidden>
+          <div class="approval-preview-header">Content to be submitted:</div>
+          <div id="approvalPreviewBody" class="approval-preview-body"></div>
+          <button type="button" class="approval-preview-toggle" id="approvalPreviewToggle" hidden>Show more</button>
         </div>
         <div class="approval-actions">
           <button id="approvalApproveBtn" class="btn btn-approve">Approve</button>

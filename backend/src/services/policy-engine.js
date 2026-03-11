@@ -34,7 +34,11 @@ function getDefaultPolicies() {
     medium_risk_keywords: ['submit', 'post', 'send', 'update', 'edit'],
     financial_domains: ['bank', 'paypal', 'stripe', 'venmo'],
     requires_step_up: ['high'],
-    domain_trust_profiles: {}
+    domain_trust_profiles: {},
+    impact_keywords: ['send', 'email', 'message', 'compose', 'reply', 'forward',
+      'publish', 'comment', 'invite', 'create issue', 'new message', 'post'],
+    content_actions: ['/mail/send', '/messages/new', '/issues/new', '/compose',
+      '/send', '/comments', '/events', '/publish', '/invite']
   };
 }
 
@@ -81,6 +85,19 @@ async function classifyRisk(actionData) {
   // Medium risk keywords
   if (policies.medium_risk_keywords.some(keyword => allText.includes(keyword))) {
     riskScore += 1;
+  }
+
+  // Impact-aware keywords: content-sending actions (send email, post comment, etc.)
+  // should be treated as at least medium risk regardless of HTTP method
+  const impactKeywords = policies.impact_keywords || [];
+  if (impactKeywords.some(kw => allText.includes(kw))) {
+    riskScore += 2;
+  }
+
+  // Content-action URL patterns: always require approval
+  const contentActions = policies.content_actions || [];
+  if (contentActions.some(pattern => urlLower.includes(pattern))) {
+    riskScore += 3;
   }
   
   // Form-submit type actions on sensitive domains get extra score

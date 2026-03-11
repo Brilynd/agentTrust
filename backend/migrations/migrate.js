@@ -235,6 +235,21 @@ async function migrate() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_user_connections_user_id ON user_connections(user_id)
     `);
+
+    // Add parent_action_id for sub-action tracking (auto_login sub-steps)
+    await pool.query(`
+      ALTER TABLE actions
+      ADD COLUMN IF NOT EXISTS parent_action_id VARCHAR(255)
+    `);
+
+    await pool.query(`
+      ALTER TABLE actions
+      ADD COLUMN IF NOT EXISTS sub_order INTEGER
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_actions_parent ON actions(parent_action_id)
+    `);
     
     console.log('Migrations completed successfully!');
     
