@@ -1761,6 +1761,21 @@ class BrowserActionExecutor:
                     except Exception:
                         pass
                     actual_url = driver.current_url
+
+                    # Guard: if Google redirected to Images, force web search
+                    if ("google.com/imghp" in actual_url
+                            or "images.google.com" in actual_url):
+                        _webhp = "https://www.google.com/webhp?hl=en"
+                        driver.get(_webhp)
+                        try:
+                            WebDriverWait(driver, 5).until(
+                                lambda d: d.execute_script("return document.readyState") == "complete"
+                            )
+                        except Exception:
+                            pass
+                        actual_url = driver.current_url
+                        print(f"  REDIRECT FIX: Google Images → {actual_url}")
+
                     title = (driver.title or "").lower()
                     body_text = ""
                     try:
@@ -4009,15 +4024,22 @@ SEARCH & FORM SUBMISSION:
   prefer pressing Enter over finding a submit button.
 
 LOGIN FLOW — MANDATORY:
-- When you need to log into a site, FIRST navigate to that site's
-  login page (use open_new_tab or navigate). THEN follow this sequence:
-  1. Call get_saved_credentials with the site's domain.
-  2. If credentials are found, call auto_login immediately.
-  3. auto_login handles multi-step forms, entering both username
+- BEFORE attempting any login, CHECK if you are ALREADY LOGGED IN.
+  Signs of being logged in: inbox is loaded (URL contains /inbox),
+  compose button visible, sign-out/logout link present,
+  account/profile menu visible, dashboard or feed loaded.
+  If already logged in, SKIP get_saved_credentials and auto_login entirely.
+- Only call get_saved_credentials + auto_login when you are on a
+  site's login page AND the page has login input fields (email/password).
+- Do NOT pre-fetch credentials for sites you haven't navigated to yet.
+- When you DO need to log in:
+  1. Navigate to the site's OWN login page FIRST.
+  2. Call get_saved_credentials with the site's domain.
+  3. If credentials are found, call auto_login immediately.
+  4. auto_login handles multi-step forms, entering both username
      AND password, clicking continue/next, and dismissing popups.
-  4. NEVER manually type usernames or passwords with type_text.
-     auto_login does this for you with proper security validation.
-  5. Only ask the user if NO saved credentials exist.
+  5. NEVER manually type usernames or passwords with type_text.
+  6. Only ask the user if NO saved credentials exist.
 - ⚠ auto_login ONLY works on the site's OWN login page.
   Do NOT call auto_login while on an unrelated site.
   Example: to log into Gmail, navigate to mail.google.com FIRST.
@@ -4389,30 +4411,14 @@ ROUTINES:
                 
                 if not _is_provider_page:
                     # The page is NOT a known domain for this email provider.
-                    # However, check if the page itself has login fields —
-                    # if it does, the user might genuinely want to log in
-                    # with their email on a third-party site (many sites
-                    # accept email+password). We only block if the page has
-                    # NO login fields at all (meaning the agent is confused).
-                    has_login_inputs = False
-                    try:
-                        elements = self.browser_executor.get_visible_elements()
-                        for el in (elements or []):
-                            itype = (el.get("input_type") or el.get("type") or "").lower()
-                            name = (el.get("name") or "").lower()
-                            if itype in ("email", "password", "text") or name in ("email", "username", "password", "login_email"):
-                                has_login_inputs = True
-                                break
-                    except Exception:
-                        has_login_inputs = True  # assume yes on error
-                    
-                    if not has_login_inputs:
-                        return {
-                            "success": False,
-                            "message": f"Current page ({_guard_domain}) is not a login page for {_cred_domain}. "
-                                       f"Navigate to {_cred_domain}'s login page FIRST, then call auto_login. "
-                                       f"For example, use open_new_tab to go to the correct login page."
-                        }
+                    # Always block: major provider credentials (Gmail, Outlook,
+                    # etc.) should never be auto-filled on unrelated sites.
+                    return {
+                        "success": False,
+                        "message": f"Current page ({_guard_domain}) is not a {_cred_domain} login page. "
+                                   f"Navigate to {_cred_domain}'s login page FIRST, then call auto_login. "
+                                   f"For example, use open_new_tab to go to the correct login page."
+                    }
 
             # --- KNOWN_LOGIN_URLS: if the page has no login fields, try
             # redirecting to the known login URL for common services ---
@@ -4480,6 +4486,43 @@ ROUTINES:
                             current_url = self.browser_executor.get_current_url() or current_url
                     except Exception as e:
                         print(f"   ⚠️  Redirect failed: {e}")
+
+            # Early exit: detect if the user is already logged in
+            _already_logged_in = False
+            _url_lower = current_url.lower()
+            if any(frag in _url_lower for frag in ("/inbox", "/#inbox", "/mail/u/",
+                                                    "/feed", "/home", "/dashboard")):
+                _already_logged_in = True
+            if not _already_logged_in:
+                try:
+                    _login_check_els = self.browser_executor.get_visible_elements()
+                    _has_login_fields = False
+                    for _el in (_login_check_els or []):
+                        _itype = (_el.get("input_type") or _el.get("type") or "").lower()
+                        _ename = (_el.get("name") or "").lower()
+                        if _itype in ("email", "password") or _ename in ("email", "username", "password", "passwd"):
+                            _has_login_fields = True
+                            break
+                    if not _has_login_fields:
+                        for _el in (_login_check_els or []):
+                            _el_text = (_el.get("text") or "").lower()
+                            _el_aria = (_el.get("aria_label") or _el.get("aria-label") or "").lower()
+                            if any(kw in _el_text for kw in ("sign out", "log out", "logout", "compose")):
+                                _already_logged_in = True
+                                break
+                            if any(kw in _el_aria for kw in ("sign out", "log out", "compose", "account menu")):
+                                _already_logged_in = True
+                                break
+                except Exception:
+                    pass
+            if _already_logged_in:
+                print(f"🔐 Already logged in on {current_url} — skipping auto_login")
+                return {
+                    "success": True,
+                    "already_logged_in": True,
+                    "message": "Already logged in — no login needed.",
+                    "current_url": current_url,
+                }
 
             print(f"🔐 Auto-login on {current_url}")
             result = self.browser_executor.auto_login(url=current_url, username=username, password=password)
@@ -4692,6 +4735,63 @@ ROUTINES:
         print("="*70)
 
 
+def _kill_stale_browsers():
+    """Kill leftover chromedriver/chrome processes from previous runs.
+
+    Only targets chromedriver processes and the Selenium-managed Chrome
+    instances that use the agent's custom profile directory.  Regular
+    user Chrome windows are NOT affected because they don't run under
+    chromedriver.
+    """
+    import subprocess, platform
+    if platform.system() != "Windows":
+        # On Linux/macOS, pkill chromedriver is sufficient
+        try:
+            subprocess.run(["pkill", "-f", "chromedriver"], capture_output=True, timeout=5)
+        except Exception:
+            pass
+        return
+
+    killed = []
+    try:
+        # 1. Kill chromedriver.exe — this also orphans its managed Chrome
+        r = subprocess.run(
+            ["taskkill", "/F", "/IM", "chromedriver.exe"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            killed.append("chromedriver")
+    except Exception:
+        pass
+
+    try:
+        # 2. Kill Chrome instances launched with our custom profile.
+        #    We identify them by the --user-data-dir flag pointing at
+        #    .chrome-profile inside this directory.
+        profile_marker = ".chrome-profile"
+        wmic = subprocess.run(
+            ["wmic", "process", "where",
+             "name='chrome.exe'", "get", "processid,commandline"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in (wmic.stdout or "").splitlines():
+            if profile_marker in line:
+                parts = line.strip().split()
+                pid = parts[-1] if parts else None
+                if pid and pid.isdigit():
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", pid],
+                        capture_output=True, timeout=5,
+                    )
+                    killed.append(f"chrome(pid={pid})")
+    except Exception:
+        pass
+
+    if killed:
+        print(f"🧹 Cleaned up stale processes: {', '.join(killed)}")
+        import time; time.sleep(1)
+
+
 def main():
     """
     Run real ChatGPT agent with AgentTrust - 100% enforcement
@@ -4699,6 +4799,8 @@ def main():
     CRITICAL: AgentTrust validation is MANDATORY for all browser actions.
     The BrowserActionExecutor enforces this - there is no way to bypass it.
     """
+    _kill_stale_browsers()
+
     print("="*70)
     print("ChatGPT Agent with AgentTrust - 100% Enforcement")
     print("="*70)

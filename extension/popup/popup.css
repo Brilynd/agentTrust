@@ -883,29 +883,29 @@ body.popout .feed-body {
 
 .approval-banner-inner {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 16px;
 }
 
 .approval-info {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  min-width: 0;
-  flex: 1;
+  width: 100%;
 }
 
 .approval-icon {
   font-size: 20px;
   flex-shrink: 0;
+  line-height: 1;
 }
 
 .approval-details {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
   min-width: 0;
 }
 
@@ -913,6 +913,7 @@ body.popout .feed-body {
   font-size: 12px;
   font-weight: 700;
   color: #92400e;
+  display: block;
 }
 
 .approval-desc {
@@ -920,6 +921,7 @@ body.popout .feed-body {
   color: #78350f;
   line-height: 1.4;
   word-break: break-word;
+  display: block;
 }
 
 .approval-impact {
@@ -927,6 +929,7 @@ body.popout .feed-body {
   font-weight: 600;
   color: #78350f;
   line-height: 1.4;
+  display: block;
 }
 
 .approval-preview {
@@ -977,6 +980,7 @@ body.popout .feed-body {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  align-self: flex-end;
 }
 
 .btn-approve {

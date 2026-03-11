@@ -105,7 +105,7 @@ async function classifyRisk(actionData) {
     riskScore += 1;
   }
 
-  // Clicks on form control elements (buttons, submit inputs, selects)
+  // Clicks on form control elements (buttons, submit inputs, selects, divs with role="button")
   // get elevated risk since they can trigger state changes
   const FORM_CONTROL_TAGS = ['button', 'select', 'option', 'input'];
   const FORM_ACTION_TEXT = ['submit', 'save', 'confirm', 'apply', 'continue',
@@ -113,11 +113,24 @@ async function classifyRisk(actionData) {
     'log in', 'login', 'register', 'sign up', 'checkout', 'place order'];
   if (type === 'click') {
     const tagLower = (target?.tagName || '').toLowerCase();
-    if (FORM_CONTROL_TAGS.includes(tagLower)) {
+    const roleAttr = (target?.role || target?.ariaRole || '').toLowerCase();
+    if (FORM_CONTROL_TAGS.includes(tagLower) || roleAttr === 'button') {
       riskScore += 1;
     }
     if (FORM_ACTION_TEXT.some(ft => targetText.includes(ft))) {
       riskScore += 1;
+    }
+  }
+
+  // Email/messaging domains: sending content on these should always be high risk
+  const EMAIL_DOMAINS = ['mail.google.com', 'gmail.com', 'outlook.com', 'outlook.live.com',
+    'mail.yahoo.com', 'mail.live.com', 'protonmail.com'];
+  if (type === 'click' || type === 'form_submit') {
+    if (EMAIL_DOMAINS.some(ed => domainLower.includes(ed))) {
+      if (FORM_ACTION_TEXT.some(ft => targetText.includes(ft)) ||
+          contentActions.some(pattern => urlLower.includes(pattern))) {
+        riskScore += 2;
+      }
     }
   }
 
@@ -173,24 +186,24 @@ async function checkPolicy(actionData, agentScopes) {
     }
   }
   
-  // Check if step-up is required based on risk level
+  // Check if step-up is required based on risk level.
+  // High-risk actions ALWAYS require human approval — the M2M token's
+  // scopes cannot self-approve dangerous actions.
   if (policies.requires_step_up.includes(riskLevel)) {
-    const hasHighRiskScope = agentScopes.includes('browser.high_risk');
-    
-    if (!hasHighRiskScope) {
-      return {
-        allowed: false,
-        requiresStepUp: true,
-        reason: `${riskLevel}-risk action requires user approval`
-      };
-    }
+    return {
+      allowed: false,
+      requiresStepUp: true,
+      reason: `${riskLevel}-risk action requires user approval`
+    };
   }
   
   // Check scope requirements — offer step-up approval instead of flat denial.
   // This applies to form_submit AND clicks on form control elements
-  // (buttons, submit inputs) that could trigger state changes.
+  // (buttons, submit inputs, divs with role="button") that could trigger state changes.
+  const tagLower = (actionData.target?.tagName || '').toLowerCase();
+  const roleAttr = (actionData.target?.role || actionData.target?.ariaRole || '').toLowerCase();
   const isFormControl = actionData.type === 'click' &&
-    ['button', 'select', 'input'].includes((actionData.target?.tagName || '').toLowerCase());
+    (['button', 'select', 'input'].includes(tagLower) || roleAttr === 'button');
   if ((actionData.type === 'form_submit' || isFormControl) &&
       !agentScopes.includes('browser.form.submit')) {
     return {

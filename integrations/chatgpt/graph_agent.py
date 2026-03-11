@@ -47,6 +47,7 @@ class AgentState(TypedDict, total=False):
     visible_elements: list            # Interactive elements on page
     page_vision: str                  # Vision LLM classification of the page
     has_overlay: bool                 # Whether an overlay/popup was detected
+    login_state: str                  # "ALREADY LOGGED IN (...)" or ""
 
     # --- Turn messages (OpenAI API) ---
     turn_messages: list               # Tool call/result pairs this turn
@@ -58,6 +59,7 @@ class AgentState(TypedDict, total=False):
     action_category: str              # "mutating" | "read_only" | "none"
     consecutive_failures: int
     total_actions: int
+    recent_actions: list              # Last N action signatures for loop detection
 
     # --- Output ---
     final_response: str
@@ -82,18 +84,32 @@ MUTATING_ACTIONS = {
     "open_new_tab",
     "switch_to_tab",
     "close_tab",
+    "scroll_page",
+}
+
+# Subset of mutating actions that represent real task progress.
+# Only these reset the consecutive failure counter on success.
+# scroll_page is deliberately excluded — it changes viewport but
+# doesn't indicate the agent is making forward progress.
+PROGRESS_ACTIONS = {
+    "agenttrust_browser_action",
+    "open_link",
+    "type_text",
+    "auto_login",
+    "open_new_tab",
+    "switch_to_tab",
+    "close_tab",
 }
 
 # Read-only actions → agent can continue without re-observing
 READ_ONLY_ACTIONS = {
     "get_saved_credentials",
     "wait_for_element",
-    "scroll_page",
     "call_external_api",
     "list_tabs",
 }
 
-MAX_ACTIONS = 25
+MAX_ACTIONS = 20
 MAX_CONSECUTIVE_FAILS = 3
 
 
@@ -318,9 +334,13 @@ def build_graph(agent):
                 + "\n".join(summary_lines)
             )
 
+        from datetime import datetime as _dt_plan
+        _today_plan = _dt_plan.now().strftime("%A, %B %d, %Y")
+
         plan_prompt = (
-            "Break down this user request into 2-6 concrete sub-goals.\n"
-            "Return ONLY a JSON array of strings — no commentary.\n\n"
+            "Break down this user request into 2-4 broad sub-goals.\n"
+            "Return ONLY a JSON array of strings — no commentary.\n"
+            f"Today's date: {_today_plan}\n\n"
             "API-FIRST RULE (CRITICAL):\n"
             "If the request involves GitHub (repos, issues, PRs, profile) or "
             "Google Calendar (events, scheduling), the FIRST step MUST be "
@@ -331,8 +351,18 @@ def build_graph(agent):
             "get user profile\n"
             "- Google Calendar API examples: list events, create event, "
             "check availability\n\n"
-            "For all other tasks, use browser automation. Each sub-goal "
-            "should be ONE action or a small related group.\n\n"
+            "For all other tasks, use browser automation.\n\n"
+            "PLANNING RULES:\n"
+            "- COMBINE related steps into ONE goal. Search + reading articles = one goal.\n"
+            "  Composing + sending an email = one goal. Do NOT split them.\n"
+            "- When the task requires RESEARCH, say 'Search Google for X, visit\n"
+            "  top results, and gather detailed findings' — always use\n"
+            "  https://www.google.com, NEVER Images.\n"
+            "- When the task requires EMAIL, say 'Navigate to Gmail, compose and send\n"
+            "  an email to X with the findings'.\n"
+            "- Goals must be in the correct ORDER. Research BEFORE email. Email BEFORE\n"
+            "  calendar invites.\n"
+            "- Keep to 2-4 goals maximum. Fewer is better.\n\n"
             "IMPORTANT: If the recent conversation shows that prior steps were "
             "already completed (e.g. credentials found, login attempted, page "
             "already loaded), do NOT repeat those steps. Start from where the "
@@ -340,10 +370,18 @@ def build_graph(agent):
             f"User request: {state['user_request']}{browser_ctx}\n"
             + (history_summary + "\n" if history_summary else "\n")
             + "Examples:\n"
-            "  Browser task: [\"Navigate to amazon.com\", \"Search for 'wireless "
-            "headphones'\", \"Click the first result\", \"Add to cart\"]\n"
-            "  API task: [\"Use call_external_api to list GitHub repos\", "
-            "\"Report results to user\"]\n"
+            "  Browser task: [\"Navigate to amazon.com, search for 'wireless "
+            "headphones', and add the first result to cart\"]\n"
+            "  Research + email: [\"Search https://www.google.com for the topic, "
+            "visit top results to read articles, and gather detailed findings\", "
+            "\"Navigate to mail.google.com, compose and send an email to X with "
+            "the findings\"]\n"
+            "  Research + email + calendar: [\"Search https://www.google.com for "
+            "the topic, visit top articles, and gather detailed findings\", "
+            "\"Navigate to mail.google.com, compose and send an email to X with "
+            "the findings\", "
+            "\"Use call_external_api to create a Google Calendar event\"]\n"
+            "  API task: [\"Use call_external_api to list GitHub repos\"]\n"
             + (rag_context + "\n" if rag_context else "")
             + (cred_hint if cred_hint else "") +
             "\nJSON array:"
@@ -437,7 +475,7 @@ def build_graph(agent):
             # can detect and attempt to solve it.
             captcha_keywords = ("captcha", "recaptcha", "hcaptcha", "verify you're human",
                                 "verify you are human", "i'm not a robot", "i am not a robot",
-                                "security check", "challenge", "prove you're human")
+                                "prove you're human")
             page_lower = text.lower()
             if any(kw in page_lower for kw in captcha_keywords):
                 try:
@@ -521,6 +559,32 @@ def build_graph(agent):
                 except Exception as e:
                     print(f"  CAPTCHA check skipped: {e}")
 
+        # --- Login state detection ---
+        login_state = ""
+        if url and elements:
+            logged_in_signals = []
+            url_lower = url.lower()
+            if any(frag in url_lower for frag in ("/inbox", "/#inbox", "/mail/u/",
+                                                   "/feed", "/home", "/dashboard",
+                                                   "/my-account", "/account")):
+                logged_in_signals.append("authenticated page loaded")
+            for el in elements:
+                el_text = (el.get("text") or "").lower()
+                el_aria = (el.get("aria_label") or el.get("aria-label") or "").lower()
+                if any(kw in el_text for kw in ("sign out", "log out", "logout",
+                                                 "signout", "sign off")):
+                    logged_in_signals.append("sign-out link visible")
+                    break
+                if el_text == "compose" or el_aria == "compose":
+                    logged_in_signals.append("compose button visible")
+                    break
+                if any(kw in el_aria for kw in ("my account", "account menu",
+                                                 "profile", "user menu")):
+                    logged_in_signals.append("account/profile menu visible")
+                    break
+            if logged_in_signals:
+                login_state = f"ALREADY LOGGED IN ({', '.join(logged_in_signals)})"
+
         # --- Tab info ---
         active_tab = ""
         open_tabs = []
@@ -535,6 +599,8 @@ def build_graph(agent):
         label = url[:80] if url else "(no page loaded)"
         tab_count = len(open_tabs) if open_tabs else 1
         print(f"  OBSERVE: {label}  [{active_tab}] ({tab_count} tab{'s' if tab_count != 1 else ''})")
+        if login_state:
+            print(f"  LOGIN: {login_state}")
         if page_vision:
             print(f"  VISION: {page_vision}")
 
@@ -545,6 +611,7 @@ def build_graph(agent):
             "visible_elements": elements,
             "page_vision": page_vision,
             "has_overlay": has_overlay,
+            "login_state": login_state,
             "active_tab": active_tab,
             "open_tabs": open_tabs,
         }
@@ -554,14 +621,6 @@ def build_graph(agent):
     # ================================================================== #
     def agent_node(state: AgentState) -> dict:
         """Call the LLM with current context and available tools."""
-
-        # Current goal
-        goal_idx = state.get("current_goal_index", 0)
-        sub_goals = state.get("sub_goals", [])
-        current_goal = (
-            sub_goals[goal_idx] if goal_idx < len(sub_goals) else "Complete the task"
-        )
-        remaining = sub_goals[goal_idx + 1 :] if goal_idx + 1 < len(sub_goals) else []
 
         elements_str = ""
         if state.get("visible_elements"):
@@ -589,24 +648,55 @@ def build_graph(agent):
         elif open_tabs:
             tabs_info = f"Active tab: {open_tabs[0].get('label', 'main')}\n"
 
+        login_info = ""
+        if state.get("login_state"):
+            login_info = f"⚠ {state['login_state']} — do NOT call get_saved_credentials or auto_login.\n"
+
+        # Hint when the page has no interactive elements
+        nav_hint = ""
+        cur_url = state.get('current_url', '')
+        if not elements_str or elements_str == "[]":
+            nav_hint = (
+                "⚠ NO INTERACTIVE ELEMENTS on this page. Use open_link to "
+                "navigate to the site you need (e.g. https://www.google.com).\n"
+            )
+        elif cur_url and ("localhost" in cur_url or "about:blank" in cur_url
+                          or cur_url == "data:,"):
+            nav_hint = (
+                "⚠ You are on a placeholder page. Use open_link to navigate "
+                "to the site you need.\n"
+            )
+
+        goal_idx = state.get("current_goal_index", 0)
+        sub_goals = state.get("sub_goals") or []
+        current_goal = (
+            sub_goals[goal_idx] if goal_idx < len(sub_goals) else "Complete the task"
+        )
+        remaining = sub_goals[goal_idx + 1:] if goal_idx + 1 < len(sub_goals) else []
+
         observation = (
             f"\n[PAGE STATE]\n"
             f"URL: {state.get('current_url', 'not loaded')}\n"
             f"Title: {state.get('page_title', '')}\n"
+            f"{nav_hint}"
+            f"{login_info}"
             f"{vision_info}"
             f"{tabs_info}"
             f"Content (truncated):\n{state.get('page_text', '')[:4000]}\n\n"
             f"Interactive elements:\n{elements_str}\n\n"
-            f"[TASK PROGRESS]\n"
-            f"Plan:\n{state.get('plan_text', '')}\n"
-            f"Current goal ({goal_idx + 1}/{len(sub_goals)}): {current_goal}\n"
-            f"Remaining goals: {remaining if remaining else '(this is the last goal)'}\n"
+            f"[TASK]\n"
+            f">>> CURRENT GOAL ({goal_idx + 1}/{len(sub_goals)}): {current_goal}\n"
+            f"Remaining: {remaining if remaining else '(none — this is the last goal)'}\n"
             f"Actions used: {state.get('total_actions', 0)}/{MAX_ACTIONS}\n"
         )
 
+        from datetime import datetime as _dt
+        _today = _dt.now().strftime("%A, %B %d, %Y")
+
         system_prompt = (
             "You are a browser automation agent with FULL control of a real browser.\n"
-            "You perform tasks by actually navigating, clicking, typing, and reading.\n\n"
+            "You perform tasks by actually navigating, clicking, typing, and reading.\n"
+            f"Today's date: {_today}\n\n"
             "API-FIRST RULE (HIGHEST PRIORITY):\n"
             "When the current goal involves GitHub (repos, issues, PRs, user profile)\n"
             "or Google Calendar (events, scheduling), ALWAYS use call_external_api\n"
@@ -650,19 +740,26 @@ def build_graph(agent):
             "- For any form with a single input (search, verification code, etc.),\n"
             "  prefer pressing Enter over finding and clicking a submit button.\n\n"
             "LOGIN FLOW — MANDATORY:\n"
-            "- When you need to log into a site, FIRST navigate to that site's\n"
-            "  login page (use open_new_tab or navigate). THEN follow this sequence:\n"
-            "  1. Call get_saved_credentials with the site's domain.\n"
-            "  2. If credentials are found, call auto_login immediately.\n"
-            "  3. auto_login handles multi-step forms, entering both username\n"
+            "- BEFORE attempting any login, CHECK if you are ALREADY LOGGED IN.\n"
+            "  The observation above includes a login-state line when the page\n"
+            "  shows authenticated indicators (inbox loaded, compose button,\n"
+            "  sign-out link, account/profile menu). If you see\n"
+            "  '⚠ ALREADY LOGGED IN', SKIP get_saved_credentials and auto_login.\n"
+            "- Only call get_saved_credentials + auto_login when you are on a\n"
+            "  site's login page AND the page has login input fields.\n"
+            "- When you DO need to log in:\n"
+            "  1. Navigate to the site's OWN login page FIRST.\n"
+            "  2. Call get_saved_credentials with the site's domain.\n"
+            "  3. If credentials are found, call auto_login immediately.\n"
+            "  4. auto_login handles multi-step forms, entering both username\n"
             "     AND password, clicking continue/next, and dismissing popups.\n"
-            "  4. NEVER manually type usernames or passwords with type_text.\n"
-            "     auto_login does this for you with proper security validation.\n"
-            "  5. Only ask the user if NO saved credentials exist.\n"
+            "  5. NEVER manually type usernames or passwords with type_text.\n"
+            "  6. Only ask the user if NO saved credentials exist.\n"
             "- ⚠ auto_login ONLY works on the site's OWN login page.\n"
             "  Do NOT call auto_login while on an unrelated site.\n"
             "  Example: to log into Gmail, navigate to mail.google.com FIRST.\n"
-            "- This applies to ALL sites: Google, Gmail, Amazon, eBay, etc.\n\n"
+            "- Do NOT pre-fetch credentials for sites you haven't navigated to yet.\n"
+            "  Only look up credentials when you are ABOUT to log in.\n\n"
             "EMAIL & VERIFICATION CODE WORKFLOW — CRITICAL:\n"
             "- In email inboxes (Gmail, Outlook, Yahoo), the NEWEST emails\n"
             "  appear at the TOP of the inbox list.\n"
@@ -695,25 +792,76 @@ def build_graph(agent):
             "  5. switch_to_tab back to the ORIGINAL site\n"
             "  6. Type the code into the verification field on that site\n"
             "  7. close_tab the email tab when done\n\n"
+            "INFORMATION EXTRACTION — READ BEFORE ACTING:\n"
+            "- The Content section in [PAGE STATE] contains the visible text on\n"
+            "  the current page. READ IT before deciding your next action.\n"
+            "- REMEMBER what you read! When you later compose an email or report,\n"
+            "  use the information you already extracted from earlier pages.\n"
+            "  Your full conversation history is preserved.\n\n"
+            "WEB SEARCH & RESEARCH — MANDATORY STEPS:\n"
+            "- To search the web, navigate to https://www.google.com (NOT imghp,\n"
+            "  NOT images.google.com). Use the main search page.\n"
+            "- Type your query into the search box and press Enter.\n"
+            "- After search results load, read the snippets for an overview.\n"
+            "- Google snippets alone are NOT enough for research goals.\n"
+            "  You MUST open_link to at least 1-2 of the top results and\n"
+            "  READ the full article content on those pages.\n"
+            "- After reading an article, go_back to search results if you\n"
+            "  need more depth, or move on once you have solid information.\n"
+            "- NEVER go_back more than twice. If a page didn't help, try a\n"
+            "  DIFFERENT site directly with open_link.\n"
+            "- Only AFTER you have read actual article content should you\n"
+            "  consider the research goal complete.\n\n"
             "PREFERRED SERVICE URLS (use these instead of guessing):\n"
+            "- Google Search → https://www.google.com\n"
             "- Gmail / Google login → https://mail.google.com\n"
             "- Outlook / Microsoft → https://outlook.live.com\n"
             "- Yahoo Mail → https://mail.yahoo.com\n"
             "- Amazon → https://www.amazon.com\n"
             "- eBay → https://www.ebay.com\n"
             "- GitHub → https://github.com\n"
-            "Do NOT use marketing/workspace/promo URLs.\n\n"
+            "Do NOT use marketing/workspace/promo/images URLs.\n\n"
+            "GOAL FOCUS — CRITICAL:\n"
+            "- [TASK] shows your CURRENT GOAL. Focus ONLY on that goal.\n"
+            "- You MUST use browser tools (navigate, click, type, open_link)\n"
+            "  to complete each goal. Do NOT answer from your training data.\n"
+            "  The user wants real, current information from actual websites.\n"
+            "- FINISH the current goal completely before moving on.\n"
+            "- When the current goal is DONE (after performing browser actions),\n"
+            "  respond with a brief TEXT summary of what you found/did. The\n"
+            "  system will then give you the next goal.\n"
+            "- Do NOT take actions for later goals — they are shown only\n"
+            "  for context so you know what comes next.\n"
+            "- When the LAST goal is done, respond with a full TEXT summary\n"
+            "  of everything you accomplished across all goals.\n"
+            "- Your full conversation history is preserved — reference info\n"
+            "  from earlier goals when working on later ones.\n\n"
             "RULES:\n"
             "- ONLY perform actions the user EXPLICITLY asked for.\n"
             "- Execute exactly ONE tool call per turn.\n"
             "- NEVER guess deep URLs. Navigate to homepages first.\n"
             "- If a page_error was returned, go to the homepage instead.\n"
-            "- If the current goal is COMPLETE, respond with text (no tool call).\n"
             "- If ALL goals are complete, give a brief final summary.\n"
             "- If AgentTrust blocks an action (denied/step-up), explain and stop.\n"
             "- If the same action fails 2+ times, try a DIFFERENT approach.\n"
             "- Keep text replies short and action-oriented.\n"
             "- If you are ALREADY on a page with what you need, do NOT navigate away.\n\n"
+            "EFFICIENCY:\n"
+            "- Do NOT call get_saved_credentials or auto_login unless you are about\n"
+            "  to log in AND you can see login fields on the page.\n"
+            "- Do NOT repeat actions that already succeeded in earlier turns.\n"
+            "- When reading a page, read it ONCE and move on. Do not\n"
+            "  re-observe the same page multiple times.\n"
+            "- ABANDON BROKEN PAGES: if a click or action fails on a page,\n"
+            "  do NOT scroll-and-retry on the same page. Instead:\n"
+            "  1. Try open_link to a direct URL if you have one, OR\n"
+            "  2. Navigate to a DIFFERENT site entirely.\n"
+            "  Example: if CNBC articles won't load, go to reuters.com or\n"
+            "  marketwatch.com instead of retrying on CNBC.\n"
+            "- Do NOT scroll just to look around. Only scroll when you need\n"
+            "  specific content that is below the fold.\n"
+            "- Scrolling costs an action. Prefer direct navigation (open_link)\n"
+            "  over scrolling through pages.\n\n"
             "ROUTINES:\n"
             "- Users can save and replay browser action sequences as routines.\n"
             "- After a routine finishes, continue from the current browser state.\n"
@@ -799,7 +947,7 @@ def build_graph(agent):
                 "action_category": "none",
             }
         else:
-            # LLM returned text — current goal may be complete
+            # LLM returned text — task is complete
             text = (message.content or "")[:120]
             print(f"  AGENT: {text}")
             return {
@@ -833,8 +981,69 @@ def build_graph(agent):
             else:
                 category = "read_only"
 
+            # Block clicks with empty/N/A targets — always fail, waste time
+            if name == "agenttrust_browser_action":
+                try:
+                    _args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                    _target = _args.get("target") or {}
+                    _target_text = (_target.get("text") or "").strip()
+                    _has_id = bool(_target.get("id") or _target.get("href")
+                                   or _target.get("aria-label") or _target.get("aria_label")
+                                   or _target.get("name"))
+                    if not _has_id and (not _target_text or _target_text.lower() == "n/a"):
+                        print(f"  BLOCKED: click with empty target — read the page content instead")
+                        new_turn.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": name,
+                            "content": json.dumps({
+                                "success": False,
+                                "error": "Click target is empty/N/A. Look at the page Content "
+                                         "in the observation — the information you need may "
+                                         "already be there. If you need to click something, "
+                                         "specify a real element from the Interactive elements list."
+                            }),
+                        })
+                        last_result = {"success": False, "error": "empty target blocked"}
+                        category = "read_only"
+                        continue
+                except Exception:
+                    pass
+
+            # Rewrite Google Images URLs → Google web search.
+            # open_link uses "href"; others use "url".
+            _tc_args = tc["arguments"]
+            if name in ("open_link", "agenttrust_browser_action", "open_new_tab"):
+                try:
+                    _parsed = json.loads(_tc_args) if _tc_args else {}
+                    _google_web = "https://www.google.com/webhp?hl=en"
+                    _rewritten = False
+                    for _key in ("url", "href"):
+                        _val = _parsed.get(_key, "")
+                        if not _val:
+                            continue
+                        if ("google.com/imghp" in _val
+                                or "images.google.com" in _val):
+                            print(f"  REWRITE: {_val} → {_google_web}")
+                            _parsed[_key] = _google_web
+                            _rewritten = True
+                        elif (_val.rstrip("/") in (
+                                "https://www.google.com",
+                                "http://www.google.com",
+                                "https://google.com",
+                                "http://google.com")
+                              or _val.startswith("https://www.google.com/?")
+                              or _val.startswith("https://www.google.com?")
+                        ):
+                            _parsed[_key] = _google_web
+                            _rewritten = True
+                    if _rewritten:
+                        _tc_args = json.dumps(_parsed)
+                except Exception:
+                    pass
+
             # Execute via parent agent's existing handler
-            fc = type("FC", (), {"name": name, "arguments": tc["arguments"]})()
+            fc = type("FC", (), {"name": name, "arguments": _tc_args})()
             result = agent.handle_function_call(fc)
             last_result = result if isinstance(result, dict) else {"result": result}
 
@@ -863,6 +1072,15 @@ def build_graph(agent):
 
         total = state.get("total_actions", 0) + (1 if category == "mutating" else 0)
 
+        # Track recent action signatures for loop detection
+        recent = list(state.get("recent_actions") or [])
+        if last_name:
+            args_str = pending[0]["arguments"] if pending else ""
+            sig = f"{last_name}:{args_str[:100]}"
+            recent.append(sig)
+            if len(recent) > 6:
+                recent = recent[-6:]
+
         return {
             "turn_messages": new_turn,
             "pending_tool_calls": [],
@@ -870,6 +1088,7 @@ def build_graph(agent):
             "last_action_name": last_name,
             "action_category": category,
             "total_actions": total,
+            "recent_actions": recent,
         }
 
     # ================================================================== #
@@ -910,11 +1129,29 @@ def build_graph(agent):
         ):
             failed = True
             fail_reason = browser_result.get("message", "browser action failed")
+        # Catch top-level {success: false} from API calls and other tools
+        # that don't nest results inside browser_result
+        elif result.get("success") is False:
+            failed = True
+            fail_reason = result.get("error") or result.get("message") or "action returned success=false"
+        # Catch HTTP error status codes (e.g. 401, 403, 500) returned as integers
+        elif isinstance(status, int) and status >= 400:
+            failed = True
+            fail_reason = result.get("error") or f"HTTP {status}"
 
         # Check for login_error from auto_login post-verification
         if not failed and result.get("login_error"):
             failed = True
             fail_reason = result["login_error"]
+
+        # Detect repetitive action loops (same action called 3+ times in last 6)
+        recent = state.get("recent_actions") or []
+        if not failed and len(recent) >= 3:
+            last_sig = recent[-1] if recent else ""
+            repeat_count = sum(1 for s in recent[-4:] if s == last_sig)
+            if repeat_count >= 3:
+                failed = True
+                fail_reason = f"Repeated same action {repeat_count} times — likely stuck in a loop"
 
         consecutive = state.get("consecutive_failures", 0)
         if failed:
@@ -923,12 +1160,63 @@ def build_graph(agent):
                 f"  VERIFY: FAILED (#{consecutive}/{MAX_CONSECUTIVE_FAILS}) — {fail_reason[:100]}"
             )
         else:
-            consecutive = 0
             name = state.get("last_action_name", "action")
+            # Only reset failure counter for PROGRESS actions (click, type,
+            # open_link, etc.). Scroll and read-only actions must NOT reset
+            # the counter — otherwise failed clicks interspersed with
+            # scrolls never accumulate to the abort threshold.
+            if name in PROGRESS_ACTIONS:
+                consecutive = 0
             print(f"  VERIFY: OK ({name})")
 
         return {
             "consecutive_failures": consecutive,
+        }
+
+    # ================================================================== #
+    #  ADVANCE GOAL node — move to next sub-goal, preserve context        #
+    # ================================================================== #
+    def advance_goal_node(state: AgentState) -> dict:
+        """Increment goal index without clearing conversation history.
+
+        If the agent hasn't performed any browser actions for the current
+        goal (recent_actions is empty), refuse to advance and inject a
+        nudge so the agent actually uses the browser.
+        """
+        goal_idx = state.get("current_goal_index", 0)
+        recent = state.get("recent_actions") or []
+        sub_goals = state.get("sub_goals") or []
+
+        if not recent and goal_idx < len(sub_goals):
+            current_goal = sub_goals[goal_idx]
+            print(f"  NO-ACTION GUARD: agent tried to complete "
+                  f"'{current_goal[:50]}' without any browser actions — retrying")
+            new_turn = list(state.get("turn_messages") or [])
+            new_turn.append({
+                "role": "user",
+                "content": (
+                    "You have not performed any browser actions for this goal. "
+                    "You MUST use the browser (navigate, search, click, read) "
+                    "to find real information. Do NOT answer from memory. "
+                    f"Current goal: {current_goal}"
+                ),
+            })
+            return {
+                "turn_messages": new_turn,
+                "consecutive_failures": 0,
+                "final_response": "",
+            }
+
+        done_goal = sub_goals[min(goal_idx, len(sub_goals) - 1)]
+        next_idx = goal_idx + 1
+        next_goal = sub_goals[min(next_idx, len(sub_goals) - 1)]
+        print(f"  GOAL {goal_idx + 1} DONE: '{done_goal[:60]}'")
+        print(f"  NEXT GOAL {next_idx + 1}: '{next_goal[:60]}'")
+        return {
+            "current_goal_index": next_idx,
+            "consecutive_failures": 0,
+            "recent_actions": [],
+            "final_response": "",
         }
 
     # ================================================================== #
@@ -974,30 +1262,30 @@ def build_graph(agent):
     #  Routing functions                                                  #
     # ================================================================== #
     def route_after_agent(state: AgentState) -> str:
-        """After the LLM call: execute tools or go straight to respond."""
+        """After the LLM call: execute tools, advance goal, or respond."""
         if state.get("pending_tool_calls"):
             return "tools"
+        # Agent returned text — check if there are more goals
+        goal_idx = state.get("current_goal_index", 0)
+        sub_goals = state.get("sub_goals") or []
+        if goal_idx + 1 < len(sub_goals):
+            return "advance_goal"
         return "respond"
 
     def route_after_verify(state: AgentState) -> str:
         """After verification: re-observe, continue acting, or respond."""
-        # Step-up required → respond to inform the user
         if state.get("needs_step_up"):
             return "respond"
 
-        # Too many consecutive failures → stop
         if state.get("consecutive_failures", 0) >= MAX_CONSECUTIVE_FAILS:
             return "respond"
 
-        # Hit the action budget → stop
         if state.get("total_actions", 0) >= MAX_ACTIONS:
             return "respond"
 
-        # After a mutating action → re-observe the page
         if state.get("action_category") == "mutating":
             return "observe"
 
-        # After a read-only action → let the agent decide next
         return "agent"
 
     # ================================================================== #
@@ -1010,6 +1298,7 @@ def build_graph(agent):
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
     graph.add_node("verify", verify_node)
+    graph.add_node("advance_goal", advance_goal_node)
     graph.add_node("respond", respond_node)
 
     # Entry: always start with planning
@@ -1031,22 +1320,25 @@ def build_graph(agent):
     # observe → agent (LLM sees fresh page state)
     graph.add_edge("observe", "agent")
 
-    # agent → tools (if tool calls) or respond (if text)
+    # agent → tools | advance_goal (text + more goals) | respond (text + last goal)
     graph.add_conditional_edges(
         "agent",
         route_after_agent,
-        {"tools": "tools", "respond": "respond"},
+        {"tools": "tools", "advance_goal": "advance_goal", "respond": "respond"},
     )
 
     # tools → verify (always check results)
     graph.add_edge("tools", "verify")
 
-    # verify → observe (re-read page) | agent (continue) | respond (stop)
+    # verify → observe | agent | respond
     graph.add_conditional_edges(
         "verify",
         route_after_verify,
         {"observe": "observe", "agent": "agent", "respond": "respond"},
     )
+
+    # advance_goal → observe (re-read page for the next goal)
+    graph.add_edge("advance_goal", "observe")
 
     # respond → END
     graph.add_edge("respond", END)

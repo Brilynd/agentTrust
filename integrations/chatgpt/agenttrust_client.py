@@ -743,7 +743,36 @@ class AgentTrustClient:
                 json=payload,
                 timeout=30
             )
-            return response.json()
+            result = response.json() if response.status_code != 204 else {}
+
+            if response.status_code == 403 and result.get("requiresStepUp") and result.get("approvalId"):
+                approval_id = result["approvalId"]
+                print(f"🔐 High-risk API call requires user approval (approvalId={approval_id}). Waiting...")
+                approval_result = self.wait_for_approval(approval_id, timeout=60)
+
+                if approval_result.get("approved"):
+                    print("✅ API call approved by user. Retrying...")
+                    payload["approvalId"] = approval_id
+                    retry_response = requests.post(
+                        f"{self.api_url}/external/call",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json"
+                        },
+                        json=payload,
+                        timeout=30
+                    )
+                    return retry_response.json() if retry_response.status_code != 204 else {"success": True}
+                else:
+                    reason = approval_result.get("reason", "User denied the action")
+                    print(f"❌ API call denied by user: {reason}")
+                    return {
+                        "success": False,
+                        "error": f"Action denied by user: {reason}",
+                        "status": "denied"
+                    }
+
+            return result
         except Exception as e:
             return {"success": False, "error": str(e)}
 

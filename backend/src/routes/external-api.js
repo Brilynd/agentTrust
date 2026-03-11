@@ -15,6 +15,7 @@ const DESTRUCTIVE_URL_KEYWORDS = [
 const IMPACT_URL_KEYWORDS = [
   'send', 'comment', 'issue', 'message', 'event',
   'invite', 'publish', 'mail', 'email', 'review',
+  'calendar', 'compose',
 ];
 
 function classifyApiRisk(method, url) {
@@ -185,7 +186,19 @@ router.post('/call', validateAction, async (req, res) => {
   }
 
   const riskLevel = classifyApiRisk(method, apiUrl);
-  const requiresApproval = riskLevel === 'high';
+
+  let approvedViaStepUp = false;
+  if (req.body.approvalId) {
+    const approvalsModule = require('./approvals');
+    const pendingApprovals = approvalsModule.__pendingApprovals;
+    if (pendingApprovals) {
+      const priorApproval = pendingApprovals.get(req.body.approvalId);
+      if (priorApproval && priorApproval.status === 'approved') {
+        approvedViaStepUp = true;
+      }
+    }
+  }
+  const requiresApproval = riskLevel === 'high' && !approvedViaStepUp;
 
   let loggedAction;
   try {
