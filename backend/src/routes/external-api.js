@@ -8,6 +8,10 @@ const { createApproval } = require('./approvals');
 const HIGH_RISK_API_PATTERNS = [
   '/repos/', '/orgs/', '/user/repos',
   '/calendars/', '/acl',
+  '/chat.postmessage', '/chat.update', '/chat.delete',
+  '/me/sendmail', '/me/messages', '/me/drive/',
+  '/me/todo/',
+  '/v1/pages', '/v1/databases', '/v1/blocks',
 ];
 const DESTRUCTIVE_URL_KEYWORDS = [
   'delete', 'remove', 'destroy', 'deactivate', 'revoke', 'transfer',
@@ -16,6 +20,9 @@ const IMPACT_URL_KEYWORDS = [
   'send', 'comment', 'issue', 'message', 'event',
   'invite', 'publish', 'mail', 'email', 'review',
   'calendar', 'compose',
+  'postmessage', 'channels', 'conversations',
+  'sendmail', 'todo', 'tasks', 'drive', 'files',
+  'pages', 'databases', 'blocks',
 ];
 
 function classifyApiRisk(method, url) {
@@ -47,6 +54,9 @@ const AUTH0_AUDIENCE = process.env.AUTH0_AUDIENCE;
 const PROVIDER_TO_AUTH0_CONNECTION = {
   'github': 'github',
   'google-oauth2': 'google-oauth2',
+  'slack': 'slack',
+  'windowslive': 'windowslive',
+  'notion': 'notion',
 };
 
 let _mgmtTokenCache = { token: null, expiresAt: 0 };
@@ -153,6 +163,13 @@ function _buildApiImpactSummary(method, url, provider, body) {
   else if (urlLower.includes('/repos')) parts.push('repository');
   else if (urlLower.includes('/events')) parts.push('calendar event');
   else if (urlLower.includes('/messages') || urlLower.includes('/send')) parts.push('message');
+  else if (urlLower.includes('chat.postmessage')) parts.push('Slack message');
+  else if (urlLower.includes('conversations.')) parts.push('Slack channel');
+  else if (urlLower.includes('/sendmail')) parts.push('Outlook email');
+  else if (urlLower.includes('/todo/')) parts.push('To Do task');
+  else if (urlLower.includes('/drive/')) parts.push('OneDrive file');
+  else if (urlLower.includes('/v1/pages')) parts.push('Notion page');
+  else if (urlLower.includes('/v1/databases')) parts.push('Notion database');
   else parts.push('resource');
 
   parts.push(`on ${provider}`);
@@ -161,6 +178,10 @@ function _buildApiImpactSummary(method, url, provider, body) {
     if (body.title) parts.push(`"${String(body.title).substring(0, 60)}"`);
     else if (body.subject) parts.push(`"${String(body.subject).substring(0, 60)}"`);
     else if (body.summary) parts.push(`"${String(body.summary).substring(0, 60)}"`);
+    else if (body.text) parts.push(`"${String(body.text).substring(0, 60)}"`);
+    else if (body.channel) parts.push(`to #${String(body.channel).substring(0, 30)}`);
+    else if (body.message?.subject) parts.push(`"${String(body.message.subject).substring(0, 60)}"`);
+    else if (body.query) parts.push(`search: "${String(body.query).substring(0, 40)}"`);
   }
 
   return parts.join(' ');
@@ -177,6 +198,8 @@ router.post('/call', validateAction, async (req, res) => {
   if (!allowed.includes(method.toUpperCase())) {
     return res.status(400).json({ success: false, error: `Invalid method. Allowed: ${allowed.join(', ')}` });
   }
+
+  const auth0Connection = PROVIDER_TO_AUTH0_CONNECTION[provider] || provider;
 
   let apiDomain;
   try {
@@ -268,13 +291,13 @@ router.post('/call', validateAction, async (req, res) => {
   try {
     const dbResult = await pool.query(
       "SELECT auth0_access_token FROM user_connections WHERE provider = $1 AND auth0_access_token IS NOT NULL ORDER BY connected_at DESC LIMIT 1",
-      [provider]
+      [auth0Connection]
     );
     if (dbResult.rows.length > 0) {
       const storedJwt = dbResult.rows[0].auth0_access_token;
       const auth0UserId = extractAuth0UserId(storedJwt);
       if (auth0UserId) {
-        providerToken = await getProviderTokenViaManagementApi(provider, auth0UserId);
+        providerToken = await getProviderTokenViaManagementApi(auth0Connection, auth0UserId);
         console.log(`Got ${provider} token via Management API for user ${auth0UserId}`);
       }
     }
@@ -289,7 +312,7 @@ router.post('/call', validateAction, async (req, res) => {
     try {
       const subjectToken = userToken || req.headers.authorization?.substring(7);
       if (subjectToken) {
-        providerToken = await exchangeTokenViaTokenVault(provider, subjectToken);
+        providerToken = await exchangeTokenViaTokenVault(auth0Connection, subjectToken);
         console.log(`Got ${provider} token via Token Vault exchange`);
       }
     } catch (err) {
@@ -316,6 +339,10 @@ router.post('/call', validateAction, async (req, res) => {
       },
       timeout: 20000
     };
+
+    if (provider === 'notion') {
+      axiosConfig.headers['Notion-Version'] = '2022-06-28';
+    }
 
     if (apiBody && ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
       axiosConfig.data = apiBody;

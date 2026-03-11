@@ -14,9 +14,16 @@ function isTokenVaultConfigured() {
   return !!(AUTH0_DOMAIN && AUTH0_CLIENT_ID && AUTH0_CLIENT_SECRET);
 }
 
+// Provider-specific scopes appended to the Auth0 authorize URL.
+// For providers where Auth0 proxies scopes through (GitHub, Google), list them here.
+// For providers where scopes are configured in the Auth0 Dashboard connection
+// settings (Slack, Notion), leave empty — Auth0 applies them automatically.
 const PROVIDER_SCOPES = {
   'github': 'repo read:user user:email',
   'google-oauth2': 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+  'slack-v2': '',
+  'windowslive': 'User.Read Mail.Send Tasks.ReadWrite Files.ReadWrite',
+  'notion': '',
 };
 
 // Agent requests a provider access token via Token Vault exchange (M2M auth)

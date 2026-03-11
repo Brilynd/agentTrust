@@ -46,4 +46,7 @@
   if (typeof window.agentTrustInitialized === 'undefined') {
     window.agentTrustInitialized = true;
   }
+
+  // Mark the DOM so the landing page can detect the extension is loaded
+  document.documentElement.setAttribute('data-agenttrust-extension', 'true');
 })();

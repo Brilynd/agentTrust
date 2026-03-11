@@ -534,7 +534,7 @@ class BrowserController:
         
         # 2) Navigate to a real page so the content script is injected
         try:
-            self._actual_driver.get(api_url.replace("/api", "/health"))
+            self._actual_driver.get(api_url.replace("/api", ""))
             time.sleep(1)
         except Exception:
             self._actual_driver.get("about:blank")

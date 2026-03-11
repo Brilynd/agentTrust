@@ -12,6 +12,16 @@ const approvalWaiters = new Map();
 let approvalCounter = 0;
 
 function createApproval({ sessionId, actionId, type, domain, url, riskLevel, reason, target, preview, impactSummary }) {
+  // Supersede any existing pending approvals for the same action
+  // so the extension only shows the latest one
+  for (const [existingId, existing] of pendingApprovals) {
+    if (existing.status === 'pending' && existing.type === type && existing.url === url) {
+      existing.status = 'superseded';
+      resolveWaiters(existingId, { approved: false, reason: 'Superseded by new request' });
+      pendingApprovals.delete(existingId);
+    }
+  }
+
   const id = `approval_${Date.now()}_${++approvalCounter}`;
   const approval = {
     id,
@@ -90,8 +100,9 @@ router.post('/:id/respond', authenticateUser, (req, res) => {
 
   resolveWaiters(id, { approved: !!approved, approvalId: id, actionId: approval.actionId });
 
-  // Clean up after a short delay
-  setTimeout(() => pendingApprovals.delete(id), 10000);
+  // Keep approved actions longer so retries can reuse the approvalId
+  const cleanupDelay = approved ? 120000 : 10000;
+  setTimeout(() => pendingApprovals.delete(id), cleanupDelay);
 
   res.json({ success: true, approval });
 });

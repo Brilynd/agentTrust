@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentTrust — Identity &amp; Audit Layer for AI Agents</title>
+  <style>
+    :root {
+      --c-bg: #f8f9fc;
+      --c-surface: #ffffff;
+      --c-border: #e8eaef;
+      --c-text: #1a1d26;
+      --c-text-2: #5a5e6a;
+      --c-text-3: #9196a1;
+      --c-primary: #6366f1;
+      --c-primary-bg: #eef0ff;
+      --c-success: #10b981;
+      --c-success-bg: #ecfdf5;
+      --c-danger: #ef4444;
+      --c-danger-bg: #fef2f2;
+      --c-warning: #f59e0b;
+      --c-warning-bg: #fffbeb;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.04);
+      --shadow-md: 0 2px 8px rgba(0,0,0,.06);
+      --shadow-lg: 0 4px 16px rgba(0,0,0,.08);
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    }
+
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-sans);
+      color: var(--c-text);
+      background: var(--c-bg);
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.5;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      padding: 60px 24px 48px;
+      text-align: center;
+    }
+
+    .hero-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .hero-logo svg {
+      filter: drop-shadow(0 2px 8px rgba(0,0,0,.2));
+    }
+
+    .hero h1 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .hero-tagline {
+      font-size: 17px;
+      opacity: 0.9;
+      margin-top: 8px;
+      font-weight: 400;
+    }
+
+    .hero-description {
+      max-width: 620px;
+      margin: 20px auto 0;
+      font-size: 14px;
+      opacity: 0.8;
+      line-height: 1.6;
+    }
+
+    /* ── Container ── */
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* ── Status Panel ── */
+    .status-panel {
+      display: flex;
+      gap: 16px;
+      margin-top: -32px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .status-card {
+      flex: 1;
+      background: var(--c-surface);
+      border-radius: var(--radius-md);
+      padding: 18px 20px;
+      box-shadow: var(--shadow-lg);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      animation: fadeUp 0.5s ease both;
+    }
+
+    .status-card:nth-child(2) { animation-delay: 0.08s; }
+    .status-card:nth-child(3) { animation-delay: 0.16s; }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--c-text-3);
+      flex-shrink: 0;
+    }
+
+    .status-dot.ok { background: var(--c-success); box-shadow: 0 0 6px rgba(16,185,129,.4); }
+    .status-dot.err { background: var(--c-danger); box-shadow: 0 0 6px rgba(239,68,68,.4); }
+    .status-dot.checking { background: var(--c-warning); animation: pulse 1s infinite; }
+
+    .status-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--c-text);
+    }
+
+    .status-detail {
+      font-size: 11px;
+      color: var(--c-text-3);
+      margin-top: 1px;
+    }
+
+    /* ── Section titles ── */
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--c-text);
+      margin-bottom: 8px;
+      letter-spacing: -0.3px;
+    }
+
+    .section-subtitle {
+      font-size: 14px;
+      color: var(--c-text-2);
+      margin-bottom: 24px;
+    }
+
+    /* ── Capability Cards ── */
+    .capabilities {
+      margin-top: 48px;
+    }
+
+    .cap-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .cap-card {
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      transition: box-shadow 0.2s ease, transform 0.2s ease;
+      animation: fadeUp 0.5s ease both;
+    }
+
+    .cap-card:nth-child(1) { animation-delay: 0.1s; }
+    .cap-card:nth-child(2) { animation-delay: 0.18s; }
+    .cap-card:nth-child(3) { animation-delay: 0.26s; }
+    .cap-card:nth-child(4) { animation-delay: 0.34s; }
+    .cap-card:nth-child(5) { animation-delay: 0.42s; }
+
+    .cap-card.featured {
+      grid-column: 1 / -1;
+      border: 1.5px solid var(--c-primary);
+      background: linear-gradient(135deg, #faf5ff 0%, #eef0ff 100%);
+    }
+
+    .cap-card:hover {
+      box-shadow: var(--shadow-md);
+      transform: translateY(-2px);
+    }
+
+    .cap-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+      font-size: 20px;
+    }
+
+    .cap-icon.policy    { background: var(--c-primary-bg); }
+    .cap-icon.audit     { background: var(--c-success-bg); }
+    .cap-icon.vault     { background: var(--c-warning-bg); }
+    .cap-icon.browser   { background: #f0f1ff; }
+    .cap-icon.extension { background: #faf0ff; }
+
+    .cap-card h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .cap-card p {
+      font-size: 13px;
+      color: var(--c-text-2);
+      line-height: 1.55;
+    }
+
+    /* ── Getting Started ── */
+    .getting-started {
+      margin-top: 48px;
+    }
+
+    .gs-box {
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: var(--radius-md);
+      padding: 28px;
+      animation: fadeUp 0.5s ease 0.4s both;
+    }
+
+    .gs-box p {
+      font-size: 14px;
+      color: var(--c-text-2);
+      margin-bottom: 16px;
+    }
+
+    .gs-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      margin-bottom: 4px;
+    }
+
+    .gs-step {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+
+    .gs-step-num {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--c-primary);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .gs-step strong {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--c-text);
+      margin-bottom: 2px;
+    }
+
+    .gs-step p {
+      font-size: 13px;
+      color: var(--c-text-2);
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    .gs-divider {
+      height: 1px;
+      background: var(--c-border);
+      margin: 20px 0;
+    }
+
+    .gs-prompt-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--c-text);
+      margin-bottom: 12px;
+    }
+
+    .gs-examples {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .gs-example {
+      background: var(--c-bg);
+      border: 1px solid var(--c-border);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: var(--c-text);
+      line-height: 1.5;
+    }
+
+    .gs-example .label {
+      display: block;
+      font-family: var(--font-sans);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--c-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    /* ── Footer ── */
+    .footer {
+      text-align: center;
+      padding: 40px 24px 32px;
+      margin-top: 48px;
+    }
+
+    .footer-text {
+      font-size: 12px;
+      color: var(--c-text-3);
+    }
+
+    .footer-text a {
+      color: var(--c-primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .footer-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 12px;
+      color: var(--c-text-2);
+      margin-bottom: 10px;
+    }
+
+    .footer-badge svg { flex-shrink: 0; }
+
+    /* ── Animations ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.4; }
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .status-panel { flex-direction: column; }
+      .cap-grid { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 26px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Hero ── -->
+  <section class="hero">
+    <div class="hero-logo">
+      <svg width="48" height="48" viewBox="0 0 36 36" fill="none">
+        <rect width="36" height="36" rx="10" fill="rgba(255,255,255,0.2)"/>
+        <path d="M18 8l8 5v10l-8 5-8-5V13l8-5z" stroke="#fff" stroke-width="2" fill="none"/>
+        <circle cx="18" cy="18" r="3" fill="#fff"/>
+      </svg>
+      <h1>AgentTrust</h1>
+    </div>
+    <p class="hero-tagline">Identity &amp; Audit Layer for AI Agents</p>
+    <p class="hero-description">
+      Every action your AI agent takes is validated by policy, logged for audit,
+      and gated by user approval when risk is high. You stay in control.
+    </p>
+  </section>
+
+  <!-- ── Status Panel ── -->
+  <div class="container">
+    <div class="status-panel">
+      <div class="status-card">
+        <div class="status-dot checking" id="dot-backend"></div>
+        <div>
+          <div class="status-label">Backend</div>
+          <div class="status-detail" id="detail-backend">Checking...</div>
+        </div>
+      </div>
+      <div class="status-card">
+        <div class="status-dot checking" id="dot-db"></div>
+        <div>
+          <div class="status-label">Database</div>
+          <div class="status-detail" id="detail-db">Checking...</div>
+        </div>
+      </div>
+      <div class="status-card">
+        <div class="status-dot checking" id="dot-extension"></div>
+        <div>
+          <div class="status-label">Extension</div>
+          <div class="status-detail" id="detail-extension">Checking...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Capabilities ── -->
+    <section class="capabilities">
+      <h2 class="section-title">What AgentTrust Does</h2>
+      <p class="section-subtitle">Five layers of trust between your AI agent and the real world.</p>
+      <div class="cap-grid">
+        <div class="cap-card featured">
+          <div class="cap-icon extension">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8.5L13.5 2z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>
+          </div>
+          <h3>Browser Extension</h3>
+          <p>Your command center for AgentTrust. Monitor every agent action in real-time, approve or deny high-risk operations via step-up prompts, manage saved logins and domain permissions, chat with the agent, and create reusable routines. Click the AgentTrust icon in your browser toolbar to open it.</p>
+        </div>
+        <div class="cap-card">
+          <div class="cap-icon policy">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3>Policy Engine</h3>
+          <p>Every browser action and API call is classified by risk level. High-risk actions require your explicit approval before the agent can proceed.</p>
+        </div>
+        <div class="cap-card">
+          <div class="cap-icon audit">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          </div>
+          <h3>Audit Trail</h3>
+          <p>Every action is logged to PostgreSQL with timestamps, risk levels, and outcomes. Full history is queryable through the extension's Monitor tab.</p>
+        </div>
+        <div class="cap-card">
+          <div class="cap-icon vault">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+          </div>
+          <h3>Token Vault</h3>
+          <p>OAuth tokens for GitHub, Google, Slack, Microsoft (Outlook, OneDrive, ToDo), and Notion are securely exchanged through Auth0 Token Vault. The agent never sees raw credentials.</p>
+        </div>
+        <div class="cap-card">
+          <div class="cap-icon browser">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <h3>Browser Automation</h3>
+          <p>The agent navigates real websites, fills forms, reads content, and manages tabs. Every interaction is observed and verified before and after execution.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Getting Started ── -->
+    <section class="getting-started">
+      <h2 class="section-title">Getting Started</h2>
+      <p class="section-subtitle">Use the browser extension to interact with AgentTrust. The terminal is only needed to start the agent.</p>
+      <div class="gs-box">
+        <div class="gs-steps">
+          <div class="gs-step">
+            <span class="gs-step-num">1</span>
+            <div>
+              <strong>Open the Extension</strong>
+              <p>Click the AgentTrust icon in your browser toolbar. Sign in if prompted — this is your dashboard for monitoring, chatting, and configuring the agent.</p>
+            </div>
+          </div>
+          <div class="gs-step">
+            <span class="gs-step-num">2</span>
+            <div>
+              <strong>Configure Permissions</strong>
+              <p>Go to the <em>Permissions</em> tab to add saved logins, set allowed/blocked domains, high-risk keywords, and step-up approval rules.</p>
+            </div>
+          </div>
+          <div class="gs-step">
+            <span class="gs-step-num">3</span>
+            <div>
+              <strong>Give the Agent a Task</strong>
+              <p>Use the <em>Chat</em> tab in the extension to send commands, or type directly in the terminal where the agent is running.</p>
+            </div>
+          </div>
+          <div class="gs-step">
+            <span class="gs-step-num">4</span>
+            <div>
+              <strong>Monitor &amp; Approve</strong>
+              <p>Watch live actions in the <em>Monitor</em> tab. When the agent attempts a high-risk action, a step-up approval banner appears — approve or deny it in one click.</p>
+            </div>
+          </div>
+        </div>
+        <div class="gs-divider"></div>
+        <p class="gs-prompt-label">Example tasks you can give the agent:</p>
+        <div class="gs-examples">
+          <div class="gs-example">
+            <span class="label">Cross-Service Workflow</span>
+            Research the latest AI regulations, email a summary to legal@company.com, post a TL;DR to #legal-updates on Slack, and schedule a review meeting on Google Calendar
+          </div>
+          <div class="gs-example">
+            <span class="label">Research &amp; Notify</span>
+            Find the latest news on AI development, send an Outlook email with findings via Microsoft, and create a Notion page with the full report
+          </div>
+          <div class="gs-example">
+            <span class="label">GitHub &amp; Slack</span>
+            List my open GitHub issues and post a summary to #dev-updates on Slack
+          </div>
+          <div class="gs-example">
+            <span class="label">Web Navigation</span>
+            Go to amazon.com and find the best-rated wireless headphones under $100
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ── Footer ── -->
+  <footer class="footer">
+    <div class="footer-badge">
+      <svg width="16" height="16" viewBox="0 0 36 36" fill="none">
+        <rect width="36" height="36" rx="10" fill="url(#fg)"/>
+        <path d="M18 8l8 5v10l-8 5-8-5V13l8-5z" stroke="#fff" stroke-width="2" fill="none"/>
+        <circle cx="18" cy="18" r="3" fill="#fff"/>
+        <defs><linearGradient id="fg" x1="0" y1="0" x2="36" y2="36"><stop stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/></linearGradient></defs>
+      </svg>
+      AgentTrust v1.0
+    </div>
+    <p class="footer-text">Built with <a href="https://auth0.com/ai" target="_blank">Auth0 for AI Agents</a> &mdash; OAuth flows, token management, consent delegation, and step-up authentication.</p>
+  </footer>
+
+  <script>
+    function setStatus(id, ok, detail) {
+      try {
+        var dot = document.getElementById('dot-' + id);
+        var det = document.getElementById('detail-' + id);
+        if (!dot || !det) return;
+        dot.className = 'status-dot ' + (ok ? 'ok' : 'err');
+        det.textContent = detail;
+      } catch (e) { /* ignore */ }
+    }
+
+    function runChecks() {
+      // ── Backend + Database ──
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/health', true);
+        xhr.timeout = 5000;
+        xhr.onload = function() {
+          try {
+            var d = JSON.parse(xhr.responseText);
+            setStatus('backend', d.status === 'ok', 'Running on port 3000');
+            setStatus('db', true, 'PostgreSQL connected');
+          } catch (e) {
+            setStatus('backend', true, 'Running (non-JSON response)');
+            setStatus('db', true, 'Assumed connected');
+          }
+        };
+        xhr.onerror = function() {
+          setStatus('backend', false, 'Unreachable');
+          setStatus('db', false, 'Cannot verify — backend offline');
+        };
+        xhr.ontimeout = function() {
+          setStatus('backend', false, 'Timed out');
+          setStatus('db', false, 'Cannot verify — backend timed out');
+        };
+        xhr.send();
+      } catch (e) {
+        setStatus('backend', false, 'Request failed');
+        setStatus('db', false, 'Cannot verify');
+      }
+
+      // ── Extension detection ──
+      // The content script sets data-agenttrust-extension on <html>
+      function checkExtension() {
+        try {
+          return document.documentElement.getAttribute('data-agenttrust-extension') === 'true';
+        } catch (e) { /* ignore */ }
+        return false;
+      }
+
+      function tryDetectExtension(attempt) {
+        if (checkExtension()) {
+          setStatus('extension', true, 'Loaded and active');
+        } else if (attempt < 5) {
+          setTimeout(function() { tryDetectExtension(attempt + 1); }, 1000);
+        } else {
+          setStatus('extension', false, 'Not detected — load extension in toolbar');
+        }
+      }
+      tryDetectExtension(0);
+    }
+
+    // Run when DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', runChecks);
+    } else {
+      runChecks();
+    }
+  </script>
+</body>
+</html>

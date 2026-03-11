@@ -953,7 +953,8 @@ const PROVIDERS = [
   { id: 'github', name: 'GitHub', icon: '🐙' },
   { id: 'google-oauth2', name: 'Google', icon: '🔵' },
   { id: 'slack', name: 'Slack', icon: '💬' },
-  { id: 'windowslive', name: 'Microsoft', icon: '🟦' }
+  { id: 'windowslive', name: 'Microsoft', icon: '🟦' },
+  { id: 'notion', name: 'Notion', icon: '📝' }
 ];
 
 async function loadConnections() {
