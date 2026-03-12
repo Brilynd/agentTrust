@@ -19,6 +19,7 @@ Usage:
 """
 
 import json
+import re
 import time
 from typing import TypedDict, List, Any, Optional
 from langgraph.graph import StateGraph, END
@@ -155,76 +156,97 @@ def build_graph(agent):
             pass
 
         has_active_page = bool(
-            browser_url and browser_url not in ("about:blank", "data:,", "")
+            browser_url
+            and browser_url not in ("about:blank", "data:,", "")
+            and "localhost" not in browser_url
         )
 
-        # Summarise recent conversation so the classifier sees context
-        recent_history = ""
-        conv = state.get("conversation_history") or []
-        if conv:
-            # Include the last 2 exchanges (4 messages) at most
-            tail = conv[-4:]
-            lines = []
-            for m in tail:
-                role = m.get("role", "?")
-                text = (m.get("content") or "")[:200]
-                lines.append(f"  {role}: {text}")
-            recent_history = "\n".join(lines)
+        # Keyword shortcut: if the request clearly involves browsing,
+        # searching, emailing, or API calls, skip the classifier entirely.
+        _req_lower = req.lower()
+        _BROWSER_KEYWORDS = (
+            "search", "find", "look up", "browse", "navigate",
+            "go to", "open", "visit", "click", "send an email",
+            "send email", "compose email", "schedule", "create event",
+            "post to slack", "post a message", "call_external_api",
+            "amazon", "google", "github", "ebay", "gmail",
+            "calendar", "slack", "notion", "microsoft",
+        )
+        _force_browser = any(kw in _req_lower for kw in _BROWSER_KEYWORDS)
 
-        context_block = ""
-        if has_active_page:
-            context_block += (
-                f"\n\nCONTEXT — the browser is currently open on:\n"
-                f"  URL: {browser_url}\n"
-                f"  Title: {browser_title}\n"
-            )
-        if recent_history:
-            context_block += (
-                f"\nRecent conversation:\n{recent_history}\n"
-            )
-
-        try:
-            gate_resp = agent._chat_completion(
-                model=agent.model_nano,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an intent classifier. Given a user message "
-                            "to a browser-automation agent, decide whether it "
-                            "requires the agent to USE the browser (navigate, "
-                            "click, type, search on a website, open a page, "
-                            "log in, etc.).\n\n"
-                            "Reply with EXACTLY one word:\n"
-                            "  BROWSER  — if live browser interaction is needed\n"
-                            "  CHAT     — if it can be answered with text alone\n\n"
-                            "IMPORTANT RULES:\n"
-                            "- If the browser is currently open on a real website "
-                            "(not about:blank), almost ALL user messages should be "
-                            "classified as BROWSER because the user is likely "
-                            "giving follow-up instructions about the current task.\n"
-                            "- Short follow-up phrases like 'yes', 'do it', "
-                            "'continue', 'go ahead', 'I clicked continue for you', "
-                            "'you have them', 'try again', 'next', 'ok', 'done' "
-                            "are ALWAYS BROWSER when a page is open.\n"
-                            "- Only classify as CHAT if there is NO active browser "
-                            "page AND the message is clearly a general knowledge "
-                            "question with no browser intent.\n"
-                        ),
-                    },
-                    {"role": "user", "content": req + context_block},
-                ],
-                temperature=0,
-            )
-            intent = (gate_resp.choices[0].message.content or "").strip().upper()
-        except Exception:
-            intent = "BROWSER"  # default to browser on error
-
-        # Safety net: if a page is open, force BROWSER unless the
-        # classifier is extremely confident it's CHAT
-        if has_active_page and intent.startswith("CHAT"):
-            print(f"  INTENT: Classifier said CHAT but browser is on {browser_url} — overriding to BROWSER")
+        if _force_browser:
             intent = "BROWSER"
+        else:
+            # Summarise recent conversation so the classifier sees context
+            recent_history = ""
+            conv = state.get("conversation_history") or []
+            if conv:
+                tail = conv[-4:]
+                lines = []
+                for m in tail:
+                    role = m.get("role", "?")
+                    text = (m.get("content") or "")[:200]
+                    lines.append(f"  {role}: {text}")
+                recent_history = "\n".join(lines)
+
+            context_block = ""
+            if has_active_page:
+                context_block += (
+                    f"\n\nCONTEXT — the browser is currently open on:\n"
+                    f"  URL: {browser_url}\n"
+                    f"  Title: {browser_title}\n"
+                )
+            if recent_history:
+                context_block += (
+                    f"\nRecent conversation:\n{recent_history}\n"
+                )
+
+            try:
+                gate_resp = agent._chat_completion(
+                    model=agent.model_nano,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an intent classifier. Given a user message "
+                                "to a browser-automation agent, decide whether it "
+                                "requires the agent to USE the browser (navigate, "
+                                "click, type, search on a website, open a page, "
+                                "log in, etc.).\n\n"
+                                "Reply with EXACTLY one word:\n"
+                                "  BROWSER  — if live browser interaction is needed\n"
+                                "  CHAT     — if it can be answered with text alone\n\n"
+                                "IMPORTANT RULES:\n"
+                                "- If the browser is currently open on a real website "
+                                "(not about:blank or localhost), almost ALL user "
+                                "messages should be classified as BROWSER because the "
+                                "user is likely giving follow-up instructions about "
+                                "the current task.\n"
+                                "- Short follow-up phrases like 'yes', 'do it', "
+                                "'continue', 'go ahead', 'I clicked continue for you', "
+                                "'you have them', 'try again', 'next', 'ok', 'done' "
+                                "are ALWAYS BROWSER when a page is open.\n"
+                                "- Requests involving 'find', 'search', 'send email', "
+                                "'schedule', 'post', or any website name are ALWAYS "
+                                "BROWSER.\n"
+                                "- Only classify as CHAT if there is NO active browser "
+                                "page AND the message is clearly a general knowledge "
+                                "question with no browser intent (e.g. 'what is 2+2', "
+                                "'explain quantum physics').\n"
+                            ),
+                        },
+                        {"role": "user", "content": req + context_block},
+                    ],
+                    temperature=0,
+                )
+                intent = (gate_resp.choices[0].message.content or "").strip().upper()
+            except Exception:
+                intent = "BROWSER"
+
+            # Safety net: if a page is open, force BROWSER
+            if has_active_page and intent.startswith("CHAT"):
+                print(f"  INTENT: Classifier said CHAT but browser is on {browser_url} — overriding to BROWSER")
+                intent = "BROWSER"
 
         if intent.startswith("CHAT"):
             # No browser needed — answer conversationally
@@ -362,6 +384,13 @@ def build_graph(agent):
             "  https://www.google.com, NEVER Images.\n"
             "- When the task requires EMAIL, say 'Navigate to Gmail, compose and send\n"
             "  an email to X with the findings'.\n"
+            "- When visiting GitHub repos, always go to the REPO ROOT\n"
+            "  (e.g. https://github.com/owner/repo) to read the README.\n"
+            "  NEVER navigate to /actions, /issues, or /pulls unless specifically asked.\n"
+            "- When COMPARING items across sites (prices, features, reviews),\n"
+            "  combine ALL browsing into ONE goal. NEVER make 'compare the\n"
+            "  results' a separate goal — include the comparison in the same\n"
+            "  goal that visits the sites.\n"
             "- Goals must be in the correct ORDER. Research BEFORE email. Email BEFORE\n"
             "  calendar invites.\n"
             "- Keep to 2-4 goals maximum. Fewer is better.\n\n"
@@ -390,6 +419,10 @@ def build_graph(agent):
             "  Cross-service: [\"Search Google for AI news and gather findings\", "
             "\"Use call_external_api to post a summary to #engineering on Slack\", "
             "\"Use call_external_api to create a Google Calendar event for a review meeting\"]\n"
+            "  Price comparison: [\"Search Amazon for X, open the product page "
+            "and note the price, then search TCGplayer for the same product, "
+            "open the product page and note the price, then summarize which "
+            "site has the better deal\"]\n"
             + (rag_context + "\n" if rag_context else "")
             + (cred_hint if cred_hint else "") +
             "\nJSON array:"
@@ -653,6 +686,11 @@ def build_graph(agent):
                 marker = " ← ACTIVE" if t.get("is_active") else ""
                 tab_lines.append(f"  [{t.get('index')}] {t.get('label')}: {t.get('url', '?')}{marker}")
             tabs_info = "Open tabs:\n" + "\n".join(tab_lines) + "\n"
+            if len(open_tabs) >= 3:
+                tabs_info += (
+                    f"⚠ You have {len(open_tabs)} tabs open. Close tabs you "
+                    "no longer need with close_tab to keep context manageable.\n"
+                )
         elif open_tabs:
             tabs_info = f"Active tab: {open_tabs[0].get('label', 'main')}\n"
 
@@ -676,6 +714,36 @@ def build_graph(agent):
                 "you need to accomplish your task (e.g. https://www.google.com).\n"
             )
 
+        # Detect if the page has a search bar the agent can use
+        search_hint = ""
+        _SEARCH_KEYWORDS = {"search", "query", "q", "keyword", "find", "lookup"}
+        visible_els = state.get("visible_elements") or []
+        for el in visible_els:
+            if el.get("t") != "in":
+                continue
+            _ph = (el.get("ph") or "").lower()
+            _al = (el.get("al") or "").lower()
+            _nm = (el.get("nm") or "").lower()
+            _rl = (el.get("rl") or "").lower()
+            _id = (el.get("id") or "").lower()
+            combined = f"{_ph} {_al} {_nm} {_rl} {_id}"
+            if any(kw in combined for kw in _SEARCH_KEYWORDS) or _rl in ("search", "searchbox", "combobox"):
+                label = el.get("ph") or el.get("al") or el.get("nm") or "search"
+                search_hint = (
+                    f"🔍 This page has a SEARCH BAR ('{label}'). "
+                    f"If you need to find something specific on this site, "
+                    f"type your query into it instead of scrolling or going back to Google.\n"
+                )
+                break
+
+        # Extract dollar prices from page text so the LLM sees them immediately
+        price_hint = ""
+        _page_text = state.get("page_text") or ""
+        _prices = re.findall(r"\$\d[\d,]*\.?\d{0,2}", _page_text)
+        if _prices:
+            unique_prices = list(dict.fromkeys(_prices))[:10]
+            price_hint = f"💲 PRICES on page: {', '.join(unique_prices)}\n"
+
         goal_idx = state.get("current_goal_index", 0)
         sub_goals = state.get("sub_goals") or []
         current_goal = (
@@ -688,6 +756,8 @@ def build_graph(agent):
             f"URL: {state.get('current_url', 'not loaded')}\n"
             f"Title: {state.get('page_title', '')}\n"
             f"{nav_hint}"
+            f"{search_hint}"
+            f"{price_hint}"
             f"{login_info}"
             f"{vision_info}"
             f"{tabs_info}"
@@ -827,16 +897,54 @@ def build_graph(agent):
             "- To search the web, navigate to https://www.google.com (NOT imghp,\n"
             "  NOT images.google.com). Use the main search page.\n"
             "- Type your query into the search box and press Enter.\n"
+            "- When typing into a search box that already has text, the field\n"
+            "  is auto-cleared. Just provide your full new query.\n"
             "- After search results load, read the snippets for an overview.\n"
             "- Google snippets alone are NOT enough for research goals.\n"
             "  You MUST open_link to at least 1-2 of the top results and\n"
             "  READ the full article content on those pages.\n"
+            "- CRITICAL: When clicking search results, use the EXACT href\n"
+            "  from the interactive elements list. The href contains the\n"
+            "  full URL (e.g. https://reuters.com/technology/ai-breakthrough-2026).\n"
+            "  Pass this full href to open_link. Do NOT guess or shorten URLs.\n"
+            "  Do NOT navigate to generic section pages like /artificial-intelligence/.\n"
             "- After reading an article, go_back to search results if you\n"
             "  need more depth, or move on once you have solid information.\n"
             "- NEVER go_back more than twice. If a page didn't help, try a\n"
             "  DIFFERENT site directly with open_link.\n"
             "- Only AFTER you have read actual article content should you\n"
             "  consider the research goal complete.\n\n"
+            "GITHUB NAVIGATION:\n"
+            "- When visiting a GitHub repository, always navigate to the repo\n"
+            "  ROOT (e.g. https://github.com/owner/repo), not to tabs like\n"
+            "  /actions, /issues, or /pulls.\n"
+            "- The README is displayed on the repo root page — scroll down\n"
+            "  to read it. You do NOT need to open /blob/main/README.md.\n"
+            "- When reading a long page (README, article), scrolling multiple\n"
+            "  times is perfectly fine — keep scrolling until you've read\n"
+            "  the content you need.\n\n"
+            "ON-SITE SEARCH — USE IT:\n"
+            "- When [PAGE STATE] shows a 🔍 SEARCH BAR hint, USE that search\n"
+            "  bar to find what you need on the current site.\n"
+            "- Example: on Amazon, TCGplayer, eBay, GitHub — type_text into\n"
+            "  the site's search bar with your query instead of scrolling\n"
+            "  endlessly through results or going back to Google.\n"
+            "- If you need to refine or change your search on the same site,\n"
+            "  just type a new query into the same search bar.\n"
+            "- Only go back to Google if the site doesn't have a search bar\n"
+            "  or doesn't have what you're looking for.\n\n"
+            "PRICE COMPARISON & PRODUCT RESEARCH:\n"
+            "- When comparing prices, click into the PRODUCT PAGE on each\n"
+            "  site — do NOT rely on search result listings alone.\n"
+            "- READ the 'Content' section in [PAGE STATE]. Prices are usually\n"
+            "  visible there (look for the 💲 PRICES hint). Do NOT scroll\n"
+            "  endlessly if prices are already shown in the Content.\n"
+            "- After noting a price on one site, switch_to_tab or open_new_tab\n"
+            "  to the other site, search for the same product, open its page,\n"
+            "  and note that price.\n"
+            "- Once you have prices from both sites, give the comparison\n"
+            "  IMMEDIATELY in a text response. Do not keep browsing.\n"
+            "- Close tabs you no longer need to keep context manageable.\n\n"
             "PREFERRED SERVICE URLS (use these instead of guessing):\n"
             "- Google Search → https://www.google.com\n"
             "- Gmail / Google login → https://mail.google.com\n"
@@ -1035,7 +1143,32 @@ def build_graph(agent):
                 except Exception:
                     pass
 
+            # Block auto-login when the user never asked to sign in.
+            if name in ("get_saved_credentials", "auto_login"):
+                _user_req_login = (state.get("user_request") or "").lower()
+                _login_kw = {"sign in", "signin", "log in", "login",
+                             "sign-in", "log-in", "authenticate",
+                             "use my account", "my account"}
+                if not any(w in _user_req_login for w in _login_kw):
+                    msg = (
+                        "Login was not requested by the user. Do NOT attempt "
+                        "to sign in unless the user explicitly asks. Most "
+                        "sites allow browsing and searching without an account. "
+                        "Navigate to the site's main page instead."
+                    )
+                    print(f"  BLOCKED: {name} — user did not request login")
+                    new_turn.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "name": name,
+                        "content": json.dumps({"success": False, "error": msg}),
+                    })
+                    last_result = {"success": False, "error": msg}
+                    category = "read_only"
+                    continue
+
             # Rewrite Google Images URLs → Google web search.
+            # Also rewrite GitHub tab URLs → repo root.
             # open_link uses "href"; others use "url".
             _tc_args = tc["arguments"]
             if name in ("open_link", "agenttrust_browser_action", "open_new_tab"):
@@ -1062,6 +1195,53 @@ def build_graph(agent):
                         ):
                             _parsed[_key] = _google_web
                             _rewritten = True
+
+                        # GitHub: strip tab suffixes to navigate to repo root.
+                        _gh_tab = re.match(
+                            r"(https?://github\.com/[^/]+/[^/]+)"
+                            r"/(actions|issues|pulls|projects|wiki|settings|"
+                            r"security|pulse|graphs|packages|releases|deployments)"
+                            r"(/.*)?$",
+                            _val
+                        )
+                        if _gh_tab:
+                            _repo_root = _gh_tab.group(1)
+                            print(f"  REWRITE: {_val} → {_repo_root}")
+                            _parsed[_key] = _repo_root
+                            _rewritten = True
+
+                        # Generic sign-in redirect: if the URL contains a
+                        # login/signin path and the user didn't ask to log
+                        # in, strip it back to the site root.
+                        _user_req = (state.get("user_request") or "").lower()
+                        _login_words = {"sign in", "signin", "log in", "login",
+                                        "sign-in", "log-in", "authenticate",
+                                        "use my account"}
+                        _user_wants_login = any(w in _user_req for w in _login_words)
+                        if not _user_wants_login and not _rewritten:
+                            from urllib.parse import urlparse as _urlparse
+                            try:
+                                _pu = _urlparse(_val)
+                                _path_lower = _pu.path.lower()
+                                _host = _pu.netloc.lower()
+                                _LOGIN_PATH_FRAGMENTS = (
+                                    "/signin", "/sign-in", "/sign_in",
+                                    "/login", "/log-in", "/log_in",
+                                    "/ap/signin", "/accounts/login",
+                                    "/auth/", "/sso/", "/oauth/",
+                                    "/i/flow/login",
+                                )
+                                _is_login_subdomain = _host.startswith("signin.") or _host.startswith("login.") or _host.startswith("auth.")
+                                _is_login_path = any(frag in _path_lower for frag in _LOGIN_PATH_FRAGMENTS)
+                                if _is_login_subdomain or _is_login_path:
+                                    _main = f"{_pu.scheme}://{_pu.netloc}"
+                                    if _is_login_subdomain:
+                                        _main = f"{_pu.scheme}://www.{_host.split('.', 1)[1]}"
+                                    print(f"  REWRITE (skip login): {_val[:80]} → {_main}")
+                                    _parsed[_key] = _main
+                                    _rewritten = True
+                            except Exception:
+                                pass
                     if _rewritten:
                         _tc_args = json.dumps(_parsed)
                 except Exception:
@@ -1103,8 +1283,8 @@ def build_graph(agent):
             args_str = pending[0]["arguments"] if pending else ""
             sig = f"{last_name}:{args_str[:100]}"
             recent.append(sig)
-            if len(recent) > 6:
-                recent = recent[-6:]
+            if len(recent) > 10:
+                recent = recent[-10:]
 
         return {
             "turn_messages": new_turn,
@@ -1169,12 +1349,19 @@ def build_graph(agent):
             failed = True
             fail_reason = result["login_error"]
 
-        # Detect repetitive action loops (same action called 3+ times in last 6)
+        # Detect repetitive action loops.
+        # scroll_page gets a higher threshold (6) since reading long pages is normal.
         recent = state.get("recent_actions") or []
+        action_name = state.get("last_action_name", "")
         if not failed and len(recent) >= 3:
             last_sig = recent[-1] if recent else ""
-            repeat_count = sum(1 for s in recent[-4:] if s == last_sig)
-            if repeat_count >= 3:
+            if action_name == "scroll_page":
+                repeat_count = sum(1 for s in recent if s == last_sig)
+                threshold = 6
+            else:
+                repeat_count = sum(1 for s in recent[-4:] if s == last_sig)
+                threshold = 3
+            if repeat_count >= threshold:
                 failed = True
                 fail_reason = f"Repeated same action {repeat_count} times — likely stuck in a loop"
 
@@ -1212,25 +1399,37 @@ def build_graph(agent):
         recent = state.get("recent_actions") or []
         sub_goals = state.get("sub_goals") or []
 
+        is_last_goal = (goal_idx + 1 >= len(sub_goals))
+        prior_had_actions = state.get("total_actions", 0) > 0
+
         if not recent and goal_idx < len(sub_goals):
-            current_goal = sub_goals[goal_idx]
-            print(f"  NO-ACTION GUARD: agent tried to complete "
-                  f"'{current_goal[:50]}' without any browser actions — retrying")
-            new_turn = list(state.get("turn_messages") or [])
-            new_turn.append({
-                "role": "user",
-                "content": (
-                    "You have not performed any browser actions for this goal. "
-                    "You MUST use the browser (navigate, search, click, read) "
-                    "to find real information. Do NOT answer from memory. "
-                    f"Current goal: {current_goal}"
-                ),
-            })
-            return {
-                "turn_messages": new_turn,
-                "consecutive_failures": 0,
-                "final_response": "",
-            }
+            # Allow the LAST goal to complete with text alone when prior
+            # goals already performed browser actions (e.g. comparison /
+            # summary goals that synthesize data already gathered).
+            if is_last_goal and prior_had_actions:
+                print(f"  LAST-GOAL PASS: allowing text-only completion "
+                      f"(prior actions: {state.get('total_actions', 0)})")
+            else:
+                current_goal = sub_goals[goal_idx]
+                print(f"  NO-ACTION GUARD: agent tried to complete "
+                      f"'{current_goal[:50]}' without any browser actions — retrying")
+                new_turn = list(state.get("turn_messages") or [])
+                new_turn.append({
+                    "role": "user",
+                    "content": (
+                        "You have not performed any browser actions for this goal. "
+                        "You MUST use at least one browser tool (scroll_page to read, "
+                        "open_link, type_text, click, call_external_api) before "
+                        "completing a goal. If you are already on the right page, "
+                        "scroll down to read the content. "
+                        f"Current goal: {current_goal}"
+                    ),
+                })
+                return {
+                    "turn_messages": new_turn,
+                    "consecutive_failures": 0,
+                    "final_response": "",
+                }
 
         done_goal = sub_goals[min(goal_idx, len(sub_goals) - 1)]
         next_idx = goal_idx + 1

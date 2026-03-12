@@ -683,10 +683,14 @@ class BrowserController:
             if (!txt && !el.id && !el.name && !el.placeholder && !ariaLabel && !role) continue;
 
             const near = (r.top < vh + buf && r.bottom > -buf) ? 1 : 0;
-            // For links, keep only the pathname to save tokens
+            // For links, keep the full URL (domain + path) so the agent
+            // can open the exact page instead of guessing the domain.
             let hp = '';
             if (tag === 'a' && el.href) {
-                try { hp = new URL(el.href).pathname.substring(0,80); } catch(e) { hp = el.href.substring(0,80); }
+                try {
+                    const u = new URL(el.href);
+                    hp = (u.origin + u.pathname).substring(0, 150);
+                } catch(e) { hp = el.href.substring(0, 150); }
             }
 
             // Get input type for inputs
@@ -1055,18 +1059,25 @@ class BrowserController:
                     pass
             
             if element and element.is_displayed():
-                # Handle contenteditable differently
+                from selenium.webdriver.common.keys import Keys
+                import time
                 if element.get_attribute("contenteditable") in ("true", ""):
                     element.click()
-                    import time; time.sleep(0.05)
+                    time.sleep(0.05)
+                    # Select-all then replace to clear React-controlled fields
+                    element.send_keys(Keys.CONTROL + "a")
+                    time.sleep(0.05)
                     element.send_keys(text)
                 else:
+                    # .clear() can fail on JS-controlled inputs; select-all as fallback
                     element.clear()
+                    time.sleep(0.05)
+                    if element.get_attribute("value"):
+                        element.send_keys(Keys.CONTROL + "a")
+                        time.sleep(0.05)
                     element.send_keys(text)
-                # Press Enter after typing if requested
                 if press_enter:
-                    import time; time.sleep(0.15)
-                    from selenium.webdriver.common.keys import Keys
+                    time.sleep(0.15)
                     element.send_keys(Keys.RETURN)
                     time.sleep(0.3)
                 return {"success": True, "message": f"Text typed successfully: {text[:50]}"
@@ -4023,16 +4034,16 @@ SEARCH & FORM SUBMISSION:
 - For any form with a single input (search, verification code, etc.),
   prefer pressing Enter over finding a submit button.
 
-LOGIN FLOW — MANDATORY:
-- BEFORE attempting any login, CHECK if you are ALREADY LOGGED IN.
-  Signs of being logged in: inbox is loaded (URL contains /inbox),
-  compose button visible, sign-out/logout link present,
-  account/profile menu visible, dashboard or feed loaded.
-  If already logged in, SKIP get_saved_credentials and auto_login entirely.
-- Only call get_saved_credentials + auto_login when you are on a
-  site's login page AND the page has login input fields (email/password).
-- Do NOT pre-fetch credentials for sites you haven't navigated to yet.
-- When you DO need to log in:
+LOGIN FLOW — STRICT RULES:
+- NEVER attempt to log in unless the USER EXPLICITLY asks you to sign in.
+  Browsing, searching, and reading public content NEVER requires login.
+  If a site redirects you to a sign-in page, navigate BACK to the main
+  site URL (e.g. https://www.amazon.com) — most content is accessible
+  without an account.
+- NEVER call get_saved_credentials or auto_login on your own initiative.
+  Only use them when the user says something like "sign in", "log in",
+  "use my account", etc.
+- If the user DOES ask you to sign in:
   1. Navigate to the site's OWN login page FIRST.
   2. Call get_saved_credentials with the site's domain.
   3. If credentials are found, call auto_login immediately.
@@ -4040,10 +4051,13 @@ LOGIN FLOW — MANDATORY:
      AND password, clicking continue/next, and dismissing popups.
   5. NEVER manually type usernames or passwords with type_text.
   6. Only ask the user if NO saved credentials exist.
+- BEFORE attempting any login, CHECK if you are ALREADY LOGGED IN.
+  Signs of being logged in: inbox is loaded (URL contains /inbox),
+  compose button visible, sign-out/logout link present,
+  account/profile menu visible, dashboard or feed loaded.
+  If already logged in, SKIP get_saved_credentials and auto_login entirely.
 - ⚠ auto_login ONLY works on the site's OWN login page.
   Do NOT call auto_login while on an unrelated site.
-  Example: to log into Gmail, navigate to mail.google.com FIRST.
-- This applies to ALL sites: Google, Gmail, Amazon, eBay, etc.
 
 EMAIL & VERIFICATION CODE WORKFLOW — CRITICAL:
 - In email inboxes (Gmail, Outlook, Yahoo), the NEWEST emails
@@ -4357,135 +4371,61 @@ ROUTINES:
                                "Navigate to the website's login page FIRST, then call auto_login."
                 }
 
-            # Guard: check that the current page domain is related to the
-            # credentials being used. This prevents auto_login on a totally
-            # unrelated site (e.g. calling Gmail auto_login while on cnbc.com).
-            # We only block when the email domain of the username is a MAJOR
-            # provider (Google, Microsoft, etc.) and the page is clearly
-            # unrelated — because many sites use email-style usernames, so
-            # user@gmail.com might still be a valid username on investopedia.com.
+            # Guard: the current page should look like a login page (URL
+            # contains signin/login path fragments). If the user saved
+            # credentials for a domain, they're valid — we just need to
+            # make sure we're actually on a login page, not a random page.
+            _url_lower = current_url.lower()
+            _LOGIN_FRAGMENTS = (
+                "/signin", "/sign-in", "/sign_in",
+                "/login", "/log-in", "/log_in",
+                "/ap/signin", "/accounts/login",
+                "/auth/", "/sso/", "/oauth/",
+            )
             from urllib.parse import urlparse as _urlparse_guard
-            _guard_parsed = _urlparse_guard(current_url)
-            _guard_domain = _guard_parsed.netloc.lower().lstrip("www.")
-            
-            # Extract the credential domain from the username (email)
-            _cred_domain = ""
-            if "@" in username:
-                _cred_domain = username.split("@")[-1].lower()
-            
-            # We only enforce this guard for major email provider domains.
-            # If the credential uses a @gmail.com address, we check that
-            # the page is a Google property (not cnbc.com).
-            # For non-major-provider credentials, we allow (the email domain
-            # might just be the user's login email for any site).
-            _MAJOR_EMAIL_PROVIDERS = {
-                "gmail.com": {"google.com", "gmail.com", "youtube.com", "accounts.google.com", "mail.google.com"},
-                "google.com": {"google.com", "gmail.com", "youtube.com", "accounts.google.com", "mail.google.com"},
-                "outlook.com": {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
-                "hotmail.com": {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
-                "live.com": {"microsoft.com", "outlook.com", "hotmail.com", "live.com", "office.com", "login.microsoftonline.com"},
-                "yahoo.com": {"yahoo.com", "ymail.com", "mail.yahoo.com"},
-                "ymail.com": {"yahoo.com", "ymail.com", "mail.yahoo.com"},
-                "icloud.com": {"apple.com", "icloud.com", "appleid.apple.com"},
-            }
-            
-            if _guard_domain and _cred_domain and _cred_domain in _MAJOR_EMAIL_PROVIDERS:
-                # The credential belongs to a major email provider — check
-                # if the page is one of that provider's domains.
-                _provider_domains = _MAJOR_EMAIL_PROVIDERS[_cred_domain]
-                
-                # Normalize the page domain: strip common auth prefixes
-                def _strip_prefix(d):
-                    for p in ("accounts.", "login.", "auth.", "id.", "sso.", "signin.", "app.", "mail.", "my.", "secure.", "www."):
-                        if d.startswith(p):
-                            base = d[len(p):]
-                            if base and "." in base:
-                                return base
-                    return d
-                _gd_stripped = _strip_prefix(_guard_domain)
-                
-                _is_provider_page = (
-                    _guard_domain in _provider_domains
-                    or _gd_stripped in _provider_domains
-                )
-                
-                if not _is_provider_page:
-                    # The page is NOT a known domain for this email provider.
-                    # Always block: major provider credentials (Gmail, Outlook,
-                    # etc.) should never be auto-filled on unrelated sites.
-                    return {
-                        "success": False,
-                        "message": f"Current page ({_guard_domain}) is not a {_cred_domain} login page. "
-                                   f"Navigate to {_cred_domain}'s login page FIRST, then call auto_login. "
-                                   f"For example, use open_new_tab to go to the correct login page."
-                    }
+            _guard_host = _urlparse_guard(current_url).netloc.lower()
+            _is_login_subdomain = (
+                _guard_host.startswith("signin.")
+                or _guard_host.startswith("login.")
+                or _guard_host.startswith("auth.")
+                or _guard_host.startswith("accounts.")
+            )
+            _on_login_page = _is_login_subdomain or any(
+                frag in _url_lower for frag in _LOGIN_FRAGMENTS
+            )
+            if not _on_login_page:
+                return {
+                    "success": False,
+                    "message": "This page does not appear to be a login page. "
+                               "Navigate to the site's sign-in / login page first, "
+                               "then call auto_login."
+                }
 
-            # --- KNOWN_LOGIN_URLS: if the page has no login fields, try
-            # redirecting to the known login URL for common services ---
-            KNOWN_LOGIN_URLS = {
-                "google.com": "https://accounts.google.com/signin",
-                "gmail.com": "https://accounts.google.com/signin",
-                "mail.google.com": "https://accounts.google.com/signin",
-                "workspace.google.com": "https://accounts.google.com/signin",
-                "youtube.com": "https://accounts.google.com/signin",
-                "microsoft.com": "https://login.microsoftonline.com/",
-                "outlook.com": "https://login.microsoftonline.com/",
-                "live.com": "https://login.microsoftonline.com/",
-                "office.com": "https://login.microsoftonline.com/",
-                "amazon.com": "https://www.amazon.com/ap/signin",
-                "ebay.com": "https://signin.ebay.com/ws/eBayISAPI.dll?SignIn",
-                "facebook.com": "https://www.facebook.com/login",
-                "instagram.com": "https://www.instagram.com/accounts/login/",
-                "twitter.com": "https://twitter.com/i/flow/login",
-                "x.com": "https://twitter.com/i/flow/login",
-                "github.com": "https://github.com/login",
-                "apple.com": "https://appleid.apple.com/sign-in",
-                "icloud.com": "https://appleid.apple.com/sign-in",
-                "yahoo.com": "https://login.yahoo.com/",
-                "linkedin.com": "https://www.linkedin.com/login",
-                "netflix.com": "https://www.netflix.com/login",
-                "spotify.com": "https://accounts.spotify.com/login",
-            }
-
-            # Check if the current page is a promo/marketing page with no
-            # login fields — if so, redirect to the known login page.
-            from urllib.parse import urlparse
-            parsed = urlparse(current_url)
-            page_domain = parsed.netloc.lower().lstrip("www.")
-
-            # Quick check: does the page have ANY login-looking input?
+            # Check if the current page actually has login fields.
+            # If not, tell the agent to find the login page itself.
             has_login_fields = False
             try:
                 elements = self.browser_executor.get_visible_elements()
                 for el in (elements or []):
                     itype = (el.get("input_type") or el.get("type") or "").lower()
-                    name = (el.get("name") or "").lower()
+                    ename = (el.get("name") or "").lower()
                     placeholder = (el.get("placeholder") or "").lower()
-                    if itype in ("email", "password") or name in ("email", "username", "password", "login_email", "userid"):
+                    if itype in ("email", "password") or ename in ("email", "username", "password", "login_email", "userid"):
                         has_login_fields = True
                         break
                     if any(kw in placeholder for kw in ("email", "password", "username", "user id", "sign in")):
                         has_login_fields = True
                         break
             except Exception:
-                has_login_fields = True  # assume yes on error
+                has_login_fields = True
 
             if not has_login_fields:
-                # Try to find a known login URL for this domain
-                login_url = None
-                for known_domain, known_url in KNOWN_LOGIN_URLS.items():
-                    if known_domain in page_domain or page_domain in known_domain:
-                        login_url = known_url
-                        break
-                if login_url and login_url != current_url:
-                    print(f"🔐 No login fields found on {current_url}, redirecting to {login_url}")
-                    try:
-                        nav_result = self.browser_executor.execute_navigation(login_url)
-                        if nav_result.get("status") == "allowed":
-                            time.sleep(2)
-                            current_url = self.browser_executor.get_current_url() or current_url
-                    except Exception as e:
-                        print(f"   ⚠️  Redirect failed: {e}")
+                return {
+                    "success": False,
+                    "message": "No login fields found on this page. "
+                               "Navigate to the site's sign-in page first, "
+                               "then call auto_login again."
+                }
 
             # Early exit: detect if the user is already logged in
             _already_logged_in = False
