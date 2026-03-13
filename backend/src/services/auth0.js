@@ -19,10 +19,10 @@ if (!AUTH0_AUDIENCE) {
 const client = jwksClient({
   jwksUri: `https://${AUTH0_DOMAIN}/.well-known/jwks.json`,
   cache: true,
-  cacheMaxEntries: 5,
-  cacheMaxAge: 600000, // 10 minutes
+  cacheMaxEntries: 10,
+  cacheMaxAge: 86400000, // 24 hours
   rateLimit: true,
-  jwksRequestsPerMinute: 10
+  jwksRequestsPerMinute: 60
 });
 
 // Token cache to avoid repeated validations

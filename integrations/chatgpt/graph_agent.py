@@ -157,6 +157,8 @@ def build_graph(agent):
             pid = getattr(agent.agenttrust, "current_prompt_id", None)
             if pid:
                 agent.agenttrust.update_prompt_progress(pid, "\n".join(_progress_lines))
+            else:
+                print(f"  [progress] skipped — no prompt_id (line: {line[:60]})")
         return list(_progress_lines)
 
     # ================================================================== #

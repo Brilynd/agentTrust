@@ -541,6 +541,8 @@ class AgentTrustClient:
                 if pid:
                     self.current_prompt_id = pid
                 return pid
+            else:
+                print(f"  [progress] store_prompt returned {response.status_code}: {response.text[:200]}")
         except Exception as e:
             print(f"⚠️  Failed to store prompt: {e}")
         return None

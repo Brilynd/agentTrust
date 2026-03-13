@@ -3941,7 +3941,7 @@ class ChatGPTAgentWithAgentTrust:
 
         # --- Core processing: LangGraph state machine or legacy loop ---
         if self._graph:
-            response_text = self._chat_graph(user_message)
+            response_text = self._chat_graph(user_message, prompt_id=prompt_id)
         else:
             response_text = self._chat_loop(user_message)
 
@@ -4052,7 +4052,7 @@ class ChatGPTAgentWithAgentTrust:
     # ------------------------------------------------------------------ #
     # LangGraph implementation (PLAN → OBSERVE → ACT → VERIFY)
     # ------------------------------------------------------------------ #
-    def _chat_graph(self, user_message):
+    def _chat_graph(self, user_message, prompt_id=None):
         """Process message using the LangGraph state machine."""
         initial_state = {
             "user_request": user_message,
@@ -4078,6 +4078,7 @@ class ChatGPTAgentWithAgentTrust:
             "final_response": "",
             "needs_step_up": False,
             "step_up_message": "",
+            "prompt_id": prompt_id or "",
             "progress_lines": [],
         }
 
