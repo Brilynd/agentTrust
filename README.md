@@ -24,13 +24,13 @@
 
 <div align="center">
 
-https://github.com/user-attachments/assets/LiveDemo.mp4
+[![Watch the Demo](https://img.youtube.com/vi/yHGcSgnXgKY/maxresdefault.jpg)](https://youtu.be/yHGcSgnXgKY)
 
-*The agent researches a topic on Google, reads articles, creates a GitHub issue with findings — all with real-time policy enforcement, step-up approval, and a live thinking breakdown in the extension.*
+**[Watch the full demo on YouTube](https://youtu.be/yHGcSgnXgKY)**
+
+*The agent researches a topic, reads articles, creates a GitHub issue with findings — all with real-time policy enforcement, step-up approval, and a live thinking breakdown in the extension.*
 
 </div>
-
-> **Note:** If the video doesn't render above, watch it directly: [LiveDemo.mp4](extension/assets/LiveDemo.mp4)
 
 ---
 
