@@ -80,6 +80,12 @@ AgentTrust is built on Auth0 as its identity backbone. Every trust decision flow
   <img src="docs/agenttrust-architecture.png" alt="AgentTrust Architecture Diagram" width="100%" />
 </p>
 
+### End-to-End Flow
+
+<p align="center">
+  <img src="docs/agenttrust-end-to-end-flow.png" alt="AgentTrust End-to-End Flow" width="100%" />
+</p>
+
 <details>
 <summary><strong>Data Flow: Browser Action</strong> (click, navigate, form submit)</summary>
 
