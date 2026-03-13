@@ -197,12 +197,15 @@ def build_graph(agent):
         # searching, emailing, or API calls, skip the classifier entirely.
         _req_lower = req.lower()
         _BROWSER_KEYWORDS = (
-            "search", "find", "look up", "browse", "navigate",
+            "search", "find", "look up", "look for", "browse", "navigate",
             "go to", "open", "visit", "click", "send an email",
             "send email", "compose email", "schedule", "create event",
             "post to slack", "post a message", "call_external_api",
             "amazon", "google", "github", "ebay", "gmail",
             "calendar", "slack", "notion", "microsoft",
+            "weather", "stock price", "score", "news",
+            "today", "right now", "current", "latest", "live",
+            "price of", "how much is", "deals on", "buy",
         )
         _force_browser = any(kw in _req_lower for kw in _BROWSER_KEYWORDS)
 
@@ -261,10 +264,14 @@ def build_graph(agent):
                                 "- Requests involving 'find', 'search', 'send email', "
                                 "'schedule', 'post', or any website name are ALWAYS "
                                 "BROWSER.\n"
+                                "- Questions about real-time or current information "
+                                "(weather, stock prices, sports scores, news, prices, "
+                                "deals, 'today', 'right now', 'latest') are ALWAYS "
+                                "BROWSER — the agent must search the web for live data.\n"
                                 "- Only classify as CHAT if there is NO active browser "
-                                "page AND the message is clearly a general knowledge "
-                                "question with no browser intent (e.g. 'what is 2+2', "
-                                "'explain quantum physics').\n"
+                                "page AND the message is purely a static knowledge "
+                                "question (e.g. 'what is 2+2', 'explain quantum "
+                                "physics', 'name 3 presidents').\n"
                             ),
                         },
                         {"role": "user", "content": req + context_block},
@@ -426,10 +433,10 @@ def build_graph(agent):
             "- When visiting GitHub repos, always go to the REPO ROOT\n"
             "  (e.g. https://github.com/owner/repo) to read the README.\n"
             "  NEVER navigate to /actions, /issues, or /pulls unless specifically asked.\n"
-            "- When COMPARING items across sites (prices, features, reviews),\n"
-            "  combine ALL browsing into ONE goal. NEVER make 'compare the\n"
-            "  results' a separate goal — include the comparison in the same\n"
-            "  goal that visits the sites.\n"
+            "- COMPARISON TASKS (prices, features, reviews across sites):\n"
+            "  MUST be a SINGLE goal. Visit site A, note info, visit site B,\n"
+            "  note info, then summarize — ALL in one goal. NEVER split into\n"
+            "  separate goals per site. NEVER have a standalone 'compare' goal.\n"
             "- Goals must be in the correct ORDER. Research BEFORE email. Email BEFORE\n"
             "  calendar invites.\n"
             "- Keep to 2-4 goals maximum. Fewer is better.\n\n"
@@ -458,10 +465,9 @@ def build_graph(agent):
             "  Cross-service: [\"Search Google for AI news and gather findings\", "
             "\"Use call_external_api to post a summary to #engineering on Slack\", "
             "\"Use call_external_api to create a Google Calendar event for a review meeting\"]\n"
-            "  Price comparison: [\"Search Amazon for X, open the product page "
-            "and note the price, then search TCGplayer for the same product, "
-            "open the product page and note the price, then summarize which "
-            "site has the better deal\"]\n"
+            "  Price comparison (MUST be ONE goal): [\"Search Amazon for X, "
+            "note prices, open a new tab to TCGplayer, search for the same "
+            "product, note prices, then compare and summarize the best deals\"]\n"
             + (rag_context + "\n" if rag_context else "")
             + (cred_hint if cred_hint else "") +
             "\nJSON array:"

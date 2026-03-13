@@ -37,7 +37,8 @@ router.post('/:sessionId/end', validateAction, async (req, res) => {
 // Get all sessions for the authenticated user (optionally filtered by agentId)
 router.get('/', authenticateUser, async (req, res) => {
   try {
-    const { agentId, limit = 50 } = req.query;
+    const { agentId, limit = 50, fields } = req.query;
+    const includeScreenshots = fields === 'full';
     const userId = req.user.userId;
     
     let sessions;
@@ -69,7 +70,7 @@ router.get('/', authenticateUser, async (req, res) => {
             formData: action.formData,
             reason: action.reason,
             stepUpRequired: action.stepUpRequired,
-            screenshot: action.screenshot,
+            screenshot: includeScreenshots ? action.screenshot : (action.screenshot ? true : null),
             promptId: action.promptId || null
           }))
         };

@@ -3932,12 +3932,21 @@ class ChatGPTAgentWithAgentTrust:
         """Process one user message. Routes to LangGraph or legacy loop."""
         print(f"\n👤 User: {user_message}\n")
 
-        # Store the user prompt in the DB so the extension can show it
+        # Store the user prompt in the DB so the extension can show it.
+        # Retry once with a fresh token if the first attempt fails.
         prompt_id = None
-        try:
-            prompt_id = self.agenttrust.store_prompt(user_message)
-        except Exception:
-            pass
+        for _sp_attempt in range(2):
+            try:
+                prompt_id = self.agenttrust.store_prompt(user_message)
+                if prompt_id:
+                    break
+                if _sp_attempt == 0:
+                    self.agenttrust._token = None
+                    self.agenttrust._token_expiry = None
+            except Exception:
+                if _sp_attempt == 0:
+                    self.agenttrust._token = None
+                    self.agenttrust._token_expiry = None
 
         # --- Core processing: LangGraph state machine or legacy loop ---
         if self._graph:

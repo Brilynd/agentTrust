@@ -527,15 +527,12 @@ function renderThinkingBlock(progressText, isActive) {
   const headerLabel = isActive ? 'Thinking' : `Thought \u2014 ${lines.length} steps`;
   const collapsedCls = isActive ? '' : ' collapsed';
 
-  return `<div class="chat-thinking-block${collapsedCls}">
-    <div class="thinking-header" data-toggle-thinking="true">
-      <span class="thinking-toggle">\u25BC</span> ${headerLabel}${dotsHtml}
-    </div>
-    <div class="thinking-steps">${stepsHtml}</div>
-  </div>`;
+  return `<div class="chat-thinking-block${collapsedCls}"><div class="thinking-header" data-toggle-thinking="true"><span class="thinking-toggle">\u25BC</span> ${headerLabel}${dotsHtml}</div><div class="thinking-steps">${stepsHtml}</div></div>`;
 }
 
 // ─── Chat: load history from active session ──────────
+let _lastChatHtml = '';
+
 async function loadChatHistory() {
   const { userToken } = await chrome.storage.local.get(['userToken']);
   if (!userToken) return;
@@ -543,9 +540,9 @@ async function loadChatHistory() {
   try {
     const res = await apiFetch('/sessions?limit=1', { token: userToken });
     if (!res.success || !res.sessions || res.sessions.length === 0) {
-      // Still show pending messages even when no session exists yet
       if (pendingChatMessages.length > 0) return;
       $('chatMessages').innerHTML = '<div class="state-empty">No active session. Start the agent to begin chatting.</div>';
+      _lastChatHtml = '';
       activeSessionId = null;
       return;
     }
@@ -554,7 +551,6 @@ async function loadChatHistory() {
     activeSessionId = session.id;
 
     const prompts = (session.prompts || []).slice().sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
-    const actions = (session.actions || []).slice().sort((a, b) => ts(a.timestamp) - ts(b.timestamp));
 
     // Reconcile: remove pending messages that now appear in DB prompts
     if (pendingChatMessages.length > 0) {
@@ -572,20 +568,9 @@ async function loadChatHistory() {
 
     if (prompts.length === 0 && pendingChatMessages.length === 0) {
       $('chatMessages').innerHTML = '<div class="state-empty">Session active. Send a command below.</div>';
+      _lastChatHtml = '';
       return;
     }
-
-    // Group actions by promptId
-    const actionsByPrompt = {};
-    for (const a of actions) {
-      if (a.promptId) {
-        if (!actionsByPrompt[a.promptId]) actionsByPrompt[a.promptId] = [];
-        actionsByPrompt[a.promptId].push(a);
-      }
-    }
-
-    const container = $('chatMessages');
-    const wasScrolledToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
 
     let html = '';
     for (const p of prompts) {
@@ -595,15 +580,7 @@ async function loadChatHistory() {
         if (p.progress) {
           html += renderThinkingBlock(p.progress, false);
         }
-        const linked = actionsByPrompt[p.id] || [];
-        const screenshots = linked.filter(a => a.screenshot);
-
-        let screenshotHtml = '';
-        for (const a of screenshots) {
-          screenshotHtml += `<div class="chat-screenshot"><img src="data:image/png;base64,${a.screenshot}" alt="Screenshot"></div>`;
-        }
-
-        html += `<div class="chat-bubble agent"><span class="bubble-label">ChatGPT</span>${esc(p.response)}${screenshotHtml}</div>`;
+        html += `<div class="chat-bubble agent"><span class="bubble-label">ChatGPT</span>${esc(p.response)}</div>`;
       } else if (p.progress) {
         html += renderThinkingBlock(p.progress, true);
       } else {
@@ -617,12 +594,20 @@ async function loadChatHistory() {
       html += `<div class="chat-thinking" id="thinkingIndicator"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`;
     }
 
-    container.innerHTML = html;
-
-    if (wasScrolledToBottom) {
-      container.scrollTop = container.scrollHeight;
+    // Only touch the DOM if the content actually changed.
+    // This prevents the flash/flicker from destroying and
+    // recreating DOM nodes every 3 seconds while thinking.
+    if (html !== _lastChatHtml) {
+      const container = $('chatMessages');
+      const wasScrolledToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
+      container.innerHTML = html;
+      _lastChatHtml = html;
+      if (wasScrolledToBottom) {
+        container.scrollTop = container.scrollHeight;
+      }
     }
   } catch (err) {
+    // On fetch error, keep existing chat visible — don't wipe it
     console.error('Chat load error:', err);
   }
 }
