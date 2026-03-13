@@ -20,6 +20,20 @@
 
 ---
 
+## Live Demo
+
+<div align="center">
+
+https://github.com/user-attachments/assets/LiveDemo.mp4
+
+*The agent researches a topic on Google, reads articles, creates a GitHub issue with findings — all with real-time policy enforcement, step-up approval, and a live thinking breakdown in the extension.*
+
+</div>
+
+> **Note:** If the video doesn't render above, watch it directly: [LiveDemo.mp4](extension/assets/LiveDemo.mp4)
+
+---
+
 ## What is AgentTrust?
 
 AI agents can reason, but they can't be trusted. Today's agents are either sandboxed into uselessness or given uncontrolled access to real accounts. Neither is deployable.
