@@ -5,6 +5,7 @@ const express = require('express');
 const router = express.Router();
 const { validateAction } = require('../middleware/auth');
 const { enforcePolicy } = require('../middleware/policy');
+const { uploadScreenshotToS3, getScreenshotResponseValue } = require('../services/screenshot-storage');
 
 function sanitizeFormData(fd) {
   if (!fd || typeof fd !== 'object') return fd;
@@ -16,6 +17,35 @@ function sanitizeFormData(fd) {
     out.fields = safe;
   }
   return out;
+}
+
+async function formatActionForResponse(action) {
+  const screenshot = await getScreenshotResponseValue({
+    screenshot: action.screenshot,
+    screenshotS3Key: action.screenshotS3Key
+  });
+
+  return {
+    id: action.id,
+    agentId: action.agentId,
+    sessionId: action.sessionId,
+    type: action.type,
+    timestamp: action.timestamp,
+    domain: action.domain,
+    url: action.url,
+    riskLevel: action.riskLevel,
+    hash: action.hash,
+    previousHash: action.previousHash,
+    target: action.target,
+    formData: sanitizeFormData(action.formData),
+    scopes: action.scopes,
+    stepUpRequired: action.stepUpRequired,
+    reason: action.reason,
+    status: action.status || 'allowed',
+    screenshot,
+    screenshotS3Key: action.screenshotS3Key || null,
+    createdAt: action.createdAt
+  };
 }
 
 // Log an action
@@ -98,26 +128,7 @@ router.get('/user', require('../middleware/auth').authenticateUser, async (req, 
     
     const actions = await Action.findAll(filters);
     
-    const formattedActions = actions.map(action => ({
-      id: action.id,
-      agentId: action.agentId,
-      sessionId: action.sessionId,
-      type: action.type,
-      timestamp: action.timestamp,
-      domain: action.domain,
-      url: action.url,
-      riskLevel: action.riskLevel,
-      hash: action.hash,
-      previousHash: action.previousHash,
-      target: action.target,
-      formData: sanitizeFormData(action.formData),
-      scopes: action.scopes,
-      stepUpRequired: action.stepUpRequired,
-      reason: action.reason,
-      status: action.status || 'allowed',
-      screenshot: action.screenshot,
-      createdAt: action.createdAt
-    }));
+    const formattedActions = await Promise.all(actions.map(formatActionForResponse));
     
     res.json({
       success: true,
@@ -162,26 +173,7 @@ router.get('/', validateAction, async (req, res) => {
     
     const actions = await Action.findAll(filters);
     
-    const formattedActions = actions.map(action => ({
-      id: action.id,
-      agentId: action.agentId,
-      sessionId: action.sessionId,
-      type: action.type,
-      timestamp: action.timestamp,
-      domain: action.domain,
-      url: action.url,
-      riskLevel: action.riskLevel,
-      hash: action.hash,
-      previousHash: action.previousHash,
-      target: action.target,
-      formData: sanitizeFormData(action.formData),
-      scopes: action.scopes,
-      stepUpRequired: action.stepUpRequired,
-      reason: action.reason,
-      status: action.status || 'allowed',
-      screenshot: action.screenshot,
-      createdAt: action.createdAt
-    }));
+    const formattedActions = await Promise.all(actions.map(formatActionForResponse));
     
     res.json({
       success: true,
@@ -228,11 +220,27 @@ router.patch('/:actionId', validateAction, async (req, res) => {
       });
     }
     
-    // Update screenshot in database
+    let screenshotToStore = screenshot;
+    let screenshotS3Key = null;
+
+    try {
+      const uploaded = await uploadScreenshotToS3({
+        screenshot,
+        agentId: action.agentId,
+        actionId,
+        timestamp: new Date().toISOString()
+      });
+      screenshotToStore = uploaded.screenshot;
+      screenshotS3Key = uploaded.screenshotS3Key;
+    } catch (uploadError) {
+      console.error('S3 screenshot upload failed, storing in DB:', uploadError.message);
+    }
+
+    // Update screenshot reference in database
     const pool = require('../config/database');
     await pool.query(
-      'UPDATE actions SET screenshot = $1 WHERE id = $2',
-      [screenshot, actionId]
+      'UPDATE actions SET screenshot = $1, screenshot_s3_key = $2 WHERE id = $3',
+      [screenshotToStore, screenshotS3Key, actionId]
     );
     
     res.json({

@@ -30,6 +30,11 @@ async function addColumns() {
       ALTER TABLE actions 
       ADD COLUMN IF NOT EXISTS screenshot TEXT
     `);
+
+    await pool.query(`
+      ALTER TABLE actions
+      ADD COLUMN IF NOT EXISTS screenshot_s3_key TEXT
+    `);
     
     // Create index on session_id
     await pool.query(`

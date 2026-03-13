@@ -7,6 +7,7 @@ const { authenticateUser, validateAction } = require('../middleware/auth');
 const { Session } = require('../models/session');
 const { Action } = require('../models/action');
 const { Prompt } = require('../models/prompt');
+const { getScreenshotResponseValue } = require('../services/screenshot-storage');
 
 // Agent explicitly creates a new session (M2M auth)
 router.post('/', validateAction, async (req, res) => {
@@ -53,10 +54,14 @@ router.get('/', authenticateUser, async (req, res) => {
           Action.findBySession(session.id),
           Prompt.findBySession(session.id)
         ]);
-        return {
-          ...session.toJSON(),
-          prompts: prompts.map(p => p.toJSON()),
-          actions: actions.map(action => ({
+
+        const formattedActions = await Promise.all(actions.map(async (action) => {
+          const screenshot = await getScreenshotResponseValue({
+            screenshot: action.screenshot,
+            screenshotS3Key: action.screenshotS3Key
+          });
+
+          return {
             id: action.id,
             agentId: action.agentId,
             type: action.type,
@@ -69,9 +74,16 @@ router.get('/', authenticateUser, async (req, res) => {
             formData: action.formData,
             reason: action.reason,
             stepUpRequired: action.stepUpRequired,
-            screenshot: action.screenshot,
+            screenshot,
+            screenshotS3Key: action.screenshotS3Key || null,
             promptId: action.promptId || null
-          }))
+          };
+        }));
+
+        return {
+          ...session.toJSON(),
+          prompts: prompts.map(p => p.toJSON()),
+          actions: formattedActions
         };
       })
     );
@@ -119,27 +131,37 @@ router.get('/:sessionId', authenticateUser, async (req, res) => {
       Action.findBySession(sessionId),
       Prompt.findBySession(sessionId)
     ]);
+
+    const formattedActions = await Promise.all(actions.map(async (action) => {
+      const screenshot = await getScreenshotResponseValue({
+        screenshot: action.screenshot,
+        screenshotS3Key: action.screenshotS3Key
+      });
+
+      return {
+        id: action.id,
+        type: action.type,
+        timestamp: action.timestamp,
+        domain: action.domain,
+        url: action.url,
+        riskLevel: action.riskLevel,
+        status: action.status,
+        target: action.target,
+        formData: action.formData,
+        reason: action.reason,
+        stepUpRequired: action.stepUpRequired,
+        screenshot,
+        screenshotS3Key: action.screenshotS3Key || null,
+        promptId: action.promptId || null
+      };
+    }));
     
     res.json({
       success: true,
       session: {
         ...session.toJSON(),
         prompts: prompts.map(p => p.toJSON()),
-        actions: actions.map(action => ({
-          id: action.id,
-          type: action.type,
-          timestamp: action.timestamp,
-          domain: action.domain,
-          url: action.url,
-          riskLevel: action.riskLevel,
-          status: action.status,
-          target: action.target,
-          formData: action.formData,
-          reason: action.reason,
-          stepUpRequired: action.stepUpRequired,
-          screenshot: action.screenshot,
-          promptId: action.promptId || null
-        }))
+        actions: formattedActions
       }
     });
   } catch (error) {

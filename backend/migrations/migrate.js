@@ -93,6 +93,7 @@ async function migrate() {
         reason TEXT,
         status VARCHAR(20) DEFAULT 'allowed',
         screenshot TEXT,
+        screenshot_s3_key TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
@@ -113,6 +114,12 @@ async function migrate() {
     await pool.query(`
       ALTER TABLE actions 
       ADD COLUMN IF NOT EXISTS screenshot TEXT
+    `);
+
+    // Add screenshot_s3_key column for S3-backed screenshot storage
+    await pool.query(`
+      ALTER TABLE actions
+      ADD COLUMN IF NOT EXISTS screenshot_s3_key TEXT
     `);
 
     // Add prompt_id column to link actions to the prompt that triggered them

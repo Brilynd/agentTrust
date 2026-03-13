@@ -39,6 +39,9 @@
     "32": "assets/icon32.png",
     "128": "assets/icon128.png"
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:;"
+  },
   "web_accessible_resources": [
     {
       "resources": ["stepup/stepup.html"],

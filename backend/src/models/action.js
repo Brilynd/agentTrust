@@ -6,6 +6,7 @@ const pool = require('../config/database');
 const { encryptJSON, decryptJSON } = require('../utils/crypto');
 
 let _ivColumnChecked = false;
+let _screenshotKeyColumnChecked = false;
 async function ensureFormDataIvColumn() {
   if (_ivColumnChecked) return;
   try {
@@ -15,6 +16,18 @@ async function ensureFormDataIvColumn() {
     _ivColumnChecked = true;
   } catch {
     _ivColumnChecked = true;
+  }
+}
+
+async function ensureScreenshotS3KeyColumn() {
+  if (_screenshotKeyColumnChecked) return;
+  try {
+    await pool.query(`
+      ALTER TABLE actions ADD COLUMN IF NOT EXISTS screenshot_s3_key TEXT
+    `);
+    _screenshotKeyColumnChecked = true;
+  } catch {
+    _screenshotKeyColumnChecked = true;
   }
 }
 
@@ -36,6 +49,7 @@ class Action {
     this.reason = data.reason;
     this.status = data.status || 'allowed';
     this.screenshot = data.screenshot;
+    this.screenshotS3Key = data.screenshot_s3_key || data.screenshotS3Key || null;
     this.promptId = data.prompt_id || data.promptId;
     this.parentActionId = data.parent_action_id || data.parentActionId || null;
     this.subOrder = data.sub_order != null ? data.sub_order : (data.subOrder != null ? data.subOrder : null);
@@ -61,6 +75,7 @@ class Action {
   
   static async create(data) {
     await ensureFormDataIvColumn();
+    await ensureScreenshotS3KeyColumn();
 
     const {
       id,
@@ -80,6 +95,7 @@ class Action {
       reason,
       status,
       screenshot,
+      screenshotS3Key,
       promptId,
       parentActionId,
       subOrder
@@ -98,9 +114,9 @@ class Action {
       INSERT INTO actions (
         id, agent_id, session_id, type, timestamp, domain, url, risk_level,
         hash, previous_hash, target, form_data, form_data_iv, scopes,
-        step_up_required, reason, status, screenshot, prompt_id,
+        step_up_required, reason, status, screenshot, screenshot_s3_key, prompt_id,
         parent_action_id, sub_order
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
       RETURNING *
     `;
     
@@ -123,6 +139,7 @@ class Action {
       reason || null,
       status || 'allowed',
       screenshot || null,
+      screenshotS3Key || null,
       promptId || null,
       parentActionId || null,
       subOrder != null ? subOrder : null
@@ -139,6 +156,7 @@ class Action {
   
   static async findById(id) {
     await ensureFormDataIvColumn();
+    await ensureScreenshotS3KeyColumn();
     const query = 'SELECT * FROM actions WHERE id = $1';
     const result = await pool.query(query, [id]);
     
@@ -151,6 +169,7 @@ class Action {
   
   static async findByAgent(agentId, filters = {}) {
     await ensureFormDataIvColumn();
+    await ensureScreenshotS3KeyColumn();
     let query = 'SELECT * FROM actions WHERE agent_id = $1';
     const values = [agentId];
     let paramIndex = 2;
@@ -194,6 +213,7 @@ class Action {
   
   static async findAll(filters = {}) {
     await ensureFormDataIvColumn();
+    await ensureScreenshotS3KeyColumn();
     let query = 'SELECT * FROM actions WHERE 1=1';
     const values = [];
     let paramIndex = 1;

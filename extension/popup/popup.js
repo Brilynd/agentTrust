@@ -12,6 +12,50 @@ let currentApproval = null;
 let pendingChatMessages = [];
 let pendingWarningTimer = null;
 
+function stableScreenshotIdentity(action) {
+  if (!action) return '';
+  if (action.screenshotS3Key) return `s3:${action.screenshotS3Key}`;
+  const shot = action.screenshot || '';
+  if (!shot) return '';
+  if (shot.startsWith('http://') || shot.startsWith('https://')) {
+    try {
+      const u = new URL(shot);
+      // Ignore signed query params that rotate every poll.
+      return `url:${u.origin}${u.pathname}`;
+    } catch {
+      return `url:${shot.split('?')[0]}`;
+    }
+  }
+  if (shot.startsWith('data:image/')) return `data:${shot.length}`;
+  return `b64:${shot.length}`;
+}
+
+function buildChatRenderSignature(sessionId, prompts, actions, pending) {
+  const promptSig = (prompts || []).map(p => ({
+    id: p.id,
+    createdAt: p.createdAt,
+    content: p.content,
+    response: p.response
+  })).sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '') || (a.id || '').localeCompare(b.id || ''));
+
+  const actionSig = (actions || []).map(a => ({
+    id: a.id,
+    promptId: a.promptId || null,
+    timestamp: a.timestamp,
+    type: a.type,
+    status: a.status,
+    reason: a.reason,
+    shot: stableScreenshotIdentity(a)
+  })).sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || '') || (a.id || '').localeCompare(b.id || ''));
+
+  return JSON.stringify({
+    sessionId: sessionId || null,
+    prompts: promptSig,
+    actions: actionSig,
+    pending: (pending || []).map(p => ({ text: p.text }))
+  });
+}
+
 // ─── Bootstrap ───────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   // Detect pop-out window (opened via ?popout=1 or window width check)
@@ -367,8 +411,9 @@ function renderActionBlock(action) {
 
   if (isError) {
     const badge = action.status === 'denied' ? 'BLOCKED' : 'ERROR';
+    const screenshotSrc = getScreenshotSrc(action.screenshot);
     const img = hasScreenshot
-      ? `<div class="turn-screenshot"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`
+      ? `<div class="turn-screenshot"><img src="${screenshotSrc}" alt="Screenshot"></div>`
       : '';
     return `<div class="turn-error"><span class="turn-error-badge">${badge}</span> ${actionLabel}</div>` + img;
   }
@@ -382,8 +427,17 @@ function renderActionBlock(action) {
     ? `<span class="turn-override-badge">MANUAL OVERRIDE</span> `
     : '';
 
+  const screenshotSrc = getScreenshotSrc(action.screenshot);
+
   return `<div class="turn-action-label">${overrideBadge}${actionLabel}</div>`
-    + `<div class="turn-screenshot${isOverride ? ' override-border' : ''}"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`;
+    + `<div class="turn-screenshot${isOverride ? ' override-border' : ''}"><img src="${screenshotSrc}" alt="Screenshot"></div>`;
+}
+
+function getScreenshotSrc(rawScreenshot) {
+  if (!rawScreenshot) return '';
+  if (rawScreenshot.startsWith('data:image/')) return rawScreenshot;
+  if (rawScreenshot.startsWith('http://') || rawScreenshot.startsWith('https://')) return rawScreenshot;
+  return `data:image/png;base64,${rawScreenshot}`;
 }
 
 function describeTarget(action) {
@@ -585,7 +639,20 @@ async function loadChatHistory() {
     }
 
     const container = $('chatMessages');
-    const wasScrolledToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
+    const hasRenderedBefore = container.dataset.chatRendered === '1';
+
+    // If we are still waiting on the model, avoid repainting the chat UI on every poll.
+    // Keep the current view stable and update once the response is ready.
+    const hasInProgressPrompt = prompts.some(p => !p.response);
+    const waitingForResponse = pendingChatMessages.length > 0 || hasInProgressPrompt;
+    if (waitingForResponse && hasRenderedBefore) {
+      return;
+    }
+
+    const renderSignature = buildChatRenderSignature(activeSessionId, prompts, actions, pendingChatMessages);
+    if (container.dataset.lastRenderSignature === renderSignature) {
+      return;
+    }
 
     let html = '';
     for (const p of prompts) {
@@ -600,7 +667,7 @@ async function loadChatHistory() {
 
         let screenshotHtml = '';
         for (const a of screenshots) {
-          screenshotHtml += `<div class="chat-screenshot"><img src="data:image/png;base64,${a.screenshot}" alt="Screenshot"></div>`;
+          screenshotHtml += `<div class="chat-screenshot"><img src="${getScreenshotSrc(a.screenshot)}" alt="Screenshot"></div>`;
         }
 
         html += `<div class="chat-bubble agent"><span class="bubble-label">ChatGPT</span>${esc(p.response)}${screenshotHtml}</div>`;
@@ -618,10 +685,20 @@ async function loadChatHistory() {
     }
 
     container.innerHTML = html;
+    container.dataset.lastRenderSignature = renderSignature;
+    container.dataset.chatRendered = '1';
 
-    if (wasScrolledToBottom) {
-      container.scrollTop = container.scrollHeight;
-    }
+    // Chat UX requirement: always follow newest content.
+    container.scrollTop = container.scrollHeight;
+
+    // Keep pinned as screenshots finish loading and increase content height.
+    container.querySelectorAll('img').forEach(img => {
+      if (!img.complete) {
+        img.addEventListener('load', () => {
+          container.scrollTop = container.scrollHeight;
+        }, { once: true });
+      }
+    });
   } catch (err) {
     console.error('Chat load error:', err);
   }

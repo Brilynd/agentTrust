@@ -5,6 +5,7 @@ const { createHash } = require('../utils/crypto');
 const { Action } = require('../models/action');
 const pool = require('../config/database');
 const { cwLog } = require('./cloudwatch');
+const { uploadScreenshotToS3 } = require('./screenshot-storage');
 
 // Cache for previous hash (for chain continuity)
 let previousHashCache = new Map();
@@ -50,6 +51,25 @@ async function logAction(actionData) {
   const previousHash = await getPreviousHash(agentId);
   const hash = createHash(previousHash, actionData);
   const id = `action_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  let screenshotPayload = {
+    screenshot: screenshot || null,
+    screenshotS3Key: null
+  };
+
+  if (screenshot) {
+    try {
+      screenshotPayload = await uploadScreenshotToS3({
+        screenshot,
+        agentId,
+        actionId: id,
+        timestamp: actionData.timestamp || new Date().toISOString()
+      });
+    } catch (uploadErr) {
+      console.error('Failed to upload screenshot to S3, falling back to DB storage:', uploadErr.message);
+      screenshotPayload = { screenshot, screenshotS3Key: null };
+    }
+  }
   
   const loggedAction = {
     id,
@@ -68,7 +88,8 @@ async function logAction(actionData) {
     stepUpRequired,
     reason,
     status: status || 'allowed',
-    screenshot: screenshot || null,
+    screenshot: screenshotPayload.screenshot,
+    screenshotS3Key: screenshotPayload.screenshotS3Key,
     promptId: promptId || null,
     parentActionId: parentActionId || null,
     subOrder: subOrder != null ? subOrder : null
