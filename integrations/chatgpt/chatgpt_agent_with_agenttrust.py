@@ -420,6 +420,8 @@ class BrowserController:
             "profile.password_manager_enabled": False,
             "profile.password_manager_leak_detection": False,
             "profile.default_content_setting_values.notifications": 2,
+            "profile.default_content_setting_values.popups": 2,
+            "profile.default_content_setting_values.ads": 2,
             "autofill.profile_enabled": False,
             "autofill.credit_card_enabled": False,
             "password_manager.enabled": False,
@@ -1787,6 +1789,59 @@ class BrowserActionExecutor:
                         actual_url = driver.current_url
                         print(f"  REDIRECT FIX: Google Images → {actual_url}")
 
+                    # Guard: if the site redirected to a sign-in/login page
+                    # and the user didn't ask to log in, go back to the root.
+                    _actual_lower = actual_url.lower()
+                    _LOGIN_FRAGS = (
+                        "/ap/signin", "/signin", "/sign-in", "/sign_in",
+                        "/login", "/log-in", "/log_in", "/accounts/login",
+                        "/auth/", "/sso/", "/oauth/", "/i/flow/login",
+                    )
+                    _is_login_redirect = any(f in _actual_lower for f in _LOGIN_FRAGS)
+                    if not _is_login_redirect:
+                        try:
+                            from urllib.parse import urlparse as _lr_up
+                            _lr_host = _lr_up(actual_url).hostname or ""
+                            if _lr_host.startswith("signin.") or _lr_host.startswith("login.") or _lr_host.startswith("auth."):
+                                _is_login_redirect = True
+                        except Exception:
+                            pass
+
+                    if _is_login_redirect:
+                        _orig_req = (getattr(self, '_parent_agent', None) or self)
+                        _user_text = ""
+                        if hasattr(_orig_req, 'conversation_history'):
+                            for m in reversed(_orig_req.conversation_history):
+                                if m.get("role") == "user":
+                                    _user_text = (m.get("content") or "").lower()
+                                    break
+                        _login_kw = {"sign in", "signin", "log in", "login",
+                                     "sign-in", "log-in", "authenticate",
+                                     "use my account"}
+                        _user_wants_login = any(w in _user_text for w in _login_kw)
+                        if not _user_wants_login:
+                            try:
+                                from urllib.parse import urlparse as _lr_up2
+                                _pu = _lr_up2(actual_url)
+                                _root = f"{_pu.scheme}://{_pu.hostname}"
+                                print(f"  REDIRECT FIX: Login page → {_root}")
+                                driver.get(_root)
+                                try:
+                                    WebDriverWait(driver, 5).until(
+                                        lambda d: d.execute_script("return document.readyState") == "complete"
+                                    )
+                                except Exception:
+                                    pass
+                                actual_url = driver.current_url
+                            except Exception:
+                                pass
+
+                    # Auto-dismiss cookie banners, popups, overlays after load
+                    try:
+                        self.dismiss_overlays()
+                    except Exception:
+                        pass
+
                     title = (driver.title or "").lower()
                     body_text = ""
                     try:
@@ -1920,16 +1975,19 @@ class BrowserActionExecutor:
         # Validate navigation through AgentTrust
         try:
             result = self.execute_navigation(target_url)
-            # If navigation allowed, actually open the link
+            # execute_navigation already loaded the page via driver.get(),
+            # so we do NOT call browser.open_link() again — that would
+            # search for an <a> element matching the href on the now-loaded
+            # page and could accidentally click a different link (e.g.
+            # "Sign In" on Amazon when the href substring matches).
             if result.get("status") == "allowed" and self.browser:
-                link_result = self.browser.open_link(href=href, link_text=link_text, link_index=link_index)
-                # Screenshot is already captured in execute_navigation
+                new_url = self.browser.get_current_url()
                 return {
                     "status": "allowed",
                     "action_id": result.get("action_id"),
                     "risk_level": result.get("risk_level"),
-                    "link_opened": link_result.get("success", False),
-                    "new_url": link_result.get("new_url", target_url)
+                    "link_opened": True,
+                    "new_url": new_url,
                 }
             return result
         except PermissionError as e:
@@ -2257,9 +2315,15 @@ class BrowserActionExecutor:
                 tab_result["risk_level"] = result.get("risk_level")
                 tab_result["status"] = "allowed"
 
+                # Auto-dismiss overlays on the newly loaded page
                 try:
                     import time as _time
-                    _time.sleep(0.3)
+                    _time.sleep(0.5)
+                    self.dismiss_overlays()
+                except Exception:
+                    pass
+
+                try:
                     screenshot = self.browser.take_screenshot()
                     tab_result["screenshot"] = screenshot
                     if screenshot and result.get("action_id"):
@@ -2474,12 +2538,74 @@ class BrowserActionExecutor:
         except Exception:
             pass
 
-        # ── Phase 3: Escape key fallback ──
-        # Only send Escape if Phases 1/2 found nothing — and do NOT
-        # claim success unconditionally, because Escape on a normal
-        # page can cancel forms or trigger refreshes.
-        # We skip this phase entirely now; the agent prompt already
-        # tells the LLM to close overlays via targeted clicks.
+        # ── Phase 3: JavaScript DOM cleanup ──
+        # Aggressively remove overlay/modal/paywall elements and restore scroll
+        try:
+            js_dismissed = driver.execute_script("""
+                let removed = 0;
+
+                // Selectors for fixed/sticky overlays, modals, paywalls, GDPR
+                const overlaySelectors = [
+                    '[class*="paywall"]', '[id*="paywall"]',
+                    '[class*="subscribe-wall"]', '[id*="subscribe-wall"]',
+                    '[class*="reg-wall"]', '[id*="reg-wall"]',
+                    '[class*="modal-overlay"]', '[class*="modal-backdrop"]',
+                    '[class*="overlay"][class*="cookie"]',
+                    '[class*="newsletter-popup"]', '[class*="newsletter-modal"]',
+                    '[class*="popup-overlay"]', '[id*="popup-overlay"]',
+                    '[class*="consent-banner"]', '[id*="consent-banner"]',
+                    '[class*="gdpr"]', '[id*="gdpr"]',
+                    '[class*="tp-modal"]', '[id*="tp-modal"]',
+                    '[class*="piano-"]',
+                    '[class*="ad-blocker"]', '[id*="ad-blocker"]',
+                    '[class*="interstitial"]', '[id*="interstitial"]',
+                    'iframe[src*="subscribe"]',
+                    'iframe[src*="paywall"]',
+                ];
+                overlaySelectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => {
+                        el.remove();
+                        removed++;
+                    });
+                });
+
+                // Remove fixed/sticky positioned elements that cover the viewport
+                const allEls = document.querySelectorAll('div, section, aside, iframe');
+                for (const el of allEls) {
+                    const style = window.getComputedStyle(el);
+                    if ((style.position === 'fixed' || style.position === 'sticky') &&
+                        style.zIndex && parseInt(style.zIndex) > 999) {
+                        const rect = el.getBoundingClientRect();
+                        // Large overlays covering >30% of viewport width
+                        if (rect.width > window.innerWidth * 0.3 &&
+                            rect.height > 50) {
+                            el.remove();
+                            removed++;
+                        }
+                    }
+                }
+
+                // Restore body scroll if frozen by modal
+                const body = document.body;
+                const html = document.documentElement;
+                if (body) {
+                    body.style.overflow = '';
+                    body.style.position = '';
+                    body.classList.remove('modal-open', 'no-scroll', 'noscroll',
+                                         'overflow-hidden', 'is-locked');
+                }
+                if (html) {
+                    html.style.overflow = '';
+                    html.classList.remove('modal-open', 'no-scroll', 'noscroll',
+                                         'overflow-hidden', 'is-locked');
+                }
+
+                return removed;
+            """)
+            if js_dismissed and js_dismissed > 0:
+                dismissed = True
+        except Exception:
+            pass
 
         return dismissed
 
@@ -3952,6 +4078,7 @@ class ChatGPTAgentWithAgentTrust:
             "final_response": "",
             "needs_step_up": False,
             "step_up_message": "",
+            "progress_lines": [],
         }
 
         try:

@@ -563,6 +563,34 @@ class AgentTrustClient:
         except Exception as e:
             print(f"⚠️  Failed to update prompt response: {e}")
 
+    def update_prompt_progress(self, prompt_id: str, progress_text: str) -> None:
+        """Update a stored prompt with live progress (step-by-step breakdown)."""
+        if self.dev_mode or not prompt_id:
+            return
+        for _attempt in range(2):
+            try:
+                token = self._get_token()
+                resp = requests.patch(
+                    f"{self.api_url}/prompts/{prompt_id}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    json={"progress": progress_text},
+                    timeout=5
+                )
+                if resp.status_code < 400:
+                    return
+                if resp.status_code == 401 and _attempt == 0:
+                    self._token = None
+                    self._token_expiry = None
+                    continue
+                print(f"  [progress] PATCH /prompts/{prompt_id} returned {resp.status_code}")
+                break
+            except Exception as exc:
+                print(f"  [progress] PATCH failed: {exc}")
+                break
+
     def poll_command(self, timeout: int = 30) -> Optional[Dict]:
         """Long-poll the backend for a pending command from the browser extension.
         Returns the command dict if one arrives, or None on timeout."""

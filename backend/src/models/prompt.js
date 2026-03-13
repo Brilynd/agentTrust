@@ -8,6 +8,7 @@ class Prompt {
     this.agentId = data.agent_id || data.agentId;
     this.content = data.content;
     this.response = data.response;
+    this.progress = data.progress || null;
     this.createdAt = data.created_at || data.createdAt;
   }
 
@@ -56,6 +57,13 @@ class Prompt {
     return new Prompt(result.rows[0]);
   }
 
+  static async updateProgress(id, progress) {
+    const query = 'UPDATE prompts SET progress = $1 WHERE id = $2 RETURNING *';
+    const result = await pool.query(query, [progress, id]);
+    if (result.rows.length === 0) return null;
+    return new Prompt(result.rows[0]);
+  }
+
   toJSON() {
     return {
       id: this.id,
@@ -63,6 +71,7 @@ class Prompt {
       agentId: this.agentId,
       content: this.content,
       response: this.response,
+      progress: this.progress,
       createdAt: this.createdAt
     };
   }

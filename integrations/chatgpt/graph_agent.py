@@ -73,6 +73,12 @@ class AgentState(TypedDict, total=False):
     needs_step_up: bool
     step_up_message: str
 
+    # --- API context ---
+    github_repos: list                # Cached [{full_name, owner, name}] from GET /user/repos
+
+    # --- Progress tracking (live UI in extension) ---
+    progress_lines: list              # Accumulated step descriptions
+
 
 # Actions that change page state → require re-observation
 MUTATING_ACTIONS = {
@@ -100,6 +106,7 @@ PROGRESS_ACTIONS = {
     "open_new_tab",
     "switch_to_tab",
     "close_tab",
+    "call_external_api",
 }
 
 # Read-only actions → agent can continue without re-observing
@@ -131,6 +138,28 @@ def build_graph(agent):
     """
 
     # ================================================================== #
+    #  Progress helper — pushes live step updates to the extension        #
+    # ================================================================== #
+    # Store progress lines on the agent so they persist reliably across
+    # graph nodes without depending on LangGraph state propagation.
+    _progress_lines: list = []
+
+    def _emit_progress(state: AgentState, line: str) -> list:
+        """Append a progress line and push the full log to the backend.
+        Returns the updated progress_lines list (for convenience; the
+        canonical store is ``_progress_lines`` on the closure).
+
+        Uses agent.agenttrust.current_prompt_id directly (set by
+        store_prompt before the graph runs).
+        """
+        _progress_lines.append(line)
+        if hasattr(agent, "agenttrust"):
+            pid = getattr(agent.agenttrust, "current_prompt_id", None)
+            if pid:
+                agent.agenttrust.update_prompt_progress(pid, "\n".join(_progress_lines))
+        return list(_progress_lines)
+
+    # ================================================================== #
     #  PLAN node                                                          #
     # ================================================================== #
     def plan_node(state: AgentState) -> dict:
@@ -140,6 +169,7 @@ def build_graph(agent):
         automation.  If not (e.g. casual chat, general questions),
         produce a plain-text answer and skip the action pipeline.
         """
+        _progress_lines.clear()
 
         # ---- Intent gate: does the request need browser actions? ----
         req = state["user_request"]
@@ -250,6 +280,7 @@ def build_graph(agent):
 
         if intent.startswith("CHAT"):
             # No browser needed — answer conversationally
+            progress = _emit_progress(state, "PLAN|Answering directly (no browser needed)")
             try:
                 chat_resp = agent._chat_completion(
                     model=agent.model_fast,
@@ -277,6 +308,7 @@ def build_graph(agent):
                 "step_up_message": "",
                 "action_category": "none",
                 "final_response": answer,
+                "progress_lines": progress,
             }
 
         # ---- Browser path: gather context & build sub-goals ----
@@ -369,7 +401,8 @@ def build_graph(agent):
             "\"Use call_external_api to ...\". Only fall back to browser "
             "automation if the API call fails or the task requires visual "
             "interaction (e.g. browsing a webpage, filling a form).\n"
-            "- GitHub: provider='github' — list repos, get issues, create issue\n"
+            "- GitHub: provider='github' — ALWAYS list repos first to find the\n"
+            "  correct owner/repo, then get issues, create issue, etc.\n"
             "- Google Calendar: provider='google-oauth2' — list/create events\n"
             "- Slack: provider='slack' — list channels, post messages\n"
             "- Microsoft: provider='windowslive' — send Outlook email, "
@@ -382,6 +415,10 @@ def build_graph(agent):
             "- When the task requires RESEARCH, say 'Search Google for X, visit\n"
             "  top results, and gather detailed findings' — always use\n"
             "  https://www.google.com, NEVER Images.\n"
+            "- For research about SPECIFIC companies (OpenAI, Google, Anthropic,\n"
+            "  etc.), prefer visiting their OFFICIAL sites/blogs directly after\n"
+            "  a quick Google search. Skip aggregator/news-roundup sites.\n"
+            "- Keep research to 2-3 pages MAX — read deeply, not broadly.\n"
             "- When the task requires EMAIL, say 'Navigate to Gmail, compose and send\n"
             "  an email to X with the findings'.\n"
             "- When visiting GitHub repos, always go to the REPO ROOT\n"
@@ -466,6 +503,9 @@ def build_graph(agent):
         print(plan_text)
         print(f"{'='*50}\n")
 
+        steps_summary = "; ".join(g[:60] for g in sub_goals)
+        progress = _emit_progress(state, f"PLAN|Planning {len(sub_goals)} steps: {steps_summary}")
+
         return {
             "sub_goals": sub_goals,
             "current_goal_index": 0,
@@ -478,6 +518,8 @@ def build_graph(agent):
             "step_up_message": "",
             "action_category": "none",
             "final_response": "",
+            "github_repos": [],
+            "progress_lines": progress,
         }
 
     # ================================================================== #
@@ -499,6 +541,14 @@ def build_graph(agent):
                 url = executor.get_current_url() or ""
             except Exception:
                 pass
+
+            # Auto-dismiss cookie banners, popups, overlays before reading
+            try:
+                if hasattr(executor, 'dismiss_overlays'):
+                    executor.dismiss_overlays()
+            except Exception:
+                pass
+
             try:
                 content = executor.get_page_content()
                 title = content.get("title", "")
@@ -645,6 +695,19 @@ def build_graph(agent):
         if page_vision:
             print(f"  VISION: {page_vision}")
 
+        # Only emit OBSERVE progress when the URL changed (avoids noise
+        # from repeated observations on the same page during scroll loops).
+        _prev_url = state.get("current_url") or ""
+        _obs_ret = {}
+        if url and url != _prev_url:
+            try:
+                from urllib.parse import urlparse as _obs_up
+                _obs_host = _obs_up(url).hostname or url[:50]
+            except Exception:
+                _obs_host = url[:50]
+            progress = _emit_progress(state, f"OBSERVE|Viewing {_obs_host}")
+            _obs_ret["progress_lines"] = progress
+
         return {
             "current_url": url,
             "page_title": title,
@@ -655,6 +718,7 @@ def build_graph(agent):
             "login_state": login_state,
             "active_tab": active_tab,
             "open_tabs": open_tabs,
+            **_obs_ret,
         }
 
     # ================================================================== #
@@ -714,27 +778,43 @@ def build_graph(agent):
                 "you need to accomplish your task (e.g. https://www.google.com).\n"
             )
 
-        # Detect if the page has a search bar the agent can use
+        # Detect if the page has a search bar the agent can use.
+        # Suppress the hint on Google search (agent should use Google's
+        # search box naturally) and on sites whose search bar would only
+        # cover that site's own content (e.g. blog.google searching for
+        # Anthropic content is pointless).
         search_hint = ""
         _SEARCH_KEYWORDS = {"search", "query", "q", "keyword", "find", "lookup"}
-        visible_els = state.get("visible_elements") or []
-        for el in visible_els:
-            if el.get("t") != "in":
-                continue
-            _ph = (el.get("ph") or "").lower()
-            _al = (el.get("al") or "").lower()
-            _nm = (el.get("nm") or "").lower()
-            _rl = (el.get("rl") or "").lower()
-            _id = (el.get("id") or "").lower()
-            combined = f"{_ph} {_al} {_nm} {_rl} {_id}"
-            if any(kw in combined for kw in _SEARCH_KEYWORDS) or _rl in ("search", "searchbox", "combobox"):
-                label = el.get("ph") or el.get("al") or el.get("nm") or "search"
-                search_hint = (
-                    f"🔍 This page has a SEARCH BAR ('{label}'). "
-                    f"If you need to find something specific on this site, "
-                    f"type your query into it instead of scrolling or going back to Google.\n"
-                )
-                break
+        _cur_host = ""
+        try:
+            from urllib.parse import urlparse as _up
+            _cur_host = _up(cur_url).hostname or ""
+        except Exception:
+            pass
+        _SKIP_SEARCH_HINT_HOSTS = {
+            "www.google.com", "google.com", "www.bing.com", "bing.com",
+            "search.yahoo.com", "duckduckgo.com",
+        }
+        if _cur_host not in _SKIP_SEARCH_HINT_HOSTS:
+            visible_els = state.get("visible_elements") or []
+            for el in visible_els:
+                if el.get("t") != "in":
+                    continue
+                _ph = (el.get("ph") or "").lower()
+                _al = (el.get("al") or "").lower()
+                _nm = (el.get("nm") or "").lower()
+                _rl = (el.get("rl") or "").lower()
+                _id = (el.get("id") or "").lower()
+                combined = f"{_ph} {_al} {_nm} {_rl} {_id}"
+                if any(kw in combined for kw in _SEARCH_KEYWORDS) or _rl in ("search", "searchbox", "combobox"):
+                    label = el.get("ph") or el.get("al") or el.get("nm") or "search"
+                    search_hint = (
+                        f"🔍 This page has a SEARCH BAR ('{label}'). "
+                        f"Use it ONLY to find content that belongs to THIS site "
+                        f"({_cur_host}). Do NOT search here for other companies "
+                        f"or unrelated topics — navigate directly to those sites instead.\n"
+                    )
+                    break
 
         # Extract dollar prices from page text so the LLM sees them immediately
         price_hint = ""
@@ -743,6 +823,17 @@ def build_graph(agent):
         if _prices:
             unique_prices = list(dict.fromkeys(_prices))[:10]
             price_hint = f"💲 PRICES on page: {', '.join(unique_prices)}\n"
+
+        # Hint when the agent has been scrolling the same page repeatedly
+        scroll_hint = ""
+        _recent = state.get("recent_actions") or []
+        _scroll_count = sum(1 for s in _recent if s.startswith("scroll_page:"))
+        if _scroll_count >= 3:
+            scroll_hint = (
+                f"⚠ You have scrolled this page {_scroll_count} times. "
+                "You have enough data — READ the Content above and respond "
+                "with a TEXT SUMMARY of what you found. STOP scrolling.\n"
+            )
 
         goal_idx = state.get("current_goal_index", 0)
         sub_goals = state.get("sub_goals") or []
@@ -758,6 +849,7 @@ def build_graph(agent):
             f"{nav_hint}"
             f"{search_hint}"
             f"{price_hint}"
+            f"{scroll_hint}"
             f"{login_info}"
             f"{vision_info}"
             f"{tabs_info}"
@@ -783,14 +875,21 @@ def build_graph(agent):
             "back to the browser if the API call fails or the task requires\n"
             "visual interaction.\n"
             "- GitHub: provider='github'\n"
-            "    GET https://api.github.com/user/repos\n"
+            "    GET https://api.github.com/user/repos  ← ALWAYS call this FIRST\n"
+            "      to discover the user's username and available repos.\n"
             "    POST https://api.github.com/repos/{owner}/{repo}/issues\n"
+            "    IMPORTANT: NEVER guess the {owner} or {repo}. Always list\n"
+            "    repos first, find the matching repo name, then use the\n"
+            "    exact owner/repo from the response.\n"
             "- Google Calendar: provider='google-oauth2'\n"
             "    GET https://www.googleapis.com/calendar/v3/calendars/primary/events\n"
             "    POST https://www.googleapis.com/calendar/v3/calendars/primary/events\n"
             "- Slack: provider='slack'\n"
-            "    GET https://slack.com/api/conversations.list\n"
+            "    GET https://slack.com/api/conversations.list  ← call this FIRST\n"
+            "      to get the channel ID for the channel name.\n"
             "    POST https://slack.com/api/chat.postMessage  (body: {channel, text})\n"
+            "    IMPORTANT: The 'channel' field must be a channel ID (e.g.\n"
+            "    'C0123456789'), NOT a name. List channels first to find it.\n"
             "- Microsoft (Outlook/OneDrive/ToDo): provider='windowslive'\n"
             "    POST https://graph.microsoft.com/v1.0/me/sendMail\n"
             "      body: {message: {subject, body: {contentType:'Text', content}, toRecipients: [{emailAddress: {address}}]}}\n"
@@ -901,17 +1000,21 @@ def build_graph(agent):
             "  is auto-cleared. Just provide your full new query.\n"
             "- After search results load, read the snippets for an overview.\n"
             "- Google snippets alone are NOT enough for research goals.\n"
-            "  You MUST open_link to at least 1-2 of the top results and\n"
-            "  READ the full article content on those pages.\n"
+            "  Open 1-2 of the top results to read full article content.\n"
+            "- SPEED RULE: Visit at MOST 2-3 pages per research goal. Read\n"
+            "  each page ONCE, extract what you need, then move on. Do NOT\n"
+            "  visit 5+ pages — depth beats breadth for a demo.\n"
+            "- PREFER OFFICIAL SOURCES: When researching specific companies\n"
+            "  (OpenAI, Google, Anthropic, etc.), go directly to their official\n"
+            "  blog/newsroom after the Google search. Skip news aggregators.\n"
             "- CRITICAL: When clicking search results, use the EXACT href\n"
             "  from the interactive elements list. The href contains the\n"
             "  full URL (e.g. https://reuters.com/technology/ai-breakthrough-2026).\n"
             "  Pass this full href to open_link. Do NOT guess or shorten URLs.\n"
             "  Do NOT navigate to generic section pages like /artificial-intelligence/.\n"
-            "- After reading an article, go_back to search results if you\n"
-            "  need more depth, or move on once you have solid information.\n"
-            "- NEVER go_back more than twice. If a page didn't help, try a\n"
-            "  DIFFERENT site directly with open_link.\n"
+            "- After reading an article, move on. Do NOT go_back to search\n"
+            "  results unless you found zero useful information.\n"
+            "- NEVER go_back more than once. Try a DIFFERENT site with open_link.\n"
             "- Only AFTER you have read actual article content should you\n"
             "  consider the research goal complete.\n\n"
             "GITHUB NAVIGATION:\n"
@@ -923,27 +1026,29 @@ def build_graph(agent):
             "- When reading a long page (README, article), scrolling multiple\n"
             "  times is perfectly fine — keep scrolling until you've read\n"
             "  the content you need.\n\n"
-            "ON-SITE SEARCH — USE IT:\n"
-            "- When [PAGE STATE] shows a 🔍 SEARCH BAR hint, USE that search\n"
-            "  bar to find what you need on the current site.\n"
-            "- Example: on Amazon, TCGplayer, eBay, GitHub — type_text into\n"
-            "  the site's search bar with your query instead of scrolling\n"
-            "  endlessly through results or going back to Google.\n"
-            "- If you need to refine or change your search on the same site,\n"
-            "  just type a new query into the same search bar.\n"
-            "- Only go back to Google if the site doesn't have a search bar\n"
-            "  or doesn't have what you're looking for.\n\n"
-            "PRICE COMPARISON & PRODUCT RESEARCH:\n"
-            "- When comparing prices, click into the PRODUCT PAGE on each\n"
-            "  site — do NOT rely on search result listings alone.\n"
-            "- READ the 'Content' section in [PAGE STATE]. Prices are usually\n"
-            "  visible there (look for the 💲 PRICES hint). Do NOT scroll\n"
-            "  endlessly if prices are already shown in the Content.\n"
-            "- After noting a price on one site, switch_to_tab or open_new_tab\n"
-            "  to the other site, search for the same product, open its page,\n"
-            "  and note that price.\n"
-            "- Once you have prices from both sites, give the comparison\n"
-            "  IMMEDIATELY in a text response. Do not keep browsing.\n"
+            "ON-SITE SEARCH — USE IT WISELY:\n"
+            "- When [PAGE STATE] shows a 🔍 SEARCH BAR hint, use it ONLY to\n"
+            "  find content that BELONGS to the current site.\n"
+            "- Example: on Amazon search for products, on GitHub search for\n"
+            "  repos, on TCGplayer search for cards.\n"
+            "- NEVER use a site's search bar to search for a DIFFERENT company\n"
+            "  or unrelated topic (e.g. do NOT search for 'Anthropic' on\n"
+            "  blog.google — navigate directly to anthropic.com instead).\n"
+            "- Only go back to Google if the current site doesn't have what\n"
+            "  you're looking for.\n\n"
+            "PRODUCT SEARCH & PRICE COMPARISON:\n"
+            "- On e-commerce sites (Amazon, eBay, etc.), product search result\n"
+            "  pages ALREADY show product names, prices, and ratings in the\n"
+            "  Content section. READ the Content — you do NOT need to scroll\n"
+            "  endlessly. Scroll 1-2 times to see more results, then EXTRACT\n"
+            "  the information and respond with a text summary.\n"
+            "- If you need detailed info (full specs, reviews), click into ONE\n"
+            "  product page, read it, then respond.\n"
+            "- STOP SCROLLING RULE: If you have scrolled 3+ times on the same\n"
+            "  page, you have enough data. Respond with what you found.\n"
+            "- When comparing prices across sites, note the price on site A,\n"
+            "  then open_new_tab or switch_to_tab to site B, find the product,\n"
+            "  note that price, then give the comparison in a text response.\n"
             "- Close tabs you no longer need to keep context manageable.\n\n"
             "PREFERRED SERVICE URLS (use these instead of guessing):\n"
             "- Google Search → https://www.google.com\n"
@@ -979,22 +1084,27 @@ def build_graph(agent):
             "- If the same action fails 2+ times, try a DIFFERENT approach.\n"
             "- Keep text replies short and action-oriented.\n"
             "- If you are ALREADY on a page with what you need, do NOT navigate away.\n\n"
-            "EFFICIENCY:\n"
+            "EFFICIENCY — SPEED IS CRITICAL:\n"
             "- Do NOT call get_saved_credentials or auto_login unless you are about\n"
             "  to log in AND you can see login fields on the page.\n"
             "- Do NOT repeat actions that already succeeded in earlier turns.\n"
             "- When reading a page, read it ONCE and move on. Do not\n"
             "  re-observe the same page multiple times.\n"
+            "- MINIMIZE TABS: Do NOT open a new tab for every site. Use\n"
+            "  open_link to navigate the CURRENT tab. Only use open_new_tab\n"
+            "  when you need to compare two pages side-by-side.\n"
+            "- MINIMIZE PAGE VISITS: For research, visit 2-3 pages total.\n"
+            "  Read the Content section — it often has what you need. If it\n"
+            "  does, summarize and move on. Do NOT visit 5+ pages.\n"
             "- ABANDON BROKEN PAGES: if a click or action fails on a page,\n"
             "  do NOT scroll-and-retry on the same page. Instead:\n"
             "  1. Try open_link to a direct URL if you have one, OR\n"
             "  2. Navigate to a DIFFERENT site entirely.\n"
-            "  Example: if CNBC articles won't load, go to reuters.com or\n"
-            "  marketwatch.com instead of retrying on CNBC.\n"
             "- Do NOT scroll just to look around. Only scroll when you need\n"
             "  specific content that is below the fold.\n"
-            "- Scrolling costs an action. Prefer direct navigation (open_link)\n"
-            "  over scrolling through pages.\n\n"
+            "- When the current goal is DONE, immediately produce a text\n"
+            "  summary so the system advances to the next goal. Do NOT\n"
+            "  keep browsing after you have enough information.\n\n"
             "ROUTINES:\n"
             "- Users can save and replay browser action sequences as routines.\n"
             "- After a routine finishes, continue from the current browser state.\n"
@@ -1101,6 +1211,7 @@ def build_graph(agent):
         last_result = {}
         last_name = ""
         category = "none"
+        _gh_repos_update = None
 
         for tc in pending:
             name = tc["name"]
@@ -1166,6 +1277,75 @@ def build_graph(agent):
                     last_result = {"success": False, "error": msg}
                     category = "read_only"
                     continue
+
+            # Goal-relevance guard for call_external_api: block API calls
+            # whose provider doesn't match the current goal to prevent the
+            # agent from jumping ahead to later goals.
+            if name == "call_external_api":
+                try:
+                    _api_check = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                    _api_prov = (_api_check.get("provider") or "").lower()
+                    _api_endpoint = (_api_check.get("endpoint") or _api_check.get("url") or "").lower()
+                    _goal_idx = state.get("current_goal_index", 0)
+                    _goals = state.get("sub_goals") or []
+                    _cur_goal = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
+
+                    _PROVIDER_KEYWORDS = {
+                        "github": ["github"],
+                        "google-oauth2": ["google calendar", "calendar event"],
+                        "slack": ["slack"],
+                        "windowslive": ["microsoft", "outlook", "onedrive", "todo"],
+                        "notion": ["notion"],
+                    }
+                    _goal_providers = set()
+                    for prov, kws in _PROVIDER_KEYWORDS.items():
+                        if any(kw in _cur_goal for kw in kws):
+                            _goal_providers.add(prov)
+
+                    # Determine what provider this API call targets
+                    if "github" in _api_endpoint:
+                        _calling_provider = "github"
+                    elif "slack" in _api_endpoint:
+                        _calling_provider = "slack"
+                    elif "googleapis" in _api_endpoint or "calendar" in _api_endpoint:
+                        _calling_provider = "google-oauth2"
+                    elif "graph.microsoft" in _api_endpoint:
+                        _calling_provider = "windowslive"
+                    elif "notion" in _api_endpoint:
+                        _calling_provider = "notion"
+                    else:
+                        _calling_provider = _api_prov
+
+                    # If goal mentions specific providers → only allow those.
+                    # If goal has NO provider keywords (e.g. research/browse goal)
+                    # → block ALL API calls; they belong to a later goal.
+                    _goal_mentions_api = "call_external_api" in _cur_goal or "api" in _cur_goal
+                    if _goal_providers and _calling_provider not in _goal_providers:
+                        _should_block = True
+                    elif not _goal_providers and not _goal_mentions_api:
+                        _should_block = True
+                    else:
+                        _should_block = False
+
+                    if _should_block:
+                        _block_msg = (
+                            f"This API call ({_calling_provider}) does not match the current "
+                            f"goal: '{_goals[_goal_idx][:80]}'. Complete the current goal "
+                            f"first by responding with a text summary, then the system will "
+                            f"advance you to the next goal where you can make this call."
+                        )
+                        print(f"  BLOCKED: {name} ({_calling_provider}) — wrong goal ({_goal_idx + 1}/{len(_goals)})")
+                        new_turn.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": name,
+                            "content": json.dumps({"success": False, "error": _block_msg}),
+                        })
+                        last_result = {"success": False, "error": _block_msg}
+                        category = "read_only"
+                        continue
+                except Exception:
+                    pass
 
             # Rewrite Google Images URLs → Google web search.
             # Also rewrite GitHub tab URLs → repo root.
@@ -1247,10 +1427,67 @@ def build_graph(agent):
                 except Exception:
                     pass
 
+            # ── GitHub repo auto-fix for call_external_api ──
+            # If the agent is about to POST to /repos/{owner}/{repo}/issues
+            # but we have cached repos from a prior GET, validate and fix the
+            # owner/repo path before executing.
+            # NOTE: the LLM sends "endpoint" (not "url") for this tool.
+            if name == "call_external_api":
+                try:
+                    _api_args = json.loads(_tc_args) if _tc_args else {}
+                    _ep_key = "endpoint" if "endpoint" in _api_args else "url"
+                    _api_url = (_api_args.get(_ep_key) or "").lower()
+                    _api_method = (_api_args.get("method") or "GET").upper()
+
+                    # Fix POST to wrong repo path
+                    if _api_method == "POST" and "api.github.com/repos/" in _api_url and "/issues" in _api_url:
+                        cached = state.get("github_repos") or []
+                        if cached:
+                            _user_req_lower = (state.get("user_request") or "").lower()
+                            _url_parts = _api_url.split("api.github.com/repos/")[1]
+                            _attempted_repo = _url_parts.split("/issues")[0]
+                            repo_names = [r["full_name"] for r in cached]
+                            if _attempted_repo not in [r.lower() for r in repo_names]:
+                                best = None
+                                for r in cached:
+                                    if r["name"].lower() in _user_req_lower or r["full_name"].lower() in _user_req_lower:
+                                        best = r["full_name"]
+                                        break
+                                if not best and cached:
+                                    for r in cached:
+                                        if "agenttrust" in r["name"].lower() or "agent-trust" in r["name"].lower() or "agent_trust" in r["name"].lower():
+                                            best = r["full_name"]
+                                            break
+                                if best:
+                                    _orig_url = _api_args[_ep_key]
+                                    _fixed_url = _orig_url.split("api.github.com/repos/")[0] + f"api.github.com/repos/{best}/issues"
+                                    print(f"  GITHUB FIX: {_orig_url} → {_fixed_url}")
+                                    _api_args[_ep_key] = _fixed_url
+                                    _tc_args = json.dumps(_api_args)
+                except Exception:
+                    pass
+
             # Execute via parent agent's existing handler
             fc = type("FC", (), {"name": name, "arguments": _tc_args})()
             result = agent.handle_function_call(fc)
             last_result = result if isinstance(result, dict) else {"result": result}
+
+            # Cache GitHub repos from GET /user/repos response
+            if name == "call_external_api":
+                try:
+                    _api_args2 = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                    _url2 = (_api_args2.get("endpoint") or _api_args2.get("url") or "")
+                    if "api.github.com/user/repos" in _url2 and isinstance(result, dict):
+                        _data = result.get("data") or result.get("result")
+                        if isinstance(_data, list):
+                            _gh_repos_update = [
+                                {"full_name": r.get("full_name", ""), "name": r.get("name", ""), "owner": (r.get("owner") or {}).get("login", "")}
+                                for r in _data if isinstance(r, dict) and r.get("full_name")
+                            ]
+                            if _gh_repos_update:
+                                print(f"  GITHUB CACHE: {len(_gh_repos_update)} repos discovered")
+                except Exception:
+                    pass
 
             # Check for fatal connectivity errors
             err_type = None
@@ -1286,7 +1523,51 @@ def build_graph(agent):
             if len(recent) > 10:
                 recent = recent[-10:]
 
-        return {
+        # Build a human-readable description for the progress UI
+        _act_desc = last_name
+        if last_name == "open_link":
+            try:
+                _a = json.loads(pending[0]["arguments"]) if pending else {}
+                _href = _a.get("href", "")
+                if _href:
+                    from urllib.parse import urlparse as _act_up
+                    _act_desc = f"Opening {_act_up(_href).hostname or _href[:40]}"
+            except Exception:
+                pass
+        elif last_name == "open_new_tab":
+            try:
+                _a = json.loads(pending[0]["arguments"]) if pending else {}
+                _lbl = _a.get("label", "") or _a.get("url", "")[:40]
+                _act_desc = f"New tab: {_lbl}"
+            except Exception:
+                pass
+        elif last_name == "type_text":
+            _act_desc = "Typing into field"
+        elif last_name == "call_external_api":
+            try:
+                _a = json.loads(pending[0]["arguments"]) if pending else {}
+                _p = _a.get("provider", "")
+                _m = _a.get("method", "GET")
+                _act_desc = f"API call: {_m} {_p}"
+            except Exception:
+                pass
+        elif last_name == "scroll_page":
+            _act_desc = "Scrolling page"
+        elif last_name == "agenttrust_browser_action":
+            try:
+                _a = json.loads(pending[0]["arguments"]) if pending else {}
+                _tgt = (_a.get("target") or {}).get("text", "")[:30]
+                _act_desc = f"Clicking {_tgt}" if _tgt else "Clicking element"
+            except Exception:
+                pass
+        elif last_name == "go_back":
+            _act_desc = "Going back"
+        elif last_name == "get_saved_credentials":
+            _act_desc = "Checking credentials"
+
+        progress = _emit_progress(state, f"ACT|{_act_desc}")
+
+        ret = {
             "turn_messages": new_turn,
             "pending_tool_calls": [],
             "last_action_result": last_result,
@@ -1294,7 +1575,11 @@ def build_graph(agent):
             "action_category": category,
             "total_actions": total,
             "recent_actions": recent,
+            "progress_lines": progress,
         }
+        if _gh_repos_update:
+            ret["github_repos"] = _gh_repos_update
+        return ret
 
     # ================================================================== #
     #  VERIFY node — check action result, track failures                  #
@@ -1366,23 +1651,23 @@ def build_graph(agent):
                 fail_reason = f"Repeated same action {repeat_count} times — likely stuck in a loop"
 
         consecutive = state.get("consecutive_failures", 0)
+        _verify_progress = {}
         if failed:
             consecutive += 1
             print(
                 f"  VERIFY: FAILED (#{consecutive}/{MAX_CONSECUTIVE_FAILS}) — {fail_reason[:100]}"
             )
+            progress = _emit_progress(state, f"VERIFY|Failed: {fail_reason[:60]}")
+            _verify_progress["progress_lines"] = progress
         else:
             name = state.get("last_action_name", "action")
-            # Only reset failure counter for PROGRESS actions (click, type,
-            # open_link, etc.). Scroll and read-only actions must NOT reset
-            # the counter — otherwise failed clicks interspersed with
-            # scrolls never accumulate to the abort threshold.
             if name in PROGRESS_ACTIONS:
                 consecutive = 0
             print(f"  VERIFY: OK ({name})")
 
         return {
             "consecutive_failures": consecutive,
+            **_verify_progress,
         }
 
     # ================================================================== #
@@ -1402,11 +1687,19 @@ def build_graph(agent):
         is_last_goal = (goal_idx + 1 >= len(sub_goals))
         prior_had_actions = state.get("total_actions", 0) > 0
 
+        # Allow text-only completion when: (a) last goal with prior
+        # actions, or (b) user explicitly asks to use existing page data.
+        _user_req = (state.get("user_request") or "").lower()
+        _analysis_keywords = {"use the info", "use the information", "just use",
+                              "from the page", "on the page", "already on",
+                              "summarize", "summarise", "analyze", "analyse",
+                              "extract", "what do you see", "read the page"}
+        _user_wants_analysis = any(kw in _user_req for kw in _analysis_keywords)
+
         if not recent and goal_idx < len(sub_goals):
-            # Allow the LAST goal to complete with text alone when prior
-            # goals already performed browser actions (e.g. comparison /
-            # summary goals that synthesize data already gathered).
-            if is_last_goal and prior_had_actions:
+            if _user_wants_analysis:
+                print(f"  ANALYSIS PASS: user requested page analysis — allowing text-only completion")
+            elif is_last_goal and prior_had_actions:
                 print(f"  LAST-GOAL PASS: allowing text-only completion "
                       f"(prior actions: {state.get('total_actions', 0)})")
             else:
@@ -1436,11 +1729,18 @@ def build_graph(agent):
         next_goal = sub_goals[min(next_idx, len(sub_goals) - 1)]
         print(f"  GOAL {goal_idx + 1} DONE: '{done_goal[:60]}'")
         print(f"  NEXT GOAL {next_idx + 1}: '{next_goal[:60]}'")
+
+        progress = _emit_progress(
+            state,
+            f"GOAL|Step {goal_idx + 1} of {len(sub_goals)} complete"
+        )
+
         return {
             "current_goal_index": next_idx,
             "consecutive_failures": 0,
             "recent_actions": [],
             "final_response": "",
+            "progress_lines": progress,
         }
 
     # ================================================================== #
@@ -1448,6 +1748,9 @@ def build_graph(agent):
     # ================================================================== #
     def respond_node(state: AgentState) -> dict:
         """Generate or pass through the final response."""
+
+        # Emit a final "Done" progress line
+        _emit_progress(state, "DONE|Done")
 
         # If agent_node already produced a text response, use it
         if state.get("final_response"):

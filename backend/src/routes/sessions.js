@@ -76,11 +76,14 @@ router.get('/', authenticateUser, async (req, res) => {
       })
     );
     
-    res.json({
+    res.set('Cache-Control', 'no-store');
+    const body = JSON.stringify({
       success: true,
       sessions: sessionsWithDetails,
       count: sessionsWithDetails.length
     });
+    res.set('Content-Type', 'application/json');
+    res.status(200).end(body);
   } catch (error) {
     console.error('Failed to query sessions:', error);
     res.status(500).json({

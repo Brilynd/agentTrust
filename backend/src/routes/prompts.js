@@ -38,15 +38,22 @@ router.post('/', validateAction, async (req, res) => {
   }
 });
 
-// Agent updates a prompt with its response
+// Agent updates a prompt with its response and/or progress
 router.patch('/:promptId', validateAction, async (req, res) => {
   try {
-    const { response } = req.body;
-    if (!response) {
-      return res.status(400).json({ success: false, error: 'Response is required' });
+    const { response, progress } = req.body;
+    if (!response && !progress) {
+      return res.status(400).json({ success: false, error: 'response or progress is required' });
     }
 
-    const updated = await Prompt.updateResponse(req.params.promptId, response);
+    let updated;
+    if (response) {
+      updated = await Prompt.updateResponse(req.params.promptId, response);
+    }
+    if (progress) {
+      updated = await Prompt.updateProgress(req.params.promptId, progress);
+    }
+
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Prompt not found' });
     }

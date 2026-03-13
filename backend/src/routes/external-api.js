@@ -280,45 +280,50 @@ router.post('/call', validateAction, async (req, res) => {
   }
 
   // Get the provider access token.
-  // Strategy 1: Management API — decode stored Auth0 JWT to get user sub, then
-  //   call GET /api/v2/users/{sub} to get the provider access token from identities.
-  // Strategy 2: Token Vault exchange (fallback).
+  // Strategy 1 (preferred): Token Vault exchange — uses scopes requested during
+  //   the connect flow (e.g. 'repo' for GitHub), so write operations work.
+  // Strategy 2 (fallback): Management API — reads the identity provider token
+  //   stored in Auth0's user profile. This token may lack write scopes if it
+  //   originated from a social-login (non-connect) flow.
   let providerToken;
+  let tokenStrategy = '';
   const pool = require('../config/database');
   const errors = [];
 
-  // Strategy 1: Management API via stored user JWT
+  // Strategy 1: Token Vault exchange (preserves scopes from connect flow)
   try {
-    const dbResult = await pool.query(
-      "SELECT auth0_access_token FROM user_connections WHERE provider = $1 AND auth0_access_token IS NOT NULL ORDER BY connected_at DESC LIMIT 1",
-      [auth0Connection]
-    );
-    if (dbResult.rows.length > 0) {
-      const storedJwt = dbResult.rows[0].auth0_access_token;
-      const auth0UserId = extractAuth0UserId(storedJwt);
-      if (auth0UserId) {
-        providerToken = await getProviderTokenViaManagementApi(auth0Connection, auth0UserId);
-        console.log(`Got ${provider} token via Management API for user ${auth0UserId}`);
-      }
+    const subjectToken = userToken || req.headers.authorization?.substring(7);
+    if (subjectToken) {
+      providerToken = await exchangeTokenViaTokenVault(auth0Connection, subjectToken);
+      tokenStrategy = 'Token Vault';
+      console.log(`Got ${provider} token via Token Vault exchange`);
     }
   } catch (err) {
-    const msg = err.response?.data?.message || err.response?.data?.error_description || err.message;
-    errors.push(`Management API: ${msg}`);
-    console.log(`Management API strategy failed for ${provider}:`, msg);
+    const msg = err.response?.data?.error_description || err.message;
+    errors.push(`Token Vault: ${msg}`);
+    console.log(`Token Vault strategy failed for ${provider}:`, msg);
   }
 
-  // Strategy 2: Token Vault exchange with stored access_token
+  // Strategy 2: Management API via stored user JWT (fallback)
   if (!providerToken) {
     try {
-      const subjectToken = userToken || req.headers.authorization?.substring(7);
-      if (subjectToken) {
-        providerToken = await exchangeTokenViaTokenVault(auth0Connection, subjectToken);
-        console.log(`Got ${provider} token via Token Vault exchange`);
+      const dbResult = await pool.query(
+        "SELECT auth0_access_token FROM user_connections WHERE provider = $1 AND auth0_access_token IS NOT NULL ORDER BY connected_at DESC LIMIT 1",
+        [auth0Connection]
+      );
+      if (dbResult.rows.length > 0) {
+        const storedJwt = dbResult.rows[0].auth0_access_token;
+        const auth0UserId = extractAuth0UserId(storedJwt);
+        if (auth0UserId) {
+          providerToken = await getProviderTokenViaManagementApi(auth0Connection, auth0UserId);
+          tokenStrategy = 'Management API';
+          console.log(`Got ${provider} token via Management API for user ${auth0UserId}`);
+        }
       }
     } catch (err) {
-      const msg = err.response?.data?.error_description || err.message;
-      errors.push(`Token Vault: ${msg}`);
-      console.log(`Token Vault strategy failed for ${provider}:`, msg);
+      const msg = err.response?.data?.message || err.response?.data?.error_description || err.message;
+      errors.push(`Management API: ${msg}`);
+      console.log(`Management API strategy failed for ${provider}:`, msg);
     }
   }
 
@@ -359,9 +364,18 @@ router.post('/call', validateAction, async (req, res) => {
   } catch (apiErr) {
     const status = apiErr.response?.status || 502;
     const data = apiErr.response?.data;
+    let errorMsg = data?.message || apiErr.message;
+
+    // Provide actionable hints for common failures
+    if (status === 404 && provider === 'github' && method.toUpperCase() === 'POST') {
+      errorMsg += ` (Token obtained via ${tokenStrategy}. ` +
+        'If GET works but POST returns 404, the token may lack the "repo" scope. ' +
+        'Reconnect GitHub in the extension\'s Connected Accounts to refresh scopes.)';
+    }
+
     res.status(status).json({
       success: false,
-      error: data?.message || apiErr.message,
+      error: errorMsg,
       status,
       data
     });

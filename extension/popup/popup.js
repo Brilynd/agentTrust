@@ -57,6 +57,12 @@ function bindEvents() {
   // Chat
   $('chatForm').addEventListener('submit', handleSendCommand);
 
+  // Thinking block collapse/expand (delegated — CSP safe)
+  $('chatMessages').addEventListener('click', e => {
+    const header = e.target.closest('[data-toggle-thinking]');
+    if (header) header.parentElement.classList.toggle('collapsed');
+  });
+
   // Approval banner
   $('approvalApproveBtn').addEventListener('click', () => respondToApproval(true));
   $('approvalDenyBtn').addEventListener('click', () => respondToApproval(false));
@@ -478,6 +484,57 @@ function stopChatRefresh() {
   if (chatRefreshInterval) { clearInterval(chatRefreshInterval); chatRefreshInterval = null; }
 }
 
+// ─── Render live thinking block from progress lines ──
+function renderThinkingBlock(progressText, isActive) {
+  const lines = (progressText || '').split('\n').filter(Boolean);
+  if (!lines.length) return '';
+
+  const ICONS = {
+    PLAN:    '\u25B8',
+    OBSERVE: '\u25B8',
+    ACT:     '\u25B8',
+    VERIFY:  '\u25B8',
+    GOAL:    '\u2500',
+    DONE:    '\u2500',
+  };
+  const TYPE_LABELS = {
+    PLAN:    'plan',
+    OBSERVE: 'observe',
+    ACT:     'act',
+    VERIFY:  'error',
+    GOAL:    'goal',
+    DONE:    'done',
+  };
+
+  let stepsHtml = '';
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isLast = i === lines.length - 1;
+    const pipeIdx = line.indexOf('|');
+    const type = pipeIdx > 0 ? line.substring(0, pipeIdx) : '';
+    const detail = pipeIdx > 0 ? line.substring(pipeIdx + 1) : line;
+    const icon = ICONS[type] || '\u25B8';
+    const typeLabel = TYPE_LABELS[type] || '';
+    const showSpinner = isActive && isLast && type !== 'DONE';
+    const cls = showSpinner ? 'thinking-step current' : 'thinking-step done';
+    const typeCls = typeLabel ? ` step-${typeLabel}` : '';
+    stepsHtml += `<div class="${cls}${typeCls}"><span class="step-icon">${icon}</span><span class="step-text">${esc(detail)}</span>${showSpinner ? '<span class="step-spinner"></span>' : ''}</div>`;
+  }
+
+  const dotsHtml = isActive
+    ? '<span class="thinking-dots-inline"><span></span><span></span><span></span></span>'
+    : '';
+  const headerLabel = isActive ? 'Thinking' : `Thought \u2014 ${lines.length} steps`;
+  const collapsedCls = isActive ? '' : ' collapsed';
+
+  return `<div class="chat-thinking-block${collapsedCls}">
+    <div class="thinking-header" data-toggle-thinking="true">
+      <span class="thinking-toggle">\u25BC</span> ${headerLabel}${dotsHtml}
+    </div>
+    <div class="thinking-steps">${stepsHtml}</div>
+  </div>`;
+}
+
 // ─── Chat: load history from active session ──────────
 async function loadChatHistory() {
   const { userToken } = await chrome.storage.local.get(['userToken']);
@@ -535,6 +592,9 @@ async function loadChatHistory() {
       html += `<div class="chat-bubble user"><span class="bubble-label">You</span>${esc(p.content)}</div>`;
 
       if (p.response) {
+        if (p.progress) {
+          html += renderThinkingBlock(p.progress, false);
+        }
         const linked = actionsByPrompt[p.id] || [];
         const screenshots = linked.filter(a => a.screenshot);
 
@@ -544,13 +604,11 @@ async function loadChatHistory() {
         }
 
         html += `<div class="chat-bubble agent"><span class="bubble-label">ChatGPT</span>${esc(p.response)}${screenshotHtml}</div>`;
+      } else if (p.progress) {
+        html += renderThinkingBlock(p.progress, true);
+      } else {
+        html += `<div class="chat-thinking"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`;
       }
-    }
-
-    // Check if the last prompt has no response yet (agent is thinking)
-    const lastPrompt = prompts[prompts.length - 1];
-    if (lastPrompt && !lastPrompt.response) {
-      html += `<div class="chat-thinking"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`;
     }
 
     // Append any pending messages that haven't appeared in DB yet

@@ -250,6 +250,11 @@ async function migrate() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_actions_parent ON actions(parent_action_id)
     `);
+
+    await pool.query(`
+      ALTER TABLE prompts
+      ADD COLUMN IF NOT EXISTS progress TEXT
+    `);
     
     console.log('Migrations completed successfully!');
     
