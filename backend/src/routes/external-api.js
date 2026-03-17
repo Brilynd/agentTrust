@@ -3,6 +3,7 @@ const router = express.Router();
 const axios = require('axios').default || require('axios');
 const { validateAction } = require('../middleware/auth');
 const { logAction } = require('../services/audit');
+const { evaluateUntrustedContent, getPolicies } = require('../services/policy-engine');
 const { createApproval } = require('./approvals');
 
 const HIGH_RISK_API_PATTERNS = [
@@ -208,7 +209,14 @@ router.post('/call', validateAction, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Invalid API URL' });
   }
 
-  const riskLevel = classifyApiRisk(method, apiUrl);
+  const policies = await getPolicies();
+  const untrustedPayload = [
+    apiUrl,
+    typeof apiBody === 'string' ? apiBody : JSON.stringify(apiBody || {}),
+  ].join('\n');
+  const untrustedCheck = evaluateUntrustedContent(untrustedPayload, policies);
+
+  const riskLevel = untrustedCheck.flagged ? 'high' : classifyApiRisk(method, apiUrl);
 
   let approvedViaStepUp = false;
   if (req.body.approvalId) {
@@ -222,6 +230,17 @@ router.post('/call', validateAction, async (req, res) => {
     }
   }
   const requiresApproval = riskLevel === 'high' && !approvedViaStepUp;
+
+  if (untrustedCheck.flagged && untrustedCheck.action === 'block' && !approvedViaStepUp) {
+    return res.status(403).json({
+      success: false,
+      error: 'Blocked: API call payload contains prompt-injection or malicious command patterns',
+      requiresStepUp: false,
+      riskLevel: 'high',
+      status: 'denied',
+      matches: untrustedCheck.matches
+    });
+  }
 
   let loggedAction;
   try {
@@ -237,7 +256,9 @@ router.post('/call', validateAction, async (req, res) => {
       riskLevel,
       status: requiresApproval ? 'step_up_required' : 'allowed',
       reason: requiresApproval
-        ? `High-risk external API call (${method.toUpperCase()} ${provider}) requires approval`
+        ? (untrustedCheck.flagged
+          ? `Untrusted content detected in API payload (${method.toUpperCase()} ${provider}) — requires approval`
+          : `High-risk external API call (${method.toUpperCase()} ${provider}) requires approval`)
         : `External API call (${provider})`
     });
   } catch (logErr) {
@@ -275,7 +296,8 @@ router.post('/call', validateAction, async (req, res) => {
       riskLevel,
       actionId: loggedAction?.id,
       approvalId: approval.id,
-      status: 'step_up_required'
+      status: 'step_up_required',
+      matches: untrustedCheck.flagged ? untrustedCheck.matches : undefined
     });
   }
 

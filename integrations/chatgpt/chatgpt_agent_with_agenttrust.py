@@ -1460,6 +1460,17 @@ class BrowserActionExecutor:
             )
         except Exception:
             pass
+
+    def _get_page_text_snapshot(self) -> str:
+        """Best-effort page text snapshot for backend untrusted-content checks."""
+        if not self.browser:
+            return ""
+        try:
+            content = self.browser.get_page_content(include_html=False) or {}
+            text = content.get("text") or ""
+            return str(text)[:3000]
+        except Exception:
+            return ""
     
     def execute_click(self, url: str, target: dict, **kwargs):
         """
@@ -1476,10 +1487,13 @@ class BrowserActionExecutor:
         if self.browser and not self.browser.is_alive():
             return {"status": "error", "message": "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."}
         # MANDATORY: Validate with AgentTrust first
+        page_text_snapshot = self._get_page_text_snapshot()
         result = self.agenttrust.execute_action(
             action_type="click",
             url=url,
-            target=target
+            target=target,
+            page_text=page_text_snapshot,
+            untrusted_content=page_text_snapshot
         )
         
         status = result.get("status")
@@ -1583,10 +1597,13 @@ class BrowserActionExecutor:
         if self.browser and not self.browser.is_alive():
             return {"status": "error", "message": "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."}
         # MANDATORY: Validate with AgentTrust first
+        page_text_snapshot = self._get_page_text_snapshot()
         result = self.agenttrust.execute_action(
             action_type="form_submit",
             url=url,
-            form_data=form_data
+            form_data=form_data,
+            page_text=page_text_snapshot,
+            untrusted_content=page_text_snapshot
         )
         
         status = result.get("status")
@@ -1700,9 +1717,12 @@ class BrowserActionExecutor:
                 pass
 
         # MANDATORY: Validate with AgentTrust first
+        page_text_snapshot = self._get_page_text_snapshot()
         result = self.agenttrust.execute_action(
             action_type="navigation",
-            url=url
+            url=url,
+            page_text=page_text_snapshot,
+            untrusted_content=page_text_snapshot
         )
         
         status = result.get("status")

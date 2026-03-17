@@ -2,7 +2,7 @@
 // Checks if action is allowed based on policies
 // CRITICAL: Logs ALL actions (allowed, denied, step-up required) before responding
 
-const { classifyRisk, checkPolicy } = require('../services/policy-engine');
+const { classifyRisk, checkPolicy, evaluateUntrustedContent, getPolicies } = require('../services/policy-engine');
 const { logAction } = require('../services/audit');
 const { Session } = require('../models/session');
 const { createApproval } = require('../routes/approvals');
@@ -52,9 +52,43 @@ function _buildActionImpactSummary(actionData) {
   return `${type} on ${domain}`;
 }
 
+function _collectUntrustedText(actionData) {
+  const chunks = [];
+
+  const addChunk = (value) => {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) chunks.push(trimmed);
+    }
+  };
+
+  addChunk(actionData.untrustedContent);
+  addChunk(actionData.pageText);
+  addChunk(actionData.url);
+  addChunk(actionData.target?.text);
+  addChunk(actionData.target?.aria_label);
+  addChunk(actionData.target?.placeholder);
+
+  const formData = actionData.form?.fields || actionData.formData || actionData.form;
+  if (formData && typeof formData === 'object') {
+    for (const value of Object.values(formData)) {
+      if (typeof value === 'string') {
+        addChunk(value);
+      } else if (value && typeof value === 'object') {
+        addChunk(value.value);
+        addChunk(value.text);
+        addChunk(value.label);
+      }
+    }
+  }
+
+  return chunks.join('\n');
+}
+
 async function enforcePolicy(req, res, next) {
   try {
     const actionData = req.body;
+    const policies = await getPolicies();
 
     // If the agent is retrying with an approved approvalId, verify and allow
     if (actionData.approvalId) {
@@ -69,14 +103,40 @@ async function enforcePolicy(req, res, next) {
       }
     }
     
+    // Analyze untrusted text from page/context before any action execution.
+    const untrustedText = _collectUntrustedText(actionData);
+    const untrustedCheck = evaluateUntrustedContent(untrustedText, policies);
+
     // Classify risk level
-    const riskLevel = actionData.approvedViaStepUp ? actionData.riskLevel : await classifyRisk(actionData);
+    const riskLevel = actionData.approvedViaStepUp
+      ? actionData.riskLevel
+      : (untrustedCheck.flagged ? 'high' : await classifyRisk(actionData));
     actionData.riskLevel = riskLevel;
+
+    if (untrustedCheck.flagged) {
+      actionData.securityDetection = {
+        type: 'prompt_injection',
+        matches: untrustedCheck.matches,
+        scannedChars: untrustedCheck.scannedChars
+      };
+    }
     
     // Check policy — skip if already approved via step-up
-    const policyCheck = actionData.approvedViaStepUp
-      ? { allowed: true, requiresStepUp: false, reason: 'Approved via step-up' }
-      : await checkPolicy(actionData, req.agent.scopes);
+    let policyCheck;
+    if (actionData.approvedViaStepUp) {
+      policyCheck = { allowed: true, requiresStepUp: false, reason: 'Approved via step-up' };
+    } else if (untrustedCheck.flagged) {
+      const shouldBlock = untrustedCheck.action === 'block';
+      policyCheck = {
+        allowed: false,
+        requiresStepUp: !shouldBlock,
+        reason: shouldBlock
+          ? 'Blocked: untrusted content includes prompt-injection or malicious command patterns'
+          : 'Untrusted content appears malicious — user approval required',
+      };
+    } else {
+      policyCheck = await checkPolicy(actionData, req.agent.scopes);
+    }
     
     // Use explicit sessionId from agent, or fall back to auto-detect
     let session;
@@ -123,7 +183,8 @@ async function enforcePolicy(req, res, next) {
       riskLevel: riskLevel,
       status: logStatus,
       screenshot: actionData.screenshot || null,
-      promptId: actionData.promptId || null
+      promptId: actionData.promptId || null,
+      securityDetection: actionData.securityDetection || null
     };
     
     // Log action to database (even if denied)

@@ -64,5 +64,26 @@
     "/events",
     "/publish",
     "/invite"
-  ]
+  ],
+  "prompt_injection_patterns": [
+    "ignore\\s+(all|any|previous|prior)\\s+instructions",
+    "disregard\\s+(all|any|previous|prior)\\s+instructions",
+    "system\\s+prompt",
+    "developer\\s+message",
+    "jailbreak",
+    "bypass\\s+(safety|guardrails|policy)",
+    "disable\\s+(security|safety|guardrails|policy)",
+    "reveal|leak|exfiltrate.*(token|secret|password|api\\s*key)",
+    "(curl|wget|powershell|cmd\\.exe|bash|rm\\s+-rf|del\\s+/f|Invoke-WebRequest)"
+  ],
+  "malicious_terms": [
+    "credential dump",
+    "session hijack",
+    "token theft",
+    "download and execute",
+    "remote command execution",
+    "data exfiltration"
+  ],
+  "max_untrusted_text_chars": 12000,
+  "untrusted_content_action": "step_up_or_block"
 }

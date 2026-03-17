@@ -194,7 +194,10 @@ class AgentTrustClient:
         target: Optional[Dict] = None,
         form_data: Optional[Dict] = None,
         domain: Optional[str] = None,
-        screenshot: Optional[str] = None
+        screenshot: Optional[str] = None,
+        page_text: Optional[str] = None,
+        untrusted_content: Optional[str] = None,
+        security_detection: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Execute a browser action through AgentTrust
@@ -248,6 +251,15 @@ class AgentTrustClient:
         
         if screenshot:
             action_data["screenshot"] = screenshot
+
+        # Optional untrusted content context from the browser observer.
+        # This lets backend policy inspect scraped/site text before execution.
+        if page_text:
+            action_data["pageText"] = str(page_text)[:12000]
+        if untrusted_content:
+            action_data["untrustedContent"] = str(untrusted_content)[:12000]
+        if security_detection and isinstance(security_detection, dict):
+            action_data["securityDetection"] = security_detection
         
         # Make request
         try:

@@ -8,6 +8,27 @@ let policies = null;
 let policiesLoadedAt = 0;
 const POLICY_CACHE_TTL_MS = 5000;
 
+const DEFAULT_PROMPT_INJECTION_PATTERNS = [
+  'ignore\\s+(all|any|previous|prior)\\s+instructions',
+  'disregard\\s+(all|any|previous|prior)\\s+instructions',
+  'system\\s+prompt',
+  'developer\\s+message',
+  'jailbreak',
+  'bypass\\s+(safety|guardrails|policy)',
+  'disable\\s+(security|safety|guardrails|policy)',
+  'reveal|leak|exfiltrate.*(token|secret|password|api\\s*key)',
+  '(curl|wget|powershell|cmd\\.exe|bash|rm\\s+-rf|del\\s+/f|Invoke-WebRequest)'
+];
+
+const DEFAULT_MALICIOUS_TERMS = [
+  'credential dump',
+  'session hijack',
+  'token theft',
+  'download and execute',
+  'remote command execution',
+  'data exfiltration'
+];
+
 async function loadPolicies() {
   if (policies && (Date.now() - policiesLoadedAt) < POLICY_CACHE_TTL_MS) {
     return policies;
@@ -38,7 +59,96 @@ function getDefaultPolicies() {
     impact_keywords: ['send', 'email', 'message', 'compose', 'reply', 'forward',
       'publish', 'comment', 'invite', 'create issue', 'new message', 'post'],
     content_actions: ['/mail/send', '/messages/new', '/issues/new', '/compose',
-      '/send', '/comments', '/events', '/publish', '/invite']
+      '/send', '/comments', '/events', '/publish', '/invite'],
+    prompt_injection_patterns: DEFAULT_PROMPT_INJECTION_PATTERNS,
+    malicious_terms: DEFAULT_MALICIOUS_TERMS,
+    max_untrusted_text_chars: 12000,
+    untrusted_content_action: 'step_up_or_block'
+  };
+}
+
+function _coerceStringArray(values, fallback) {
+  if (!Array.isArray(values)) return fallback;
+  const cleaned = values
+    .filter(v => typeof v === 'string')
+    .map(v => v.trim())
+    .filter(Boolean);
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
+function _normalizeUntrustedAction(action) {
+  const normalized = String(action || '').toLowerCase();
+  if (['allow', 'step_up', 'block', 'step_up_or_block'].includes(normalized)) {
+    return normalized;
+  }
+  return 'step_up_or_block';
+}
+
+function evaluateUntrustedContent(text, policyOverride = null) {
+  const sourcePolicies = policyOverride || policies || getDefaultPolicies();
+  const patternSources = _coerceStringArray(
+    sourcePolicies.prompt_injection_patterns,
+    DEFAULT_PROMPT_INJECTION_PATTERNS
+  );
+  const maliciousTerms = _coerceStringArray(
+    sourcePolicies.malicious_terms,
+    DEFAULT_MALICIOUS_TERMS
+  );
+  const maxChars = Number(sourcePolicies.max_untrusted_text_chars) > 0
+    ? Number(sourcePolicies.max_untrusted_text_chars)
+    : 12000;
+  const action = _normalizeUntrustedAction(sourcePolicies.untrusted_content_action);
+
+  const content = String(text || '').slice(0, maxChars);
+  if (!content.trim()) {
+    return {
+      flagged: false,
+      matches: [],
+      riskLevel: 'low',
+      action: 'allow',
+      reason: null,
+      scannedChars: 0
+    };
+  }
+
+  const matches = [];
+
+  for (const source of patternSources) {
+    try {
+      const regex = new RegExp(source, 'i');
+      if (regex.test(content)) {
+        matches.push(`pattern:${source}`);
+      }
+    } catch (error) {
+      // Ignore malformed regex from policy config to avoid runtime policy outage.
+    }
+  }
+
+  const lowerContent = content.toLowerCase();
+  for (const term of maliciousTerms) {
+    if (lowerContent.includes(term.toLowerCase())) {
+      matches.push(`term:${term}`);
+    }
+  }
+
+  if (matches.length === 0) {
+    return {
+      flagged: false,
+      matches: [],
+      riskLevel: 'low',
+      action: 'allow',
+      reason: null,
+      scannedChars: content.length
+    };
+  }
+
+  return {
+    flagged: true,
+    matches,
+    riskLevel: 'high',
+    action,
+    reason: 'Potential prompt injection or malicious instruction detected in untrusted content',
+    scannedChars: content.length
   };
 }
 
@@ -248,6 +358,7 @@ async function updatePolicies(newPolicies) {
 module.exports = {
   classifyRisk,
   checkPolicy,
+  evaluateUntrustedContent,
   getPolicies,
   updatePolicies
 };
