@@ -1769,3 +1769,22 @@ body.popout .routines-panel {
 .chat-routine-progress .routine-step-item.done { color: var(--c-success); }
 .chat-routine-progress .routine-step-item.running { color: var(--c-primary); font-weight: 600; }
 .chat-routine-progress .routine-step-item.pending-step { color: var(--c-text-3); }
+.chat-routine-progress .routine-step-item.rtn-fail { color: var(--c-danger); }
+
+/* Save as Routine button in session header */
+.btn-save-routine {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--c-primary);
+  color: var(--c-primary);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.4;
+  transition: background .15s, color .15s;
+}
+.btn-save-routine:hover {
+  background: var(--c-primary);
+  color: #fff;
+}

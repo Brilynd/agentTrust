@@ -263,13 +263,14 @@ function renderSessions(sessions) {
     const turns = buildConversationTurns(session);
 
     return `
-      <div class="session-card${hasHigh ? ' has-high-risk' : ''}${hasBlocked ? ' has-blocked' : ''}${idx === 0 ? ' open' : ''}" data-session>
+      <div class="session-card${hasHigh ? ' has-high-risk' : ''}${hasBlocked ? ' has-blocked' : ''}${idx === 0 ? ' open' : ''}" data-session data-session-id="${esc(session.id)}">
         <div class="session-head" data-toggle-session>
           <div class="session-head-left">
             <span class="session-indicator"></span>
             <span class="session-head-title">${esc(title)}</span>
           </div>
           <div class="session-head-meta">
+            ${actionCount > 0 ? `<button class="btn-save-routine" data-sid="${esc(session.id)}" title="Save as routine">Save routine</button>` : ''}
             <span class="meta-pill">${promptCount}p &middot; ${actionCount}a</span>
             <span class="meta-time">${time}</span>
             <svg class="session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -283,9 +284,40 @@ function renderSessions(sessions) {
 
   // Bind collapse/expand for sessions
   el.querySelectorAll('[data-toggle-session]').forEach(head => {
-    head.addEventListener('click', () => head.closest('[data-session]').classList.toggle('open'));
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('.btn-save-routine')) return;
+      head.closest('[data-session]').classList.toggle('open');
+    });
   });
 
+  // Bind "Save as Routine" buttons
+  el.querySelectorAll('.btn-save-routine').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      saveSessionAsRoutine(btn.dataset.sid);
+    });
+  });
+
+}
+
+async function saveSessionAsRoutine(sessionId) {
+  const name = window.prompt('Routine name:');
+  if (!name || !name.trim()) return;
+  try {
+    const res = await apiFetch(`/routines/from-session/${sessionId}`, {
+      method: 'POST',
+      body: { name: name.trim(), description: '', scope: 'private' }
+    });
+    if (res.success) {
+      alert('Routine saved! Switch to the Routines tab to see it.');
+      loadRoutines();
+    } else {
+      alert(res.error || 'Failed to save routine');
+    }
+  } catch (err) {
+    console.error('Save session as routine error:', err);
+    alert('Failed to save routine');
+  }
 }
 
 /**
@@ -606,9 +638,48 @@ async function loadChatHistory() {
         container.scrollTop = container.scrollHeight;
       }
     }
+
+    // Update /run command step placeholders from ROUTINE| progress lines
+    _updateRoutineStepPlaceholders(prompts);
+
   } catch (err) {
     // On fetch error, keep existing chat visible — don't wipe it
     console.error('Chat load error:', err);
+  }
+}
+
+function _updateRoutineStepPlaceholders(prompts) {
+  if (!prompts) return;
+  for (const p of prompts) {
+    const progress = p.progress || '';
+    if (!progress.includes('ROUTINE|')) continue;
+    const lines = progress.split('\n');
+    for (const line of lines) {
+      if (!line.startsWith('ROUTINE|')) continue;
+      const match = line.match(/^ROUTINE\|Step (\d+)\/\d+:.+--\s*(OK|FAIL|ERROR|DENIED)$/i);
+      if (!match) continue;
+      const stepIdx = parseInt(match[1], 10) - 1;
+      const status = match[2].toUpperCase();
+      const el = document.getElementById(`rtnStep_${stepIdx}`);
+      if (!el) continue;
+      el.classList.remove('pending-step', 'running', 'done', 'rtn-fail');
+      if (status === 'OK') {
+        el.classList.add('done');
+        el.innerHTML = el.innerHTML.replace(/^[\u25A1\u2713\u2717]/, '\u2713');
+      } else {
+        el.classList.add('rtn-fail');
+        el.innerHTML = el.innerHTML.replace(/^[\u25A1\u2713\u2717]/, '\u2717');
+      }
+    }
+    // Mark the next step as "running" if the routine isn't complete
+    if (!progress.includes('DONE|')) {
+      const completedCount = (progress.match(/ROUTINE\|Step \d+\/\d+:.*--(OK|FAIL|ERROR|DENIED)/gi) || []).length;
+      const nextEl = document.getElementById(`rtnStep_${completedCount}`);
+      if (nextEl && !nextEl.classList.contains('done') && !nextEl.classList.contains('rtn-fail')) {
+        nextEl.classList.remove('pending-step');
+        nextEl.classList.add('running');
+      }
+    }
   }
 }
 
@@ -1086,6 +1157,8 @@ async function disconnectProvider(provider) {
 // ─── Routines ─────────────────────────────────────────
 let editingRoutineId = null;
 let routineSteps = [];
+let _pickerSessionId = null;
+let _pickerActionIds = [];
 
 async function loadRoutines() {
   const search = $('routineSearch') ? $('routineSearch').value.trim() : '';
@@ -1306,6 +1379,8 @@ async function loadSessionPicker() {
 
 async function loadSessionActions(sessionId) {
   const container = $('sessionActionsList');
+  _pickerSessionId = sessionId || null;
+  _pickerActionIds = [];
   if (!sessionId) { container.innerHTML = ''; return; }
 
   try {
@@ -1348,8 +1423,10 @@ async function loadSessionActions(sessionId) {
 
 function updateStepsFromPicker() {
   const checkboxes = $('sessionActionsList').querySelectorAll('input[type="checkbox"]:checked');
+  _pickerActionIds = [];
   const pickedSteps = [];
   checkboxes.forEach((cb, i) => {
+    _pickerActionIds.push(cb.value);
     try {
       const data = JSON.parse(cb.dataset.action);
       pickedSteps.push({ order: i + 1, type: 'action', ...data });
@@ -1384,6 +1461,19 @@ async function saveRoutine() {
         loadRoutines();
       } else {
         alert(res.error || 'Failed to update');
+      }
+    } else if (_pickerSessionId && _pickerActionIds.length > 0) {
+      const res = await apiFetch(`/routines/from-session/${_pickerSessionId}`, {
+        method: 'POST',
+        body: { name, description, scope, selectedActionIds: _pickerActionIds }
+      });
+      if (res.success) {
+        _pickerSessionId = null;
+        _pickerActionIds = [];
+        showRoutineListView();
+        loadRoutines();
+      } else {
+        alert(res.error || 'Failed to create from session');
       }
     } else {
       const res = await apiFetch('/routines', {

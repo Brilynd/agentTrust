@@ -3177,6 +3177,7 @@ class BrowserActionExecutor:
     def _wait_for_target(self, target: dict, timeout: int = 10) -> bool:
         """
         Wait until the target element is present and visible on the page.
+        Uses a multi-strategy fallback chain for robust matching.
         Returns True if found, False on timeout.
         """
         if not self.browser or not target:
@@ -3185,44 +3186,104 @@ class BrowserActionExecutor:
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.common.by import By
 
+        def _visible(el):
+            try:
+                return el.is_displayed()
+            except Exception:
+                return False
+
         def _find(d):
+            # 1. By ID
             if target.get("id"):
                 try:
                     el = d.find_element(By.ID, target["id"])
-                    if el.is_displayed():
+                    if _visible(el):
                         return True
                 except Exception:
                     pass
+
+            # 2. By CSS selector
+            for key in ("css", "selector"):
+                css = target.get(key, "")
+                if css:
+                    try:
+                        el = d.find_element(By.CSS_SELECTOR, css)
+                        if _visible(el):
+                            return True
+                    except Exception:
+                        pass
+
+            # 3. By name attribute
+            if target.get("name"):
+                try:
+                    el = d.find_element(By.NAME, target["name"])
+                    if _visible(el):
+                        return True
+                except Exception:
+                    pass
+
+            # 4. By aria-label
+            aria = target.get("ariaLabel") or target.get("aria-label") or ""
+            if aria:
+                safe = aria[:80].replace("'", "\\'")
+                try:
+                    el = d.find_element(By.CSS_SELECTOR, f'[aria-label="{safe}"]')
+                    if _visible(el):
+                        return True
+                except Exception:
+                    pass
+
+            # 5. By href (links)
+            if target.get("href"):
+                href = str(target["href"])[:200].replace("'", "\\'")
+                try:
+                    el = d.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
+                    if _visible(el):
+                        return True
+                except Exception:
+                    pass
+
+            # 6. By exact link text
             text = (target.get("text") or "")[:80].strip()
             if text:
-                text_xpath = text.replace("'", "''")
+                try:
+                    el = d.find_element(By.LINK_TEXT, text)
+                    if _visible(el):
+                        return True
+                except Exception:
+                    pass
+
+            # 7. By partial text (XPath contains) across interactive elements
+            if text:
+                safe_text = text.replace("'", "\\'")
                 for xpath in [
-                    f"//a[contains(., '{text_xpath}')]",
-                    f"//button[contains(., '{text_xpath}')]",
-                    f"//*[contains(., '{text_xpath}')]",
+                    f"//a[contains(., '{safe_text}')]",
+                    f"//button[contains(., '{safe_text}')]",
+                    f"//input[@value and contains(@value, '{safe_text}')]",
+                    f"//*[@role='button' and contains(., '{safe_text}')]",
+                    f"//*[contains(., '{safe_text}')]",
                 ]:
                     try:
                         els = d.find_elements(By.XPATH, xpath)
                         for el in els:
-                            if el.is_displayed():
+                            if _visible(el):
                                 return True
                     except Exception:
                         continue
-            if target.get("selector"):
-                try:
-                    el = d.find_element(By.CSS_SELECTOR, target["selector"])
-                    if el.is_displayed():
-                        return True
-                except Exception:
-                    pass
-            if target.get("href"):
-                href = str(target["href"])[:200].replace("'", "''")
-                try:
-                    el = d.find_element(By.XPATH, f"//a[contains(@href, '{href}')]")
-                    if el.is_displayed():
-                        return True
-                except Exception:
-                    pass
+
+            # 8. By tag + class combination
+            tag = target.get("tagName") or target.get("tag") or ""
+            cls = target.get("className") or target.get("class") or ""
+            if tag and cls:
+                first_cls = cls.split()[0] if cls else ""
+                if first_cls:
+                    try:
+                        el = d.find_element(By.CSS_SELECTOR, f"{tag.lower()}.{first_cls}")
+                        if _visible(el):
+                            return True
+                    except Exception:
+                        pass
+
             return False
 
         try:
@@ -3315,7 +3376,8 @@ class BrowserActionExecutor:
         return {"status": "allowed", **(result or {})}
 
     def replay_routine(self, steps: list, routine_name: str = "routine",
-                       scope: str = "private", is_owner: bool = True) -> dict:
+                       scope: str = "private", is_owner: bool = True,
+                       progress_callback=None) -> dict:
         """
         Deterministically replay a sequence of recorded browser actions
         without involving ChatGPT.
@@ -3340,10 +3402,25 @@ class BrowserActionExecutor:
         total = len(steps)
         trusted = (scope == "private") or is_owner
 
+        def _emit(line):
+            if progress_callback:
+                try:
+                    progress_callback(line)
+                except Exception:
+                    pass
+
+        # Clear the shared progress accumulator
+        global _routine_progress_lines
+        try:
+            _routine_progress_lines.clear()
+        except Exception:
+            pass
+
         print(f"\n{'='*50}")
         print(f"  ROUTINE: {routine_name} ({total} steps)")
         print(f"  Mode: {'TRUSTED (skip validation)' if trusted else 'VALIDATED (one-time check)'}")
         print(f"{'='*50}")
+        _emit(f"ROUTINE|Starting routine: {routine_name} ({total} steps)")
 
         if not trusted:
             print("  Validating routine domains...")
@@ -3369,6 +3446,12 @@ class BrowserActionExecutor:
             print(f"  [{i}/{total}] {label}")
 
             try:
+                if action_type in ("click", "form_submit", "auto_login"):
+                    try:
+                        self.dismiss_overlays()
+                    except Exception:
+                        pass
+
                 if action_type == "navigation":
                     nav_url = url or (f"https://{domain}" if domain else "")
                     if not nav_url:
@@ -3595,9 +3678,11 @@ class BrowserActionExecutor:
                 results.append({"step": i, "label": label, "status": status, "success": ok})
                 symbol = "OK" if ok else "FAIL"
                 print(f"           -> {symbol} ({status})")
+                _emit(f"ROUTINE|Step {i}/{total}: {label} -- {symbol}")
 
                 if not ok and status in ("denied", "step_up_required"):
                     print(f"           Routine halted: {result.get('message', status)}")
+                    _emit(f"ROUTINE|Halted: {result.get('message', status)}")
                     break
 
                 if not ok:
@@ -3611,14 +3696,17 @@ class BrowserActionExecutor:
             except PermissionError as e:
                 print(f"           -> DENIED: {e}")
                 results.append({"step": i, "label": label, "status": "denied", "error": str(e)})
+                _emit(f"ROUTINE|Step {i}/{total}: {label} -- DENIED")
                 break
             except Exception as e:
                 print(f"           -> ERROR: {e}")
                 results.append({"step": i, "label": label, "status": "error", "error": str(e)})
+                _emit(f"ROUTINE|Step {i}/{total}: {label} -- ERROR")
 
         completed = sum(1 for r in results if r.get("success"))
         print(f"\n  Routine finished: {completed}/{total} steps completed")
         print(f"{'='*50}\n")
+        _emit(f"DONE|Routine finished: {completed}/{total} steps completed")
 
         return {
             "success": completed == total,
@@ -5006,14 +5094,28 @@ def main():
                     steps = cmd.get("steps", [])
                     scope = cmd.get("scope", "private")
                     is_owner = cmd.get("isOwner", True)
-                    print(f"\n📨 Routine command: {routine_name} ({len(steps)} steps, {scope})")
+                    print(f"\nRoutine command: {routine_name} ({len(steps)} steps, {scope})")
+
+                    prompt_id = None
+                    try:
+                        prompt_id = agent.agenttrust.store_prompt(f"[Routine] {routine_name}")
+                    except Exception:
+                        pass
+
                     result = agent.browser_executor.replay_routine(
-                        steps, routine_name, scope=scope, is_owner=is_owner)
+                        steps, routine_name, scope=scope, is_owner=is_owner,
+                        progress_callback=lambda text: _routine_progress(agent, prompt_id, text))
+
+                    summary = f"Routine '{routine_name}': {result.get('steps_completed')}/{result.get('steps_total')} steps completed"
                     if result.get("success"):
-                        print(f"Routine '{routine_name}' completed successfully")
+                        print(summary)
                     else:
-                        print(f"Routine '{routine_name}' finished with issues: "
-                              f"{result.get('steps_completed')}/{result.get('steps_total')} steps")
+                        print(f"{summary} (with issues)")
+                    if prompt_id:
+                        try:
+                            agent.agenttrust.update_prompt_response(prompt_id, summary)
+                        except Exception:
+                            pass
                 else:
                     print(f"\n📨 Browser command: {cmd['content']}")
                     agent.chat(cmd["content"])
@@ -5052,6 +5154,19 @@ def main():
                 print(f"  - {action.get('type')} on {action.get('domain')} at {action.get('timestamp', 'N/A')}")
         except Exception as e:
             print(f"Note: {e}")
+
+
+_routine_progress_lines: list = []
+
+def _routine_progress(agent, prompt_id, line: str):
+    """Push a routine progress line to the backend for the extension UI."""
+    _routine_progress_lines.append(line)
+    if prompt_id and hasattr(agent, 'agenttrust'):
+        try:
+            agent.agenttrust.update_prompt_progress(
+                prompt_id, "\n".join(_routine_progress_lines))
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
