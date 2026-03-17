@@ -26,6 +26,8 @@ import sys
 import base64
 import io
 import time
+import zipfile
+import shutil
 
 # Fix emoji output on Windows terminals that use cp1252
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -363,8 +365,98 @@ class BrowserController:
         except Exception:
             pass
         return None
-    
-    
+
+    def _get_chrome_for_testing_path(self) -> Optional[str]:
+        """Get path to Chrome for Testing binary. Checks env vars then local chrome-for-testing folder."""
+        for env_name in ("CHROME_FOR_TESTING_PATH", "AGENTTRUST_CHROME_FOR_TESTING_PATH"):
+            path = os.getenv(env_name)
+            if not path:
+                continue
+            path = os.path.abspath(path.strip().strip('"'))
+            if os.path.isfile(path) and path.lower().endswith("chrome.exe"):
+                return path
+            if os.path.isdir(path):
+                c = os.path.join(path, "chrome.exe")
+                if os.path.isfile(c):
+                    return c
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            base = os.path.join(script_dir, "chrome-for-testing")
+            for folder in ("chrome-win64", "chrome-win32"):
+                c = os.path.join(base, folder, "chrome.exe")
+                if os.path.isfile(c):
+                    return os.path.abspath(c)
+            if sys.platform == "darwin":
+                for folder in ("chrome-mac-arm64", "chrome-mac-x64"):
+                    c = os.path.join(base, folder, "Google Chrome for Testing.app")
+                    if os.path.isdir(c):
+                        return os.path.abspath(c)
+            else:
+                c = os.path.join(base, "chrome-linux64", "chrome")
+                if os.path.isfile(c):
+                    return os.path.abspath(c)
+        except Exception:
+            pass
+        return None
+
+    def _download_chrome_for_testing(self, force_reinstall: bool = False) -> Optional[str]:
+        """Download Chrome for Testing (stable) for current platform. Set force_reinstall=True to re-download."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.join(script_dir, "chrome-for-testing")
+        if sys.platform == "win32":
+            platform_id, zip_name, inner_folder, binary_name = "win64", "chrome-win64.zip", "chrome-win64", "chrome.exe"
+        elif sys.platform == "darwin":
+            import platform as p
+            platform_id = "mac-arm64" if p.machine().lower() in ("arm64", "aarch64") else "mac-x64"
+            zip_name = f"chrome-{platform_id}.zip"
+            inner_folder = f"chrome-{platform_id}"
+            binary_name = "Google Chrome for Testing.app"
+        else:
+            platform_id, zip_name, inner_folder, binary_name = "linux64", "chrome-linux64.zip", "chrome-linux64", "chrome"
+        chrome_path = os.path.join(base_dir, inner_folder, binary_name)
+        exists = os.path.isfile(chrome_path) or (binary_name.endswith(".app") and os.path.isdir(chrome_path))
+        if exists and not force_reinstall:
+            return os.path.abspath(chrome_path)
+        if force_reinstall and os.path.isdir(base_dir):
+            try:
+                shutil.rmtree(base_dir)
+                os.makedirs(base_dir, exist_ok=True)
+            except OSError as e:
+                print(f"⚠️  Could not remove old install: {e}")
+        try:
+            r = requests.get(
+                "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json",
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            downloads = data.get("channels", {}).get("Stable", {}).get("downloads", {}).get("chrome", [])
+            url = next((d["url"] for d in downloads if d.get("platform") == platform_id), None)
+            if not url:
+                return None
+            print("⬇️  Downloading Chrome for Testing (stable)...")
+            zip_resp = requests.get(url, stream=True, timeout=120)
+            zip_resp.raise_for_status()
+            os.makedirs(base_dir, exist_ok=True)
+            zip_path = os.path.join(base_dir, zip_name)
+            with open(zip_path, "wb") as f:
+                for chunk in zip_resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+            print("📦 Extracting...")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(base_dir)
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
+            if os.path.isfile(chrome_path) or (binary_name.endswith(".app") and os.path.isdir(chrome_path)):
+                print("✅ Chrome for Testing ready")
+                return os.path.abspath(chrome_path)
+        except Exception as e:
+            print(f"⚠️  Auto-install failed: {e}")
+        return None
+
     def __init__(self, headless: bool = False, agenttrust_validator=None):
         """
         Initialize browser controller
@@ -381,10 +473,21 @@ class BrowserController:
         
         extension_path = self._get_extension_path()
         load_ext = extension_path and os.getenv("AGENTTRUST_LOAD_EXTENSION", "true").lower() == "true"
+        chrome_for_testing = self._get_chrome_for_testing_path()
+        force_reinstall = os.getenv("AGENTTRUST_REINSTALL_CHROMIUM", "").lower() == "true"
+        if load_ext and not chrome_for_testing and os.getenv("AGENTTRUST_AUTO_INSTALL_CHROMIUM", "true").lower() == "true":
+            chrome_for_testing = self._download_chrome_for_testing(force_reinstall=force_reinstall)
+        elif load_ext and force_reinstall and chrome_for_testing:
+            chrome_for_testing = self._download_chrome_for_testing(force_reinstall=True)
+        if load_ext and not chrome_for_testing:
+            print("❌ Chrome for Testing required for extension. Set CHROME_FOR_TESTING_PATH or run with auto-install (default).")
+            raise RuntimeError("Chrome for Testing not found. Delete integrations/chatgpt/chrome-for-testing and run again to re-download.")
         
         options = webdriver.ChromeOptions()
         if headless:
             options.add_argument('--headless=new')
+        if chrome_for_testing:
+            options.binary_location = chrome_for_testing
         
         chrome_profile = os.getenv("CHROME_PROFILE_DIR")
         if not chrome_profile:
@@ -432,10 +535,6 @@ class BrowserController:
         
         if load_ext:
             options.add_argument(f'--load-extension={extension_path}')
-            # Chrome 137+ blocks --load-extension in standard Chrome.
-            # Setting browser_version forces Selenium Manager to use Chrome for Testing,
-            # which still supports extension loading.
-            options.browser_version = 'stable'
         
         actual_driver = webdriver.Chrome(options=options)
         if load_ext:
@@ -2068,12 +2167,22 @@ class BrowserActionExecutor:
                           for kw in ("password", "passwd", "secret", "ssn", "credit", "card", "cvv", "pin"))
         
         try:
+            logged_field = (
+                target.get("name")
+                or target.get("id")
+                or target.get("placeholder")
+                or target.get("type")
+                or "text"
+            )
+            logged_value = "***" if is_sensitive else text
             result = self.agenttrust.execute_action(
                 action_type="form_input",
                 url=current_url,
                 target={"type": "input", "action": "type_text",
                         "id": target.get("id"), "name": target.get("name"),
-                        "is_sensitive": is_sensitive}
+                        "placeholder": target.get("placeholder"),
+                        "is_sensitive": is_sensitive},
+                form_data={"field": logged_field, "value": logged_value}
             )
             
             status = result.get("status") if result else None
@@ -3409,20 +3518,18 @@ class BrowserActionExecutor:
 
     def replay_routine(self, steps: list, routine_name: str = "routine",
                        scope: str = "private", is_owner: bool = True,
+                       require_approval: bool = False,
                        progress_callback=None) -> dict:
         """
         Deterministically replay a sequence of recorded browser actions
         without involving ChatGPT.
 
         Trust model:
-        - Private routines (or global routines run by their owner):
-          Actions are TRUSTED and execute directly on the browser without
-          AgentTrust policy checks. The user already approved these actions
-          when they recorded/saved the routine.
-        - Global routines run by a non-owner:
-          A single upfront validation checks all domains against the user's
-          policy. If all pass, the rest executes in trusted mode. This means
-          the user only validates once, not per-step.
+        - require_approval=True (/test mode): every step goes through
+          AgentTrust validation so the extension shows approval for each action.
+        - require_approval=False:
+          - Private routines or owner: TRUSTED, skip policy checks.
+          - Global non-owner: one upfront domain check, then trusted.
 
         Key behaviors:
         - Waits for document.readyState === 'complete' after every navigation
@@ -3432,7 +3539,7 @@ class BrowserActionExecutor:
         """
         results = []
         total = len(steps)
-        trusted = (scope == "private") or is_owner
+        trusted = not require_approval and ((scope == "private") or is_owner)
 
         def _emit(line):
             if progress_callback:
@@ -3450,11 +3557,12 @@ class BrowserActionExecutor:
 
         print(f"\n{'='*50}")
         print(f"  ROUTINE: {routine_name} ({total} steps)")
-        print(f"  Mode: {'TRUSTED (skip validation)' if trusted else 'VALIDATED (one-time check)'}")
+        mode_label = 'APPROVAL PER ACTION' if require_approval else ('TRUSTED (skip validation)' if trusted else 'VALIDATED (one-time check)')
+        print(f"  Mode: {mode_label}")
         print(f"{'='*50}")
         _emit(f"ROUTINE|Starting routine: {routine_name} ({total} steps)")
 
-        if not trusted:
+        if not trusted and not require_approval:
             print("  Validating routine domains...")
             err = self._validate_global_routine_once(steps)
             if err:
@@ -5126,7 +5234,9 @@ def main():
                     steps = cmd.get("steps", [])
                     scope = cmd.get("scope", "private")
                     is_owner = cmd.get("isOwner", True)
-                    print(f"\nRoutine command: {routine_name} ({len(steps)} steps, {scope})")
+                    require_approval = cmd.get("requireApproval", False)
+                    mode_tag = " [approval per action]" if require_approval else ""
+                    print(f"\nRoutine command: {routine_name} ({len(steps)} steps, {scope}){mode_tag}")
 
                     prompt_id = None
                     try:
@@ -5136,6 +5246,7 @@ def main():
 
                     result = agent.browser_executor.replay_routine(
                         steps, routine_name, scope=scope, is_owner=is_owner,
+                        require_approval=require_approval,
                         progress_callback=lambda text: _routine_progress(agent, prompt_id, text))
 
                     summary = f"Routine '{routine_name}': {result.get('steps_completed')}/{result.get('steps_total')} steps completed"

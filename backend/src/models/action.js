@@ -90,7 +90,8 @@ class Action {
     let formDataIv = null;
     if (formData != null) {
       const { encrypted, iv } = encryptJSON(formData);
-      formDataStr = encrypted;
+      // form_data is a JSONB column, so encrypted text must be stored as a JSON string.
+      formDataStr = JSON.stringify(encrypted);
       formDataIv = iv;
     }
     

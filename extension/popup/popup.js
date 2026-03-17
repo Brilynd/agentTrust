@@ -56,6 +56,7 @@ function bindEvents() {
 
   // Chat
   $('chatForm').addEventListener('submit', handleSendCommand);
+  _initCmdDropdown();
 
   // Thinking block collapse/expand (delegated — CSP safe)
   $('chatMessages').addEventListener('click', e => {
@@ -819,6 +820,93 @@ function _updateRoutineStepPlaceholders(prompts) {
   }
 }
 
+// ─── Chat: /run & /test autocomplete dropdown ────────
+let _cmdDropdownHl = 0;
+let _cmdPrefix = '';
+
+function _initCmdDropdown() {
+  const input = $('chatInput');
+  const dd = $('chatCommandDropdown');
+  if (!input || !dd) return;
+
+  input.addEventListener('input', () => _updateCmdDropdown());
+
+  input.addEventListener('keydown', e => {
+    if (dd.hidden) return;
+    const items = dd.querySelectorAll('.chat-cmd-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _cmdDropdownHl = Math.min(_cmdDropdownHl + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('hl', i === _cmdDropdownHl));
+      items[_cmdDropdownHl]?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _cmdDropdownHl = Math.max(_cmdDropdownHl - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('hl', i === _cmdDropdownHl));
+      items[_cmdDropdownHl]?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') {
+      const hl = dd.querySelector('.chat-cmd-item.hl');
+      if (hl && hl.dataset.name) {
+        e.preventDefault();
+        input.value = `${_cmdPrefix} ${hl.dataset.name}`;
+        _closeCmdDropdown();
+      }
+    } else if (e.key === 'Escape') {
+      _closeCmdDropdown();
+    }
+  });
+
+  document.addEventListener('click', e => {
+    if (!dd.hidden && !input.contains(e.target) && !dd.contains(e.target)) _closeCmdDropdown();
+  });
+}
+
+function _closeCmdDropdown() {
+  const dd = $('chatCommandDropdown');
+  if (dd) { dd.hidden = true; dd.innerHTML = ''; }
+}
+
+async function _updateCmdDropdown() {
+  const input = $('chatInput');
+  const dd = $('chatCommandDropdown');
+  if (!input || !dd) return;
+  const raw = input.value;
+  const runM = raw.match(/^\/run(\s+(.*))?$/i);
+  const testM = raw.match(/^\/test(\s+(.*))?$/i);
+  if (runM) { _cmdPrefix = '/run'; await _showRoutinesList(dd, (runM[2] || '').trim().toLowerCase(), input); return; }
+  if (testM) { _cmdPrefix = '/test'; await _showRoutinesList(dd, (testM[2] || '').trim().toLowerCase(), input); return; }
+  _closeCmdDropdown();
+}
+
+async function _showRoutinesList(dd, filter, input) {
+  try {
+    const res = await apiFetch('/routines');
+    const all = (res.success && res.routines) ? res.routines : [];
+    const list = filter
+      ? all.filter(r => ((r.name || '') + ' ' + (r.description || '')).toLowerCase().includes(filter))
+      : all;
+    dd.innerHTML = '';
+    _cmdDropdownHl = 0;
+    if (list.length === 0) {
+      dd.innerHTML = `<div class="chat-cmd-empty">No routines${filter ? ' matching "' + esc(filter) + '"' : ''}</div>`;
+    } else {
+      list.forEach((r, i) => {
+        const el = document.createElement('div');
+        el.className = 'chat-cmd-item' + (i === 0 ? ' hl' : '');
+        el.dataset.name = r.name || '';
+        const d = r.description ? `<div class="cmd-desc">${esc(truncate(r.description, 50))}</div>` : '';
+        el.innerHTML = `${esc(r.name || 'Unnamed')}${d}`;
+        el.addEventListener('click', () => { input.value = `${_cmdPrefix} ${r.name}`; _closeCmdDropdown(); input.focus(); });
+        dd.appendChild(el);
+      });
+    }
+    dd.hidden = false;
+  } catch (_) {
+    dd.innerHTML = '<div class="chat-cmd-empty">Failed to load routines</div>';
+    dd.hidden = false;
+  }
+}
+
 // ─── Chat: send command ──────────────────────────────
 async function handleSendCommand(e) {
   e.preventDefault();
@@ -842,12 +930,17 @@ async function handleSendCommand(e) {
     if (!activeSessionId) return;
   }
 
-  // Handle /run command for routines
+  _closeCmdDropdown();
+
+  // Handle /run and /test commands for routines
   const runMatch = text.match(/^\/run\s+(.+)$/i);
-  if (runMatch) {
+  const testMatch = text.match(/^\/test\s+(.+)$/i);
+  if (runMatch || testMatch) {
+    const rName = runMatch ? runMatch[1].trim() : testMatch[1].trim();
+    const approval = Boolean(testMatch);
     input.value = '';
     btn.disabled = true;
-    await handleRunRoutineFromChat(runMatch[1].trim());
+    await handleRunRoutineFromChat(rName, { requireApproval: approval });
     btn.disabled = false;
     input.focus();
     return;
@@ -1381,13 +1474,16 @@ async function runRoutine(routineId) {
   }
 }
 
-async function handleRunRoutineFromChat(name) {
+async function handleRunRoutineFromChat(name, opts = {}) {
+  const requireApproval = Boolean(opts.requireApproval);
+  const cmd = requireApproval ? '/test' : '/run';
+
   const container = $('chatMessages');
   const emptyState = container.querySelector('.state-empty');
   if (emptyState) emptyState.remove();
 
   container.insertAdjacentHTML('beforeend',
-    `<div class="chat-bubble user"><span class="bubble-label">You</span>/run ${esc(name)}</div>`
+    `<div class="chat-bubble user"><span class="bubble-label">You</span>${esc(cmd)} ${esc(name)}</div>`
   );
 
   try {
@@ -1407,9 +1503,10 @@ async function handleRunRoutineFromChat(name) {
       `<div class="routine-step-item pending-step" id="rtnStep_${i}">&#9723; Step ${i + 1}: ${esc(s.label || s.actionType || 'action')}</div>`
     ).join('');
 
+    const modeLabel = requireApproval ? ' (approval per action)' : '';
     container.insertAdjacentHTML('beforeend',
       `<div class="chat-routine-progress" id="routineProgressBlock">
-        <div class="routine-progress-title">Running: ${esc(routine.name)}</div>
+        <div class="routine-progress-title">Running: ${esc(routine.name)}${esc(modeLabel)}</div>
         ${stepsHtml}
       </div>`
     );
@@ -1417,7 +1514,7 @@ async function handleRunRoutineFromChat(name) {
 
     const execRes = await apiFetch(`/routines/${routine.id}/execute`, {
       method: 'POST',
-      body: { sessionId: activeSessionId }
+      body: { sessionId: activeSessionId, requireApproval }
     });
 
     if (!execRes.success) {
@@ -1482,7 +1579,10 @@ function renderRoutineSteps() {
   container.innerHTML = routineSteps.map((s, i) =>
     `<div class="routine-step-row" data-idx="${i}">
       <span class="routine-step-order">${i + 1}</span>
-      <span class="routine-step-label">${esc(s.label || s.actionType || 'Action')}</span>
+      <span class="routine-step-label">
+        <span>${esc(s.label || s.actionType || 'Action')}</span>
+        ${s.promptText ? `<span class="routine-step-prompt">Prompt: ${esc(s.promptText)}</span>` : ''}
+      </span>
       <span class="routine-step-type">${esc(s.actionType || '')}</span>
       <button class="routine-step-remove" data-idx="${i}" title="Remove">&times;</button>
     </div>`

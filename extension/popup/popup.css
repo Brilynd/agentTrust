@@ -963,8 +963,14 @@ body.popout .feed-body {
   flex-shrink: 0;
 }
 
-.chat-input {
+.chat-input-wrap {
   flex: 1;
+  position: relative;
+  min-width: 0;
+}
+
+.chat-input {
+  width: 100%;
   padding: 8px 10px;
   font-size: 12.5px;
   border: 1px solid var(--c-border);
@@ -972,6 +978,45 @@ body.popout .feed-body {
   background: var(--c-bg);
   color: var(--c-text);
   transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+/* ── Slash-command autocomplete dropdown ── */
+.chat-cmd-dropdown {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: 100;
+}
+.chat-cmd-dropdown[hidden] { display: none !important; }
+
+.chat-cmd-item {
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--c-border-lt);
+  color: var(--c-text);
+}
+.chat-cmd-item:last-child { border-bottom: none; }
+.chat-cmd-item:hover, .chat-cmd-item.hl {
+  background: var(--c-primary-bg);
+  color: var(--c-primary);
+}
+.chat-cmd-item .cmd-desc {
+  font-size: 10.5px;
+  color: var(--c-text-3);
+  margin-top: 1px;
+}
+.chat-cmd-empty {
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--c-text-3);
 }
 
 .chat-input:focus {
@@ -1712,9 +1757,18 @@ body.popout .routines-panel {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--c-text);
+}
+
+.routine-step-prompt {
+  font-size: 10px;
+  color: var(--c-text-3);
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--c-text);
 }
 
 .routine-step-type {

@@ -2,14 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateUser, validateAction } = require('../middleware/auth');
 const { Session } = require('../models/session');
-
-// In-memory command queue: sessionId -> [{ id, content, createdAt }]
-const queues = new Map();
-
-// Long-poll waiters: sessionId -> [{ res, timer }]
-const waiters = new Map();
-
-let cmdCounter = 0;
+const { queues, waiters, nextCommandId } = require('../services/commandQueue');
 
 // Extension submits a command (user auth)
 router.post('/', authenticateUser, async (req, res) => {
@@ -30,7 +23,7 @@ router.post('/', authenticateUser, async (req, res) => {
   }
 
   const command = {
-    id: `cmd_${Date.now()}_${++cmdCounter}`,
+    id: nextCommandId(),
     content,
     sessionId,
     createdAt: new Date().toISOString()
@@ -99,8 +92,5 @@ router.get('/pending', validateAction, (req, res) => {
     }
   });
 });
-
-router.__queues = queues;
-router.__waiters = waiters;
 
 module.exports = router;

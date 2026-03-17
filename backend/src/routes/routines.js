@@ -5,6 +5,8 @@ const { authenticateUser, validateAction } = require('../middleware/auth');
 const pool = require('../config/database');
 const { encryptJSON, decryptJSON } = require('../utils/crypto');
 const { cwLog } = require('../services/cloudwatch');
+const { queues, waiters, nextCommandId } = require('../services/commandQueue');
+const { Session } = require('../models/session');
 
 let _tableChecked = false;
 async function ensureTable() {
@@ -31,6 +33,42 @@ async function ensureTable() {
   }
 }
 
+function encryptField(value) {
+  if (value == null) return value;
+  const { encrypted, iv } = encryptJSON(value);
+  return { _enc: encrypted, _iv: iv };
+}
+
+function decryptField(value) {
+  if (value && typeof value === 'object' && value._enc && value._iv) {
+    return decryptJSON(value._enc, value._iv);
+  }
+  return value;
+}
+
+function encryptRoutineStep(step) {
+  if (!step || typeof step !== 'object') return step;
+  const out = { ...step };
+  for (const key of ['url', 'domain', 'target', 'formData', 'label', 'promptText']) {
+    if (out[key] != null) out[key] = encryptField(out[key]);
+  }
+  return out;
+}
+
+function decryptRoutineStep(step) {
+  if (!step || typeof step !== 'object') return step;
+  const out = { ...step };
+  for (const key of ['url', 'domain', 'target', 'formData', 'label', 'promptText']) {
+    out[key] = decryptField(out[key]);
+  }
+  return out;
+}
+
+function decryptRoutineSteps(rawSteps) {
+  const steps = typeof rawSteps === 'string' ? JSON.parse(rawSteps) : (rawSteps || []);
+  return steps.map(decryptRoutineStep);
+}
+
 // List routines: user's private + all global
 router.get('/', authenticateUser, async (req, res) => {
   await ensureTable();
@@ -48,7 +86,13 @@ router.get('/', authenticateUser, async (req, res) => {
     query += ' ORDER BY updated_at DESC';
 
     const result = await pool.query(query, values);
-    res.json({ success: true, routines: result.rows });
+    res.json({
+      success: true,
+      routines: result.rows.map(r => ({
+        ...r,
+        steps: decryptRoutineSteps(r.steps)
+      }))
+    });
   } catch (error) {
     console.error('Failed to list routines:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -66,7 +110,13 @@ router.get('/:id', authenticateUser, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Routine not found' });
     }
-    res.json({ success: true, routine: result.rows[0] });
+    res.json({
+      success: true,
+      routine: {
+        ...result.rows[0],
+        steps: decryptRoutineSteps(result.rows[0].steps)
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -82,12 +132,13 @@ router.post('/', authenticateUser, async (req, res) => {
     }
 
     const id = `rtn_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const encryptedSteps = steps.map(encryptRoutineStep);
     await pool.query(
       `INSERT INTO routines (id, user_id, name, description, scope, steps, tags)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [id, req.user.userId, name, description || null,
        scope === 'global' ? 'global' : 'private',
-       JSON.stringify(steps), tags || []]
+       JSON.stringify(encryptedSteps), tags || []]
     );
 
     // Send to CloudWatch (fire-and-forget)
@@ -123,7 +174,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
     if (name) { updates.push(`name = $${idx++}`); values.push(name); }
     if (description !== undefined) { updates.push(`description = $${idx++}`); values.push(description || null); }
     if (scope) { updates.push(`scope = $${idx++}`); values.push(scope === 'global' ? 'global' : 'private'); }
-    if (steps) { updates.push(`steps = $${idx++}`); values.push(JSON.stringify(steps)); }
+    if (steps) { updates.push(`steps = $${idx++}`); values.push(JSON.stringify(steps.map(encryptRoutineStep))); }
     if (tags) { updates.push(`tags = $${idx++}`); values.push(tags); }
     updates.push('updated_at = NOW()');
 
@@ -171,7 +222,7 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
     }
 
     // Fetch actions for the session (include form_data_iv for decryption)
-    let query = `SELECT id, type, url, domain, target, form_data, form_data_iv, status
+    let query = `SELECT id, type, url, domain, target, form_data, form_data_iv, status, prompt_id
                  FROM actions WHERE session_id = $1 AND status IN ('allowed', 'approved_override')
                    AND parent_action_id IS NULL
                  ORDER BY timestamp ASC`;
@@ -193,6 +244,7 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
     let subActionMap = {};
     if (parentIds.length > 0) {
       const subQuery = `SELECT id, type, url, domain, target, form_data, form_data_iv, status,
+                               prompt_id,
                                parent_action_id, sub_order, reason
                         FROM actions WHERE parent_action_id = ANY($1)
                         ORDER BY sub_order ASC, timestamp ASC`;
@@ -202,6 +254,23 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
         if (!subActionMap[pid]) subActionMap[pid] = [];
         subActionMap[pid].push(row);
       }
+    }
+
+    const promptIds = new Set();
+    for (const a of actions) {
+      if (a.prompt_id) promptIds.add(a.prompt_id);
+      for (const child of (subActionMap[a.id] || [])) {
+        if (child.prompt_id) promptIds.add(child.prompt_id);
+      }
+    }
+
+    const promptMap = {};
+    if (promptIds.size > 0) {
+      const promptRes = await pool.query(
+        'SELECT id, content FROM prompts WHERE id = ANY($1)',
+        [[...promptIds]]
+      );
+      for (const row of promptRes.rows) promptMap[row.id] = row.content;
     }
 
     function decryptFormData(row) {
@@ -217,18 +286,48 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
       return row.form_data;
     }
 
+    function parseTarget(raw) {
+      if (!raw) return null;
+      if (typeof raw === 'string') {
+        try { return JSON.parse(raw); } catch { return null; }
+      }
+      return raw;
+    }
+
+    function normalizeActionType(type) {
+      return type === 'form_input' ? 'type_text' : type;
+    }
+
+    function labelForInput(target, formData, domain) {
+      const field =
+        formData?.field ||
+        target?.name ||
+        target?.id ||
+        target?.placeholder ||
+        target?.ariaLabel ||
+        'field';
+      return `Type into ${field} on ${domain}`;
+    }
+
     function labelForAction(a, formData) {
       const domain = a.domain || '';
       switch (a.type) {
         case 'navigation': return `Navigate to ${domain}`;
         case 'click': {
-          const target = typeof a.target === 'string' ? JSON.parse(a.target) : a.target;
+          const target = parseTarget(a.target);
           const text = target?.text || target?.id || 'element';
           return `Click "${text}" on ${domain}`;
+        }
+        case 'form_input': {
+          return labelForInput(parseTarget(a.target), formData, domain);
         }
         case 'form_submit': {
           if (formData && formData.action === 'auto_login') return `Login on ${domain}`;
           return `Submit form on ${domain}`;
+        }
+        case 'press_key': {
+          const key = formData?.value || parseTarget(a.target)?.value || 'Enter';
+          return `Press ${key} on ${domain}`;
         }
         default: return `${a.type} on ${domain}`;
       }
@@ -238,16 +337,18 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
     let stepOrder = 0;
 
     for (const a of actions) {
-      const target = typeof a.target === 'string' ? JSON.parse(a.target) : a.target;
+      const target = parseTarget(a.target);
       const formData = decryptFormData(a);
+      const promptText = promptMap[a.prompt_id] || null;
 
       // Check if this action has granular sub-steps (e.g. auto_login)
       const children = subActionMap[a.id];
       if (children && children.length > 0) {
         for (const child of children) {
           stepOrder++;
-          const childTarget = typeof child.target === 'string' ? JSON.parse(child.target) : child.target;
+          const childTarget = parseTarget(child.target);
           const childFormData = decryptFormData(child);
+          const childPromptText = promptMap[child.prompt_id] || promptText || null;
 
           let encChildFormData = null;
           if (childFormData != null) {
@@ -258,12 +359,13 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
           steps.push({
             order: stepOrder,
             type: 'action',
-            actionType: child.type,
+            actionType: normalizeActionType(child.type),
             url: child.url || a.url,
             domain: child.domain || a.domain,
             target: childTarget || null,
             formData: encChildFormData,
-            label: child.reason || `Sub-step ${child.sub_order || stepOrder}`
+            label: child.reason || labelForAction(child, childFormData),
+            promptText: childPromptText || null
           });
         }
       } else {
@@ -277,23 +379,25 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
         steps.push({
           order: stepOrder,
           type: 'action',
-          actionType: a.type,
+          actionType: normalizeActionType(a.type),
           url: a.url,
           domain: a.domain,
           target: target || null,
           formData: encFormData,
-          label: labelForAction(a, formData)
+          label: labelForAction(a, formData),
+          promptText: promptText || null
         });
       }
     }
 
     const id = `rtn_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const encryptedSteps = steps.map(encryptRoutineStep);
     await pool.query(
       `INSERT INTO routines (id, user_id, name, description, scope, steps)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [id, req.user.userId, name, description || null,
        scope === 'global' ? 'global' : 'private',
-       JSON.stringify(steps)]
+       JSON.stringify(encryptedSteps)]
     );
 
     res.status(201).json({
@@ -306,13 +410,23 @@ router.post('/from-session/:sessionId', authenticateUser, async (req, res) => {
   }
 });
 
-// Execute routine — push each step as a command to the agent queue
+// Execute routine — push run_routine command to the shared agent queue
 router.post('/:id/execute', authenticateUser, async (req, res) => {
   await ensureTable();
   try {
-    const { sessionId } = req.body;
+    const { sessionId, requireApproval } = req.body;
     if (!sessionId) {
       return res.status(400).json({ success: false, error: 'sessionId is required' });
+    }
+
+    // Associate unclaimed session with this user so the extension always sees it
+    try {
+      const session = await Session.findById(sessionId);
+      if (session && !session.userId) {
+        await session.setUserId(req.user.userId);
+      }
+    } catch (err) {
+      console.error('Failed to associate session with user:', err);
     }
 
     const result = await pool.query(
@@ -324,36 +438,23 @@ router.post('/:id/execute', authenticateUser, async (req, res) => {
     }
 
     const routine = result.rows[0];
-    const rawSteps = typeof routine.steps === 'string' ? JSON.parse(routine.steps) : routine.steps;
-
-    // Decrypt any encrypted formData in steps before sending to the agent
-    const steps = rawSteps.map(step => {
-      if (step.formData && step.formData._enc && step.formData._iv) {
-        return { ...step, formData: decryptJSON(step.formData._enc, step.formData._iv) };
-      }
-      return step;
-    });
-
-    // Push a special run_routine command to the agent command queue
-    const commandsRoute = require('./commands');
-    const queues = commandsRoute.__queues || new Map();
-    const waiters = commandsRoute.__waiters || new Map();
+    const steps = decryptRoutineSteps(routine.steps);
 
     const isOwner = routine.user_id === req.user.userId;
 
     const command = {
-      id: `cmd_rtn_${Date.now()}`,
+      id: nextCommandId(),
       type: 'run_routine',
       routineId: routine.id,
       routineName: routine.name,
       scope: routine.scope,
       isOwner,
+      requireApproval: Boolean(requireApproval),
       steps,
       sessionId,
       createdAt: new Date().toISOString()
     };
 
-    // Try to resolve a waiting agent first
     const pending = waiters.get(sessionId);
     if (pending && pending.length > 0) {
       const waiter = pending.shift();
