@@ -1172,6 +1172,38 @@ class BrowserController:
         except Exception as e:
             return {"success": False, "message": f"Error waiting for element: {str(e)}"}
     
+    @staticmethod
+    def _compress_screenshot_b64(png_b64: str, max_width: int = 1280, quality: int = 55) -> str:
+        """Compress a base64 PNG screenshot to a smaller JPEG.
+
+        Resizes to *max_width* (preserving aspect ratio) and re-encodes as
+        JPEG at the given *quality* (1-95).  Returns a base64-encoded JPEG
+        string that is typically 5-10x smaller than the original PNG while
+        remaining perfectly readable for audit/review purposes.
+        """
+        try:
+            from PIL import Image
+            raw = base64.b64decode(png_b64)
+            img = Image.open(io.BytesIO(raw))
+
+            if img.width > max_width:
+                ratio = max_width / img.width
+                img = img.resize(
+                    (max_width, int(img.height * ratio)),
+                    Image.LANCZOS,
+                )
+
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            return base64.b64encode(buf.getvalue()).decode("ascii")
+        except ImportError:
+            return png_b64
+        except Exception:
+            return png_b64
+
     def take_screenshot(self, save_path: Optional[str] = None) -> str:
         """
         Take a screenshot of the current page
@@ -1180,14 +1212,14 @@ class BrowserController:
             save_path: Optional path to save screenshot
         
         Returns:
-            Base64 encoded screenshot or file path
+            Base64 encoded screenshot (JPEG, compressed) or file path
         """
         if save_path:
             self._actual_driver.save_screenshot(save_path)
             return save_path
         else:
-            screenshot = self._actual_driver.get_screenshot_as_base64()
-            return screenshot
+            png_b64 = self._actual_driver.get_screenshot_as_base64()
+            return self._compress_screenshot_b64(png_b64)
     
     # ------------------------------------------------------------------ #
     # Tab management

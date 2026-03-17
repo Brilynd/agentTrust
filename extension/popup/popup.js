@@ -282,11 +282,31 @@ function renderSessions(sessions) {
       </div>`;
   }).join('');
 
-  // Bind collapse/expand for sessions
+  // Bind collapse/expand for sessions (lazy-loads screenshots on first open)
   el.querySelectorAll('[data-toggle-session]').forEach(head => {
-    head.addEventListener('click', (e) => {
+    head.addEventListener('click', async (e) => {
       if (e.target.closest('.btn-save-routine')) return;
-      head.closest('[data-session]').classList.toggle('open');
+      const card = head.closest('[data-session]');
+      card.classList.toggle('open');
+
+      // Lazy-load screenshots the first time a session is expanded
+      if (card.classList.contains('open') && !card.dataset.screenshotsLoaded) {
+        const sid = card.dataset.sessionId;
+        if (!sid) return;
+        try {
+          const { userToken } = await chrome.storage.local.get(['userToken']);
+          const res = await apiFetch(`/sessions/${sid}`, { token: userToken });
+          if (res.success && res.session) {
+            card.dataset.screenshotsLoaded = '1';
+            const body = card.querySelector('.session-body');
+            if (body) {
+              body.innerHTML = buildConversationTurns(res.session);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load session screenshots:', err);
+        }
+      }
     });
   });
 
@@ -297,6 +317,23 @@ function renderSessions(sessions) {
       saveSessionAsRoutine(btn.dataset.sid);
     });
   });
+
+  // Auto-load screenshots for the first (open) session
+  const firstOpen = el.querySelector('.session-card.open[data-session-id]');
+  if (firstOpen && !firstOpen.dataset.screenshotsLoaded) {
+    const sid = firstOpen.dataset.sessionId;
+    (async () => {
+      try {
+        const { userToken } = await chrome.storage.local.get(['userToken']);
+        const res = await apiFetch(`/sessions/${sid}`, { token: userToken });
+        if (res.success && res.session) {
+          firstOpen.dataset.screenshotsLoaded = '1';
+          const body = firstOpen.querySelector('.session-body');
+          if (body) body.innerHTML = buildConversationTurns(res.session);
+        }
+      } catch (_) {}
+    })();
+  }
 
 }
 
@@ -385,22 +422,29 @@ function renderTurn(prompt, actions) {
     + `</div>`;
 }
 
+// Detect image MIME from base64 data (JPEG starts with /9j/, PNG with iVBOR)
+function screenshotMime(b64) {
+  return (b64 && b64.startsWith('/9j/')) ? 'image/jpeg' : 'image/png';
+}
+
 // ─── Render a single action (label + screenshot, or error) ──
 function renderActionBlock(action) {
   const isError = action.status === 'error' || action.status === 'unauthorized' || action.status === 'denied';
   const isOverride = action.status === 'approved_override';
   const isStepUp = action.status === 'step_up_required';
-  const hasScreenshot = !!action.screenshot;
+  const hasScreenshot = typeof action.screenshot === 'string' && action.screenshot.length > 10;
 
   if (!hasScreenshot && !isError && !isOverride && !isStepUp) return '';
 
   const target = describeTarget(action);
   const actionLabel = `${esc(fmtType(action.type))}${target ? ' &mdash; ' + target : ''}`;
 
+  const mime = hasScreenshot ? screenshotMime(action.screenshot) : 'image/png';
+
   if (isError) {
     const badge = action.status === 'denied' ? 'BLOCKED' : 'ERROR';
     const img = hasScreenshot
-      ? `<div class="turn-screenshot"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`
+      ? `<div class="turn-screenshot"><img src="data:${mime};base64,${action.screenshot}" alt="Screenshot"></div>`
       : '';
     return `<div class="turn-error"><span class="turn-error-badge">${badge}</span> ${actionLabel}</div>` + img;
   }
@@ -415,7 +459,7 @@ function renderActionBlock(action) {
     : '';
 
   return `<div class="turn-action-label">${overrideBadge}${actionLabel}</div>`
-    + `<div class="turn-screenshot${isOverride ? ' override-border' : ''}"><img src="data:image/png;base64,${action.screenshot}" alt="Screenshot"></div>`;
+    + `<div class="turn-screenshot${isOverride ? ' override-border' : ''}"><img src="data:${mime};base64,${action.screenshot}" alt="Screenshot"></div>`;
 }
 
 function describeTarget(action) {
@@ -562,8 +606,53 @@ function renderThinkingBlock(progressText, isActive) {
   return `<div class="chat-thinking-block${collapsedCls}"><div class="thinking-header" data-toggle-thinking="true"><span class="thinking-toggle">\u25BC</span> ${headerLabel}${dotsHtml}</div><div class="thinking-steps">${stepsHtml}</div></div>`;
 }
 
+// Build a synthetic progress string from actions when p.progress is missing.
+// This ensures the "thinking" block always appears for prompts that had actions.
+function _synthesizeProgress(actions) {
+  if (!actions || actions.length === 0) return '';
+  const lines = [];
+  for (const a of actions) {
+    const t = (a.type || '').toLowerCase();
+    if (t === 'screenshot') continue;
+    const host = a.domain || (a.url ? (() => { try { return new URL(a.url).hostname; } catch (_) { return ''; } })() : '');
+    const label = fmtType(a.type);
+    lines.push(host ? `ACT|${label} on ${host}` : `ACT|${label}`);
+  }
+  return lines.join('\n');
+}
+
 // ─── Chat: load history from active session ──────────
 let _lastChatHtml = '';
+
+// Lazy screenshot cache: actionId → base64 string.
+// Populated by a one-off fetch so the 3-second poll stays lightweight.
+const _chatScreenshots = new Map();
+let _screenshotFetchInFlight = false;
+let _chatSessionIdForCache = null;
+
+async function _fetchChatScreenshots(sessionId) {
+  if (_screenshotFetchInFlight) return false;
+  _screenshotFetchInFlight = true;
+  let fetched = false;
+  try {
+    const { userToken } = await chrome.storage.local.get(['userToken']);
+    if (!userToken) return false;
+    const res = await apiFetch(`/sessions/${sessionId}`, { token: userToken });
+    if (res.success && res.session && res.session.actions) {
+      for (const a of res.session.actions) {
+        if (typeof a.screenshot === 'string' && a.screenshot.length > 10) {
+          if (!_chatScreenshots.has(a.id)) fetched = true;
+          _chatScreenshots.set(a.id, a.screenshot);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Screenshot fetch error:', err);
+  } finally {
+    _screenshotFetchInFlight = false;
+  }
+  return fetched;
+}
 
 async function loadChatHistory() {
   const { userToken } = await chrome.storage.local.get(['userToken']);
@@ -582,7 +671,14 @@ async function loadChatHistory() {
     const session = res.sessions[0];
     activeSessionId = session.id;
 
+    // Reset screenshot cache when session changes
+    if (_chatSessionIdForCache !== session.id) {
+      _chatScreenshots.clear();
+      _chatSessionIdForCache = session.id;
+    }
+
     const prompts = (session.prompts || []).slice().sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
+    const chatActions = (session.actions || []).slice().sort((a, b) => ts(a.timestamp) - ts(b.timestamp));
 
     // Reconcile: remove pending messages that now appear in DB prompts
     if (pendingChatMessages.length > 0) {
@@ -604,17 +700,57 @@ async function loadChatHistory() {
       return;
     }
 
+    // Group actions by promptId so we can show screenshots inline
+    const chatActionsByPrompt = {};
+    let hasUncachedScreenshots = false;
+    for (const action of chatActions) {
+      if (action.promptId) {
+        if (!chatActionsByPrompt[action.promptId]) chatActionsByPrompt[action.promptId] = [];
+        chatActionsByPrompt[action.promptId].push(action);
+      }
+      // action.screenshot is boolean true (flag) from the lightweight query
+      if (action.screenshot && !_chatScreenshots.has(action.id)) {
+        hasUncachedScreenshots = true;
+      }
+    }
+
+    // Trigger a background fetch for screenshots we haven't cached yet.
+    // No recursive call — the next regular 3-second poll will pick up
+    // the newly cached data and re-render naturally.
+    if (hasUncachedScreenshots && !_screenshotFetchInFlight) {
+      _fetchChatScreenshots(session.id).then(didFetch => {
+        if (didFetch) _lastChatHtml = '';
+      });
+    }
+
     let html = '';
     for (const p of prompts) {
       html += `<div class="chat-bubble user"><span class="bubble-label">You</span>${esc(p.content)}</div>`;
 
+      // Find the last cached screenshot for this prompt's actions
+      const linkedActions = chatActionsByPrompt[p.id] || [];
+      let lastCachedB64 = null;
+      for (let i = linkedActions.length - 1; i >= 0; i--) {
+        const cached = _chatScreenshots.get(linkedActions[i].id);
+        if (cached) { lastCachedB64 = cached; break; }
+      }
+
+      // Build thinking text: prefer stored progress, fall back to actions
+      const thinkingText = p.progress || _synthesizeProgress(linkedActions);
+
       if (p.response) {
-        if (p.progress) {
-          html += renderThinkingBlock(p.progress, false);
+        if (thinkingText) {
+          html += renderThinkingBlock(thinkingText, false);
+        }
+        if (lastCachedB64) {
+          html += `<div class="chat-screenshot"><img src="data:${screenshotMime(lastCachedB64)};base64,${lastCachedB64}" alt="Browser screenshot"></div>`;
         }
         html += `<div class="chat-bubble agent"><span class="bubble-label">ChatGPT</span>${esc(p.response)}</div>`;
-      } else if (p.progress) {
-        html += renderThinkingBlock(p.progress, true);
+      } else if (thinkingText) {
+        html += renderThinkingBlock(thinkingText, true);
+        if (lastCachedB64) {
+          html += `<div class="chat-screenshot"><img src="data:${screenshotMime(lastCachedB64)};base64,${lastCachedB64}" alt="Browser screenshot"></div>`;
+        }
       } else {
         html += `<div class="chat-thinking"><span class="thinking-dots"><span></span><span></span><span></span></span> Agent is working&hellip;</div>`;
       }
@@ -627,8 +763,8 @@ async function loadChatHistory() {
     }
 
     // Only touch the DOM if the content actually changed.
-    // This prevents the flash/flicker from destroying and
-    // recreating DOM nodes every 3 seconds while thinking.
+    // Cached screenshots are stable between polls, so the comparison
+    // only triggers a re-render when prompts/progress actually change.
     if (html !== _lastChatHtml) {
       const container = $('chatMessages');
       const wasScrolledToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
