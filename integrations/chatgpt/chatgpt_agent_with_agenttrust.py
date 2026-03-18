@@ -494,6 +494,9 @@ class BrowserController:
             chrome_profile = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), ".chrome-profile"
             )
+        chrome_profile = os.path.abspath(chrome_profile)
+        chrome_profile_name = os.getenv("CHROME_PROFILE_NAME", "Default").strip() or "Default"
+        os.makedirs(chrome_profile, exist_ok=True)
         # Remove stale lock files from previous unclean shutdowns
         for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             lock_path = os.path.join(chrome_profile, lock_name)
@@ -503,6 +506,7 @@ class BrowserController:
             except OSError:
                 pass
         options.add_argument(f'--user-data-dir={chrome_profile}')
+        options.add_argument(f'--profile-directory={chrome_profile_name}')
         
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
@@ -536,6 +540,7 @@ class BrowserController:
         if load_ext:
             options.add_argument(f'--load-extension={extension_path}')
         
+        print(f"📁 Persistent browser profile: {chrome_profile} [{chrome_profile_name}]")
         actual_driver = webdriver.Chrome(options=options)
         if load_ext:
             print("✅ AgentTrust extension installed")
