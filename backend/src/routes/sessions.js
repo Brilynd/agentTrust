@@ -34,6 +34,30 @@ router.post('/:sessionId/end', validateAction, async (req, res) => {
   }
 });
 
+// Claim a session for the authenticated user so monitoring/approvals stay scoped
+router.post('/:sessionId/claim', authenticateUser, async (req, res) => {
+  try {
+    const session = await Session.findById(req.params.sessionId);
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Session not found' });
+    }
+
+    if (session.userId && session.userId !== req.user.userId) {
+      return res.status(403).json({ success: false, error: 'Session already belongs to another user' });
+    }
+
+    if (!session.userId) {
+      await session.setUserId(req.user.userId);
+    }
+
+    res.json({ success: true, session: session.toJSON() });
+  } catch (error) {
+    console.error('Failed to claim session:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Get all sessions for the authenticated user (optionally filtered by agentId)
 router.get('/', authenticateUser, async (req, res) => {
   try {

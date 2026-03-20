@@ -1,0 +1,21 @@
+{
+  "name": "agenttrust-nemoclaw",
+  "version": "0.1.0",
+  "displayName": "AgentTrust NeMoClaw Integration",
+  "description": "Wrap OpenClaw browser and API tools with AgentTrust pre-execution policy enforcement, approvals, audit logging, screenshots, and prompt progress tracking.",
+  "entry": "./src/index.js",
+  "commands": [
+    {
+      "name": "agenttrust:approvals",
+      "description": "Run the terminal approval presenter for pending AgentTrust step-up requests."
+    },
+    {
+      "name": "agenttrust:monitor",
+      "description": "Monitor a session's prompts, actions, risk states, and screenshot availability."
+    },
+    {
+      "name": "agenttrust:send",
+      "description": "Send a user command into an AgentTrust-backed NeMoClaw session."
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+name: agenttrust-nemoclaw
+version: 0.1.0
+description: AgentTrust policy, approval, audit, and screenshot bridge for native NeMoClaw/OpenClaw runtimes.
+
+profiles:
+  default:
+    env:
+      AGENTTRUST_API_URL: http://host.docker.internal:3000/api
+      AUTH0_DOMAIN: ""
+      AUTH0_CLIENT_ID: ""
+      AUTH0_CLIENT_SECRET: ""
+      AUTH0_AUDIENCE: ""
+      AGENTTRUST_USER_EMAIL: ""
+      AGENTTRUST_USER_PASSWORD: ""
+
+artifacts:
+  pluginEntry: ../src/index.js
+  cliEntry: ../src/cli.js
+
+capabilities:
+  - guarded-browser-actions
+  - blocking-approvals
+  - prompt-progress
+  - screenshot-audit
+  - guarded-external-api
+
+notes:
+  - Run this on Linux or WSL2 Ubuntu when using NeMoClaw.
+  - The OpenClaw browser provider must implement navigate, click, type, submit, openTab, switchTab, and getCurrentPage.

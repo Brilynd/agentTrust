@@ -1,0 +1,24 @@
+{
+  "name": "@agenttrust/nemoclaw-integration",
+  "version": "0.1.0",
+  "description": "AgentTrust integration package for native OpenClaw/NeMoClaw runtimes",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "bin": {
+    "agenttrust-nemoclaw": "./src/cli.js"
+  },
+  "scripts": {
+    "check": "node --check src/index.js && node --check src/cli.js && node --check src/runtime.js && node --check src/agenttrust-client.js && node --check src/browser-adapter.js && node --check src/approval-presenter.js && node --check src/session-monitor.js && node --check src/http.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "agenttrust",
+    "nemoclaw",
+    "openclaw",
+    "openshell",
+    "agent-security"
+  ],
+  "license": "MIT"
+}
