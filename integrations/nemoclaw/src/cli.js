@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+const { loadAgentTrustNemoclawEnv } = require('./load-env');
 const { AgentTrustBridge } = require('./agenttrust-client');
 const { ApprovalPresenter } = require('./approval-presenter');
 const { SessionMonitor } = require('./session-monitor');
+
+loadAgentTrustNemoclawEnv();
 
 function getArg(flag, fallback = null) {
   const idx = process.argv.indexOf(flag);

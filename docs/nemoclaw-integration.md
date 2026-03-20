@@ -177,6 +177,8 @@ AGENTTRUST_USER_EMAIL=operator@example.com
 AGENTTRUST_USER_PASSWORD=your-password
 ```
 
+Store those values in `integrations/nemoclaw/env.local` or `.env` for the local helper scripts.
+
 ### 5. Wire into an OpenClaw browser provider
 
 Example shape:

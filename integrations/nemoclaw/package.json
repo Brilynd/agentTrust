@@ -8,7 +8,11 @@
     "agenttrust-nemoclaw": "./src/cli.js"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/cli.js && node --check src/runtime.js && node --check src/agenttrust-client.js && node --check src/browser-adapter.js && node --check src/approval-presenter.js && node --check src/session-monitor.js && node --check src/http.js"
+    "check": "node --check src/index.js && node --check src/cli.js && node --check src/runtime.js && node --check src/agenttrust-client.js && node --check src/browser-adapter.js && node --check src/approval-presenter.js && node --check src/session-monitor.js && node --check src/http.js && node --check src/load-env.js && node --check src/verify-config.js && node --check src/local-bootstrap.example.js",
+    "verify": "node src/verify-config.js",
+    "approvals": "node src/cli.js approvals",
+    "monitor": "node src/cli.js monitor",
+    "send": "node src/cli.js send"
   },
   "engines": {
     "node": ">=20"
