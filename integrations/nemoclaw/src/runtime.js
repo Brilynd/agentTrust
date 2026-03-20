@@ -1,4 +1,5 @@
 const { getDomain } = require('./agenttrust-client');
+const { requestJson } = require('./http');
 
 function stringifyTarget(target) {
   if (!target) return 'unknown target';
@@ -15,7 +16,7 @@ function stringifyTarget(target) {
 }
 
 class AgentTrustOpenClawRuntime {
-  constructor({ agentTrust, browser, approvalTimeoutSeconds = 120 } = {}) {
+  constructor({ agentTrust, browser, approvalTimeoutSeconds = 120, executorUrl } = {}) {
     if (!agentTrust) {
       throw new Error('AgentTrustOpenClawRuntime requires an agentTrust bridge.');
     }
@@ -26,6 +27,9 @@ class AgentTrustOpenClawRuntime {
     this.agentTrust = agentTrust;
     this.browser = browser;
     this.approvalTimeoutSeconds = approvalTimeoutSeconds;
+    this.executorUrl = String(
+      executorUrl || process.env.AGENTTRUST_EXECUTOR_URL || ''
+    ).replace(/\/+$/, '');
     this.progressLines = [];
   }
 
@@ -76,6 +80,25 @@ class AgentTrustOpenClawRuntime {
     return post;
   }
 
+  hasExecutor() {
+    return !!this.executorUrl;
+  }
+
+  async executeBrowserAction(action, decision, fallback) {
+    if (!this.hasExecutor() || !decision?.executionLease?.lease) {
+      return fallback();
+    }
+
+    return requestJson(`${this.executorUrl}/execute/browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lease: decision.executionLease.lease,
+        action,
+      }),
+    });
+  }
+
   async guardedNavigate({ url }) {
     await this.pushProgress('ACT', `Navigating to ${getDomain(url) || url}`);
 
@@ -94,8 +117,19 @@ class AgentTrustOpenClawRuntime {
       return decision;
     }
 
-    const result = await this.browser.navigate({ url });
-    await this.uploadPostActionScreenshot(decision.action_id);
+    const executorAction = {
+      type: 'navigation',
+      url,
+      domain: getDomain(url),
+      sessionId: this.agentTrust.currentSessionId || undefined,
+      promptId: this.agentTrust.currentPromptId || undefined,
+    };
+    const result = await this.executeBrowserAction(executorAction, decision, () =>
+      this.browser.navigate({ url })
+    );
+    if (!this.hasExecutor()) {
+      await this.uploadPostActionScreenshot(decision.action_id);
+    }
     return { ...decision, browser_result: result };
   }
 
@@ -122,8 +156,20 @@ class AgentTrustOpenClawRuntime {
       return decision;
     }
 
-    const result = await this.browser.click({ target });
-    await this.uploadPostActionScreenshot(decision.action_id);
+    const executorAction = {
+      type: 'click',
+      url: current.url,
+      domain: current.domain,
+      target,
+      sessionId: this.agentTrust.currentSessionId || undefined,
+      promptId: this.agentTrust.currentPromptId || undefined,
+    };
+    const result = await this.executeBrowserAction(executorAction, decision, () =>
+      this.browser.click({ target })
+    );
+    if (!this.hasExecutor()) {
+      await this.uploadPostActionScreenshot(decision.action_id);
+    }
     return { ...decision, browser_result: result };
   }
 
@@ -148,6 +194,11 @@ class AgentTrustOpenClawRuntime {
             },
           },
         },
+        executionInput: {
+          text,
+          clearFirst: true,
+          pressEnter: !!submit,
+        },
         screenshot: current.screenshot,
         pageText: current.text,
         untrustedContent: current.untrustedContent,
@@ -161,13 +212,28 @@ class AgentTrustOpenClawRuntime {
       return decision;
     }
 
-    const result = await this.browser.type({
+    const executorAction = {
+      type: 'form_input',
+      url: current.url,
+      domain: current.domain,
       target,
       text,
       clearFirst: true,
       pressEnter: !!submit,
-    });
-    await this.uploadPostActionScreenshot(decision.action_id);
+      sessionId: this.agentTrust.currentSessionId || undefined,
+      promptId: this.agentTrust.currentPromptId || undefined,
+    };
+    const result = await this.executeBrowserAction(executorAction, decision, () =>
+      this.browser.type({
+        target,
+        text,
+        clearFirst: true,
+        pressEnter: !!submit,
+      })
+    );
+    if (!this.hasExecutor()) {
+      await this.uploadPostActionScreenshot(decision.action_id);
+    }
     return { ...decision, browser_result: result };
   }
 
@@ -197,8 +263,21 @@ class AgentTrustOpenClawRuntime {
       return decision;
     }
 
-    const result = await this.browser.submit({ target });
-    await this.uploadPostActionScreenshot(decision.action_id);
+    const executorAction = {
+      type: 'form_submit',
+      url: current.url,
+      domain: current.domain,
+      target,
+      formData,
+      sessionId: this.agentTrust.currentSessionId || undefined,
+      promptId: this.agentTrust.currentPromptId || undefined,
+    };
+    const result = await this.executeBrowserAction(executorAction, decision, () =>
+      this.browser.submit({ target })
+    );
+    if (!this.hasExecutor()) {
+      await this.uploadPostActionScreenshot(decision.action_id);
+    }
     return { ...decision, browser_result: result };
   }
 
@@ -232,6 +311,41 @@ class AgentTrustOpenClawRuntime {
 
   async guardedExternalApiCall({ provider, method, url, body }) {
     await this.pushProgress('ACT', `API call ${method.toUpperCase()} ${provider}`);
+    if (this.hasExecutor()) {
+      const leaseResponse = await this.agentTrust.callExternalApi(
+        { provider, method, url, body },
+        {
+          approvalTimeoutSeconds: this.approvalTimeoutSeconds,
+          issueLeaseOnly: true,
+        }
+      );
+
+      if (!leaseResponse?.success || !leaseResponse?.executionLease?.lease) {
+        return leaseResponse;
+      }
+
+      const result = await requestJson(`${this.executorUrl}/execute/api`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lease: leaseResponse.executionLease.lease,
+          action: {
+            type: 'api_call',
+            provider,
+            method,
+            url,
+            body,
+            sessionId: this.agentTrust.currentSessionId || undefined,
+            promptId: this.agentTrust.currentPromptId || undefined,
+          },
+        }),
+      });
+      return {
+        ...leaseResponse,
+        executor_result: result,
+      };
+    }
+
     return this.agentTrust.callExternalApi(
       { provider, method, url, body },
       { approvalTimeoutSeconds: this.approvalTimeoutSeconds }

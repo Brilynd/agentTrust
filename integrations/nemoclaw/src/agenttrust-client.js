@@ -206,6 +206,7 @@ class AgentTrustBridge {
         status: 'allowed',
         action_id: data?.action?.id,
         risk_level: data?.action?.riskLevel,
+        executionLease: data?.executionLease || null,
         message: 'Action allowed and logged',
         raw: data,
       };
@@ -266,6 +267,7 @@ class AgentTrustBridge {
         status: 'allowed',
         action_id: data?.action?.id,
         risk_level: data?.action?.riskLevel,
+        executionLease: data?.executionLease || null,
         message: 'Action allowed after user approval',
         raw: data,
       };
@@ -371,7 +373,7 @@ class AgentTrustBridge {
     return data.sessions || [];
   }
 
-  async callExternalApi({ provider, method, url, body, sessionId, promptId }, options = {}) {
+  async callExternalApi({ provider, method, url, body, sessionId, promptId, approvalId }, options = {}) {
     const payload = {
       provider,
       method,
@@ -380,6 +382,8 @@ class AgentTrustBridge {
       sessionId: sessionId || this.currentSessionId || undefined,
       promptId: promptId || this.currentPromptId || undefined,
       userToken: this.userToken || undefined,
+      issueLeaseOnly: !!options.issueLeaseOnly,
+      approvalId: approvalId || options.approvalId || undefined,
     };
 
     try {

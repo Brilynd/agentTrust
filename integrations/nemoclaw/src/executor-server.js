@@ -49,9 +49,21 @@ function actionFingerprint(action) {
         url: action.url,
         domain: action.domain,
         target: action.target || null,
-        formData: action.formData || null,
+        formData: action.formData || action.form || null,
+        text: action.text || action.executionInput?.text || null,
+        clearFirst:
+          action.clearFirst ??
+          action.executionInput?.clearFirst ??
+          null,
+        pressEnter:
+          action.pressEnter ??
+          action.executionInput?.pressEnter ??
+          null,
+        label: action.label || null,
+        index: action.index ?? null,
         provider: action.provider || null,
         method: action.method || null,
+        body: action.body || null,
         sessionId: action.sessionId || null,
         promptId: action.promptId || null,
       })
@@ -80,6 +92,12 @@ function verifyLease(token) {
   }
 
   return payload;
+}
+
+function signLeasePayload(payload) {
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = crypto.createHmac('sha256', getLeaseSecret()).update(encoded).digest('base64url');
+  return `${encoded}.${signature}`;
 }
 
 function readJson(req) {
@@ -224,8 +242,9 @@ async function main() {
           body: action.body,
           sessionId: action.sessionId,
           promptId: action.promptId,
+          approvalId: lease.approvalId || action.approvalId,
         },
-        { autoWaitForApproval: false }
+        { autoWaitForApproval: false, approvalId: lease.approvalId || action.approvalId }
       );
 
       return writeJson(res, 200, { ok: true, result });
@@ -247,6 +266,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  signLeasePayload,
   actionFingerprint,
   verifyLease,
 };

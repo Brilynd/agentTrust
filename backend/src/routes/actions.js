@@ -5,6 +5,7 @@ const express = require('express');
 const router = express.Router();
 const { validateAction } = require('../middleware/auth');
 const { enforcePolicy } = require('../middleware/policy');
+const { issueExecutionLease } = require('../utils/execution-lease');
 
 function sanitizeFormData(fd) {
   if (!fd || typeof fd !== 'object') return fd;
@@ -30,8 +31,17 @@ router.post('/', validateAction, enforcePolicy, async (req, res) => {
       return res.status(500).json({ success: false, error: 'Action was not logged by policy middleware' });
     }
     
+    const executionLease = issueExecutionLease({
+      kind: 'browser_action',
+      actionId: loggedAction.id,
+      agentId: req.agent.id,
+      action: req.actionData || req.body,
+      approvalId: req.body?.approvalId || null,
+    });
+
     res.status(201).json({
       success: true,
+      executionLease,
       action: {
         id: loggedAction.id,
         agentId: loggedAction.agentId,

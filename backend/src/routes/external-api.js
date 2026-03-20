@@ -5,6 +5,7 @@ const { validateAction } = require('../middleware/auth');
 const { logAction } = require('../services/audit');
 const { evaluateUntrustedContent, getPolicies } = require('../services/policy-engine');
 const { createApproval } = require('./approvals');
+const { issueExecutionLease } = require('../utils/execution-lease');
 
 const HIGH_RISK_API_PATTERNS = [
   '/repos/', '/orgs/', '/user/repos',
@@ -189,7 +190,7 @@ function _buildApiImpactSummary(method, url, provider, body) {
 }
 
 router.post('/call', validateAction, async (req, res) => {
-  const { provider, method, url: apiUrl, body: apiBody, sessionId, promptId, userToken } = req.body;
+  const { provider, method, url: apiUrl, body: apiBody, sessionId, promptId, userToken, issueLeaseOnly } = req.body;
 
   if (!provider || !method || !apiUrl) {
     return res.status(400).json({ success: false, error: 'provider, method, and url are required' });
@@ -374,6 +375,31 @@ router.post('/call', validateAction, async (req, res) => {
     if (apiBody && ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
       axiosConfig.data = apiBody;
       axiosConfig.headers['Content-Type'] = 'application/json';
+    }
+
+    if (issueLeaseOnly) {
+      const executionLease = issueExecutionLease({
+        kind: 'api_action',
+        actionId: loggedAction?.id || null,
+        agentId: req.agent.id,
+        action: {
+          type: 'api_call',
+          provider,
+          method: method.toUpperCase(),
+          url: apiUrl,
+          body: apiBody,
+          sessionId: sessionId || null,
+          promptId: promptId || null,
+        },
+        approvalId: req.body.approvalId || null,
+      });
+
+      return res.json({
+        success: true,
+        status: 200,
+        leaseIssued: !!executionLease,
+        executionLease
+      });
     }
 
     const response = await axios(axiosConfig);
