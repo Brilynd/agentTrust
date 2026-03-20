@@ -14,6 +14,7 @@ This document tracks what was preserved, what changed, what was weakened, and ho
 | Audit chain | Preserved | Existing backend audit service still writes the chain |
 | External API mediation | Preserved | Calls still route through AgentTrust backend |
 | Session ownership | Improved | Added explicit session-claim route for non-extension operators |
+| Deterministic non-bypassable execution | Conditional | Requires executor-only mutation path plus lease verification; skills alone are not enough |
 | Chrome extension monitoring UX | Changed | Replaced by terminal approval presenter + monitor for this integration |
 | Selenium-specific browser recovery tricks | Partial | Only portable behavior was moved into the generic OpenClaw runtime |
 | Passkey suppression / custom Chrome hacks | Partial | Requires OpenClaw-native browser hooks to fully restore |
@@ -80,7 +81,35 @@ How to verify:
 
 ## Changed Or Partial Features
 
-### 5. Chrome extension dashboard
+### 5. Deterministic enforcement
+
+Status: Conditional
+
+What changed:
+
+- The guarded runtime gives the agent AgentTrust-wrapped tools.
+- That preserves trust semantics, but it is only deterministic if all raw mutating alternatives are removed.
+- `integrations/nemoclaw/src/executor-server.js` was added as the isolated execution point for deterministic deployment.
+
+What is required for full parity with a non-bypassable model:
+
+- the executor is the only process allowed to touch the browser
+- the executor is the only process allowed to perform write-capable API calls
+- each action is bound to a signed execution lease
+- raw browser/computer-use/API tools are removed from the agent runtime
+
+Why it matters:
+
+- skills, prompts, or tool preferences are guidance
+- executor-only mutation is enforcement
+
+Recovery path:
+
+- deploy the executor inside the sandbox
+- route all browser/API mutation through it
+- remove alternate raw tools from the agent-facing runtime
+
+### 6. Chrome extension dashboard
 
 Status: Changed
 
@@ -102,7 +131,7 @@ Recovery path:
 - Rebuild a web dashboard against existing `sessions`, `prompts`, `actions`, and `approvals` endpoints.
 - Or keep the extension as an optional companion UI outside the NeMoClaw sandbox.
 
-### 6. Selenium-specific browser behavior
+### 7. Selenium-specific browser behavior
 
 Status: Partial
 
@@ -124,7 +153,7 @@ Recovery path:
 - Extend the OpenClaw browser provider contract with site-specific helpers.
 - Add OpenClaw-native equivalents for passkey suppression and advanced form recovery if the runtime supports them.
 
-### 7. Exact DOM targeting semantics
+### 8. Exact DOM targeting semantics
 
 Status: Partial
 
