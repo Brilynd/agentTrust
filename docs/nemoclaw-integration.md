@@ -223,16 +223,21 @@ npm run check
 ### 4. Required environment
 
 ```env
-AGENTTRUST_API_URL=http://localhost:3000/api
+AGENTTRUST_API_URL=http://10.138.0.147:3000/api
 AGENTTRUST_EXECUTOR_HOST=127.0.0.1
 AGENTTRUST_EXECUTOR_PORT=3101
+AGENTTRUST_EXECUTOR_URL=http://10.138.0.147:3101
+AGENTTRUST_EXECUTOR_MODE=host
 AGENTTRUST_EXECUTION_LEASE_SECRET=replace_with_long_random_secret
-AGENTTRUST_BROWSER_PROVIDER_MODULE=/sandbox/agenttrust/workspace/browser-provider.js
+AGENTTRUST_AGENT_TOKEN=preissued_agent_token
+AGENTTRUST_BROWSER_PROVIDER_MODULE=/abs/path/to/agentTrust/integrations/nemoclaw/src/browser-provider.agenttrust-host.js
+AGENTTRUST_HOST_BROWSER_SERVICE_URL=http://127.0.0.1:4100
 
-AUTH0_DOMAIN=your-tenant.us.auth0.com
-AUTH0_CLIENT_ID=your_client_id
-AUTH0_CLIENT_SECRET=your_client_secret
-AUTH0_AUDIENCE=https://agenttrust.api
+# Required on the host if AGENTTRUST_AGENT_TOKEN is not already set:
+# AUTH0_DOMAIN=your-tenant.us.auth0.com
+# AUTH0_CLIENT_ID=your_client_id
+# AUTH0_CLIENT_SECRET=your_client_secret
+# AUTH0_AUDIENCE=https://agenttrust.api
 
 AGENTTRUST_USER_EMAIL=operator@example.com
 AGENTTRUST_USER_PASSWORD=your-password
@@ -279,63 +284,75 @@ For deterministic deployment, the browser provider should only be imported by th
 
 ### 6. NVIDIA-hosted NeMoClaw / OpenShell Community
 
-For NVIDIA-hosted NeMoClaw using OpenShell Community, the files you actually need to touch are outside this repo:
-
-- `NemoClaw/scripts/nemoclaw-start.sh`
-- `NemoClaw/Dockerfile`
-- the active OpenShell sandbox policy file
-- the live sandbox config at `/sandbox/.openclaw/openclaw.json`
-
-Recommended first deployment topology:
+For NVIDIA-hosted NeMoClaw, the recommended production workaround is **host executor mode**:
 
 - NVIDIA instance host:
-  - PostgreSQL
   - AgentTrust backend
+  - Auth0 and RDS connectivity
+  - deterministic `agenttrust-executor`
+  - host browser service backed by the existing Selenium runtime
 - OpenShell sandbox:
   - OpenClaw gateway/UI
-  - AgentTrust executor
-  - browser provider module
+  - AgentTrust runtime wrapper
+  - policy proxy
 
-### 7. Modify `NemoClaw/scripts/nemoclaw-start.sh`
+This avoids the current OpenShell DNS limitation inside the sandbox while preserving the deterministic lease boundary.
 
-That startup wrapper should:
+### 7. Host executor mode
+
+In host executor mode:
+
+- the sandbox requests approvals and leases from the backend by host IP
+- the sandbox sends approved actions to the host executor by host IP
+- the host executor verifies the lease and performs the browser mutation
+- the host executor uploads screenshots back to the backend
+- the sandbox does **not** need direct Auth0 or RDS reachability
+
+Required host-side components:
+
+- `integrations/chatgpt/host_browser_service.py`
+- `integrations/nemoclaw/src/browser-provider.agenttrust-host.js`
+- `integrations/nemoclaw/src/executor-server.js`
+
+### 8. Update the sandbox startup wrapper
+
+For host mode, `openclaw-nvidia-start.sh` should:
 
 - export `AGENTTRUST_API_URL`
-- export `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`
-- export `AGENTTRUST_USER_EMAIL`, `AGENTTRUST_USER_PASSWORD`
+- export `AGENTTRUST_EXECUTOR_URL`
+- export `AGENTTRUST_EXECUTOR_MODE=host`
+- export `AGENTTRUST_AGENT_TOKEN`
 - export `AGENTTRUST_EXECUTION_LEASE_SECRET`
 - ensure `/sandbox/agenttrust/workspace` exists
 - patch `/sandbox/.openclaw/openclaw.json` so OpenClaw sees:
   - `agents.defaults.workspace = /sandbox/agenttrust/workspace`
   - `skills.load.extraDirs = ['/sandbox/.openclaw/skills/agenttrust']`
-- start `agenttrust-executor`
+- patch the runtime policy for the backend and executor IPs
+- skip local executor startup
 - start `openclaw gateway run`
 
-### 8. Modify `NemoClaw/Dockerfile`
+### 9. Update the sandbox image
 
-The sandbox image must contain:
+The sandbox image still needs:
 
 - the AgentTrust NeMoClaw integration code
-- the browser provider module referenced by `AGENTTRUST_BROWSER_PROVIDER_MODULE`
-- browser runtime dependencies needed by the executor
+- the runtime wrapper and CLI helpers
+- the browser provider module path used for local fallback mode
 
-The sandbox image should copy the integration into a stable path such as:
+The sandbox image does **not** need to run Selenium in host executor mode.
 
-- `/opt/agenttrust`
-- `/sandbox/agenttrust/workspace`
+### 10. Modify the OpenShell policy
 
-### 9. Modify the OpenShell policy
+For host executor mode, the sandbox policy should allow only:
 
-The sandbox policy should allow only the endpoints needed for:
-
-- AgentTrust backend
-- Auth0
+- the AgentTrust backend host IP and port
+- the AgentTrust executor host IP and port
 - NVIDIA inference routing
-- explicitly-approved provider APIs such as GitHub or Google
+- any explicitly-approved provider APIs exposed through the backend
 
-Do **not** broadly allow browser/API mutation to arbitrary destinations.
+Avoid depending on broad sandbox DNS or direct RDS/Auth0 reachability in this mode.
 
-### 10. Modify `/sandbox/.openclaw/openclaw.json`
+### 11. Modify `/sandbox/.openclaw/openclaw.json`
 
 This is the live OpenClaw config inside the sandbox.
 
@@ -359,33 +376,44 @@ Required fields:
 This does **not** provide deterministic security on its own.
 It only points OpenClaw at the correct AgentTrust-related paths.
 
-### 11. Start the executor
+### 12. Start the host services
 
-From inside the sandbox or from `nemoclaw-start.sh`:
+Start these on the NVIDIA instance host:
 
 ```bash
-node /opt/agenttrust/integrations/nemoclaw/src/executor-server.js
+cd agentTrust/backend
+npm run dev
 ```
 
-Or from the integration package:
+```bash
+cd agentTrust/integrations/chatgpt
+python host_browser_service.py
+```
 
 ```bash
-cd /opt/agenttrust/integrations/nemoclaw
+cd agentTrust/integrations/nemoclaw
+AGENTTRUST_API_URL=http://127.0.0.1:3000/api \
+AGENTTRUST_EXECUTOR_HOST=0.0.0.0 \
+AGENTTRUST_EXECUTOR_PORT=3101 \
+AGENTTRUST_EXECUTION_LEASE_SECRET=replace_with_long_random_secret \
+AGENTTRUST_BROWSER_PROVIDER_MODULE="$(pwd)/src/browser-provider.agenttrust-host.js" \
+AGENTTRUST_HOST_BROWSER_SERVICE_URL=http://127.0.0.1:4100 \
+AGENTTRUST_AGENT_TOKEN="$(npm run --silent agent-token)" \
 npm run executor
 ```
 
-### 12. Browser provider module
+### 13. Browser provider module
 
-Set:
+For host mode, set:
 
 ```env
-AGENTTRUST_BROWSER_PROVIDER_MODULE=/sandbox/agenttrust/workspace/browser-provider.js
+AGENTTRUST_BROWSER_PROVIDER_MODULE=/abs/path/to/agentTrust/integrations/nemoclaw/src/browser-provider.agenttrust-host.js
+AGENTTRUST_HOST_BROWSER_SERVICE_URL=http://127.0.0.1:4100
 ```
 
-Use `integrations/nemoclaw/src/browser-provider.example.js` as the starting point.
-Replace it with the actual browser bridge for your sandbox image.
+The host browser service reuses the existing Selenium `BrowserController` from `integrations/chatgpt/chatgpt_agent_with_agenttrust.py`.
 
-### 13. Raw tool removal
+### 14. Raw tool removal
 
 For deterministic deployment, the active agent must not have:
 
@@ -414,10 +442,11 @@ That preserves the old extension responsibilities with terminal-first tooling:
 For deterministic deployment on the NVIDIA instance, run:
 
 1. AgentTrust backend
-2. agenttrust-executor
-3. OpenClaw gateway/UI
-4. approval presenter
-5. session monitor
+2. host browser service
+3. host agenttrust-executor
+4. OpenClaw gateway/UI
+5. approval presenter
+6. session monitor
 
 ## First Validation Flow
 
@@ -442,17 +471,18 @@ This repo now contains:
 
 - guarded runtime scaffolding
 - deterministic executor scaffolding
+- host executor mode for NVIDIA-hosted deployments
+- a host browser bridge that reuses the existing Selenium runtime
 - env templates for executor deployment
-- local WSL setup docs
+- host-mode setup docs
 
-This repo does **not yet** contain the final NVIDIA-side changes to:
+You still need to apply environment-specific values for:
 
-- `NemoClaw/Dockerfile`
-- `NemoClaw/scripts/nemoclaw-start.sh`
-- OpenShell sandbox policy
-- the backend lease-issuance endpoint that signs per-action execution leases
+- the reachable host IP used by the sandbox
+- backend/Auth0/database credentials
+- the exact OpenShell/NVIDIA deployment commands used on the target host
 
-Those changes must be applied in the NVIDIA/OpenShell environment itself.
+Those values must be applied in the NVIDIA/OpenShell environment itself.
 
 ## Related Document
 

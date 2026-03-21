@@ -47,8 +47,8 @@ class OpenClawBrowserAdapter {
     return this.typeImpl({ target, text, clearFirst, pressEnter });
   }
 
-  async submit({ target }) {
-    return this.submitImpl({ target });
+  async submit({ target, formData }) {
+    return this.submitImpl({ target, formData });
   }
 
   async openTab({ url, label }) {

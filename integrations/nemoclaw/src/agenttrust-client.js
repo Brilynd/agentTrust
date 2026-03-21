@@ -23,22 +23,27 @@ class AgentTrustBridge {
     this.auth0Audience = trimTrailingSlash(options.auth0Audience || process.env.AUTH0_AUDIENCE);
     this.userEmail = options.userEmail || process.env.AGENTTRUST_USER_EMAIL || '';
     this.userPassword = options.userPassword || process.env.AGENTTRUST_USER_PASSWORD || '';
+    this.staticAgentToken = options.agentToken || process.env.AGENTTRUST_AGENT_TOKEN || '';
 
-    this.agentToken = null;
-    this.agentTokenExpiresAt = 0;
+    this.agentToken = this.staticAgentToken || null;
+    this.agentTokenExpiresAt = this.staticAgentToken ? Number.MAX_SAFE_INTEGER : 0;
     this.userToken = options.userToken || null;
     this.currentSessionId = null;
     this.currentPromptId = null;
   }
 
   async getAgentToken(forceRefresh = false) {
+    if (this.staticAgentToken) {
+      return this.staticAgentToken;
+    }
+
     if (!forceRefresh && this.agentToken && Date.now() < this.agentTokenExpiresAt) {
       return this.agentToken;
     }
 
     if (!this.auth0Domain || !this.auth0ClientId || !this.auth0ClientSecret || !this.auth0Audience) {
       throw new Error(
-        'Missing Auth0 M2M configuration. Set AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, and AUTH0_AUDIENCE.'
+        'Missing agent authentication. Set AGENTTRUST_AGENT_TOKEN or AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, and AUTH0_AUDIENCE.'
       );
     }
 
@@ -113,7 +118,9 @@ class AgentTrustBridge {
   async verifyConnectivity() {
     const healthUrl = this.apiBaseUrl.replace(/\/api$/, '/health');
     await requestJson(healthUrl);
-    await this.getAgentToken();
+    if (!this.staticAgentToken) {
+      await this.getAgentToken();
+    }
     return { ok: true };
   }
 

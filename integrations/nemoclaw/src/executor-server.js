@@ -150,7 +150,7 @@ async function executeBrowserAction(browser, action) {
         pressEnter: !!action.pressEnter,
       });
     case 'form_submit':
-      return browser.submit({ target: action.target });
+      return browser.submit({ target: action.target, formData: action.formData || action.form });
     case 'open_tab':
       return browser.openTab({ url: action.url, label: action.label });
     case 'switch_tab':
@@ -169,6 +169,7 @@ async function main() {
     auth0ClientId: process.env.AUTH0_CLIENT_ID,
     auth0ClientSecret: process.env.AUTH0_CLIENT_SECRET,
     auth0Audience: process.env.AUTH0_AUDIENCE,
+    agentToken: process.env.AGENTTRUST_AGENT_TOKEN,
     userEmail: process.env.AGENTTRUST_USER_EMAIL,
     userPassword: process.env.AGENTTRUST_USER_PASSWORD,
     userToken: process.env.AGENTTRUST_USER_TOKEN,

@@ -24,6 +24,8 @@ async function main() {
 
   console.log('AgentTrust / NeMoClaw config');
   console.log(`AGENTTRUST_API_URL=${process.env.AGENTTRUST_API_URL || '(missing)'}`);
+  console.log(`AGENTTRUST_EXECUTOR_URL=${process.env.AGENTTRUST_EXECUTOR_URL || '(missing)'}`);
+  console.log(`AGENTTRUST_AGENT_TOKEN=${process.env.AGENTTRUST_AGENT_TOKEN ? '***present***' : '(missing)'}`);
   console.log(`AUTH0_DOMAIN=${process.env.AUTH0_DOMAIN || '(missing)'}`);
   console.log(`AUTH0_CLIENT_ID=${mask(process.env.AUTH0_CLIENT_ID)}`);
   console.log(`AUTH0_CLIENT_SECRET=${process.env.AUTH0_CLIENT_SECRET ? '***present***' : '(missing)'}`);

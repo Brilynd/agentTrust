@@ -273,7 +273,7 @@ class AgentTrustOpenClawRuntime {
       promptId: this.agentTrust.currentPromptId || undefined,
     };
     const result = await this.executeBrowserAction(executorAction, decision, () =>
-      this.browser.submit({ target })
+      this.browser.submit({ target, formData })
     );
     if (!this.hasExecutor()) {
       await this.uploadPostActionScreenshot(decision.action_id);
