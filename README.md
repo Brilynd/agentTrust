@@ -24,9 +24,9 @@
 
 <div align="center">
 
-[![Watch the Demo](https://img.youtube.com/vi/MJ1QktDteA8/maxresdefault.jpg)](https://youtu.be/MJ1QktDteA8)
+[![Watch the Demo](https://img.youtube.com/vi/RZO4ZZ3n2r0/maxresdefault.jpg)](https://youtu.be/RZO4ZZ3n2r0)
 
-**[Watch the Auth0 hackathon demo submission on YouTube](https://youtu.be/MJ1QktDteA8)**
+**[Watch the Auth0 hackathon demo submission on YouTube](https://youtu.be/RZO4ZZ3n2r0)**
 
 *This demo showcases AgentTrust researching AI security vulnerabilities, reading relevant findings on the web, and creating a GitHub issue with the summary — all with real-time policy enforcement, step-up approval, and a live thinking breakdown in the extension.*
 
