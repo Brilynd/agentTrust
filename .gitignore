@@ -12,7 +12,15 @@ chrome-for-testing/
 # Build outputs
 dist/
 build/
+.next/
+*.tsbuildinfo
 *.log
+
+
+# AgentTrust platform local runtime data
+platform/apps/api/data/*.json
+.turbo/
+.vercel/
 
 # IDE
 .vscode/

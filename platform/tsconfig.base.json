@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@agenttrust/shared": [
+        "packages/shared/src"
+      ],
+      "@agenttrust/policy": [
+        "packages/policy/src"
+      ],
+      "@agenttrust/engine": [
+        "packages/engine/src"
+      ]
+    }
+  }
+}

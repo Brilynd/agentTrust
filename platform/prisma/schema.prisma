@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AgentJobStatus {
+  queued
+  running
+  waiting_approval
+  paused
+  completed
+  failed
+  cancelled
+}
+
+enum AgentStepStatus {
+  pending
+  running
+  succeeded
+  failed
+  skipped
+  waiting_approval
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+  expired
+}
+
+enum FailureType {
+  NONE
+  ELEMENT_NOT_FOUND
+  TIMEOUT
+  NOT_INTERACTABLE
+  NAVIGATION_ERROR
+  POLICY_DENIED
+  VERIFICATION_FAILED
+  UNKNOWN
+}
+
+model AgentJob {
+  id                 String             @id @default(cuid())
+  externalRef        String?            @unique
+  agentId            String?
+  sessionId          String?
+  promptId           String?
+  task               String
+  input              Json
+  plan               Json?
+  status             AgentJobStatus     @default(queued)
+  currentStepIndex   Int                @default(0)
+  progress           Int                @default(0)
+  currentStep        String?
+  result             Json?
+  error              String?
+  retryCount         Int                @default(0)
+  maxRetries         Int                @default(4)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  lastHeartbeatAt    DateTime?
+  pauseRequested     Boolean            @default(false)
+  cancelRequested    Boolean            @default(false)
+  metadata           Json?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  steps              AgentStep[]
+  approvals          ApprovalRequest[]
+  replays            ReplayChunk[]
+  corrections        CorrectionMemory[]
+  metrics            MetricRollup[]
+}
+
+model AgentStep {
+  id                 String             @id @default(cuid())
+  jobId              String
+  sequence           Int
+  name               String
+  action             String
+  selector           Json?
+  selectorText       String?
+  payload            Json?
+  verification       Json?
+  result             Json?
+  status             AgentStepStatus    @default(pending)
+  retryCount         Int                @default(0)
+  failureType        FailureType        @default(NONE)
+  failureMessage     String?
+  hash               String
+  previousHash       String
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  job                AgentJob           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, sequence])
+  @@index([jobId, status])
+}
+
+model ApprovalRequest {
+  id                 String             @id @default(cuid())
+  jobId              String
+  stepId             String?
+  action             String
+  target             Json?
+  policyReason       String?
+  requestedBy        String?
+  status             ApprovalStatus     @default(pending)
+  decisionBy         String?
+  decisionComment    String?
+  expiresAt          DateTime?
+  decidedAt          DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  job                AgentJob           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, status])
+}
+
+model ReplayChunk {
+  id                 String             @id @default(cuid())
+  jobId              String
+  stepId             String?
+  sequence           Int
+  eventType          String
+  payload            Json
+  createdAt          DateTime           @default(now())
+  job                AgentJob           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, sequence])
+  @@index([jobId, stepId])
+}
+
+model CorrectionMemory {
+  id                 String             @id @default(cuid())
+  jobId              String
+  domain             String
+  actionType         String
+  failureType        FailureType
+  failedSelector     Json?
+  correctedSelector  Json?
+  notes              String?
+  createdAt          DateTime           @default(now())
+  job                AgentJob           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([domain, actionType])
+}
+
+model MetricRollup {
+  id                 String             @id @default(cuid())
+  jobId              String
+  metricKey          String
+  metricValue        Float
+  labels             Json?
+  createdAt          DateTime           @default(now())
+  job                AgentJob           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, metricKey])
+}

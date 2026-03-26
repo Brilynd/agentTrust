@@ -1,0 +1,31 @@
+{
+  "name": "@agenttrust/platform-api",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@agenttrust/policy": "file:../../packages/policy",
+    "@agenttrust/shared": "file:../../packages/shared",
+    "@prisma/client": "^6.6.0",
+    "bullmq": "^5.46.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "ioredis": "^5.6.1",
+    "pino": "^9.7.0",
+    "pino-http": "^10.4.0",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.14.1",
+    "tsx": "^4.19.3"
+  }
+}
