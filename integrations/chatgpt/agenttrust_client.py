@@ -717,12 +717,36 @@ class AgentTrustClient:
         for candidate in unique:
             try:
                 token = self._get_token()
+                params = {"domain": candidate}
                 response = requests.get(
                     f"{self.api_url}/credentials/lookup",
                     headers={"Authorization": f"Bearer {token}"},
-                    params={"domain": candidate},
+                    params=params,
                     timeout=5,
                 )
+                if response.status_code == 403:
+                    data = response.json()
+                    if data.get("requiresStepUp") and data.get("approvalId"):
+                        approval_id = data["approvalId"]
+                        print(f"🔐 Credential access requires user approval (approvalId={approval_id}). Waiting...")
+                        approval_result = self.wait_for_approval(approval_id, timeout=60)
+                        if approval_result.get("approved"):
+                            print("✅ Credential access approved by user. Retrying...")
+                            retry_response = requests.get(
+                                f"{self.api_url}/credentials/lookup",
+                                headers={"Authorization": f"Bearer {token}"},
+                                params={"domain": candidate, "approvalId": approval_id},
+                                timeout=5,
+                            )
+                            if retry_response.status_code == 200:
+                                data = retry_response.json()
+                                cred = data.get("credential")
+                                if cred:
+                                    return {"username": cred["username"], "password": cred["password"]}
+                            continue
+                        reason = approval_result.get("reason", "User denied the action")
+                        print(f"❌ Credential access denied by user: {reason}")
+                        return None
                 if response.status_code == 200:
                     data = response.json()
                     cred = data.get("credential")

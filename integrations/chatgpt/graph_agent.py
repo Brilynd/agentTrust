@@ -50,6 +50,18 @@ class AgentState(TypedDict, total=False):
     page_vision: str                  # Vision LLM classification of the page
     has_overlay: bool                 # Whether an overlay/popup was detected
     login_state: str                  # "ALREADY LOGGED IN (...)" or ""
+    login_goal_satisfied: bool        # True when current goal is login-related and page is already authenticated
+    product_search_goal_satisfied: bool  # True when a product-search goal has already landed on a matching product page
+    google_account_options: list      # Visible Google account choices on the account chooser page
+    google_single_account_target: dict  # Sole visible Google account target to auto-select
+    google_account_choice_needed: bool  # True when multiple Google accounts are visible and the user must choose
+    form_dialog_visible: bool         # True when a modal/dialog form appears on top of the page
+    form_field_hints: list            # Visible field identifiers for the active modal/dialog form
+    jira_quick_add_visible: bool      # True when Jira board quick-add input is available
+    jira_quick_add_target: dict       # Locator for Jira board quick-add input
+    jira_quick_add_label: str         # Human-readable label for the Jira quick-add input
+    jira_add_to_sprint_target: dict   # Jira toast action to add created work item to the sprint
+    jira_add_to_sprint_label: str     # Human-readable label for the Jira sprint action
 
     # --- Turn messages (OpenAI API) ---
     turn_messages: list               # Tool call/result pairs this turn
@@ -76,6 +88,7 @@ class AgentState(TypedDict, total=False):
 
     # --- API context ---
     github_repos: list                # Cached [{full_name, owner, name}] from GET /user/repos
+    github_issues: list               # Cached [{title, body, html_url, number}] from GET /issues
 
     # --- Progress tracking (live UI in extension) ---
     progress_lines: list              # Accumulated step descriptions
@@ -173,6 +186,269 @@ def sanitize_untrusted_page_text(text: str, max_chars: int = 3000):
             safe_lines.append(line)
 
     return "\n".join(safe_lines).strip(), list(dict.fromkeys(matches))
+
+
+_QUERY_STOPWORDS = {
+    "a", "an", "and", "for", "from", "into", "the", "to", "my", "on", "of",
+    "in", "at", "with", "find", "search", "browse", "look", "open", "go",
+    "navigate", "selected", "select", "product", "products", "item", "items",
+    "page", "pages", "result", "results", "amazon", "cart", "add", "buy",
+    "flavor", "flavour",
+}
+
+
+def _extract_goal_query_terms(goal_text: str, user_request: str) -> tuple[list[str], list[str]]:
+    """Pull the product words/phrases the current search goal cares about."""
+    candidates = []
+    for source in (goal_text or "", user_request or ""):
+        candidates.extend([m.group(1) for m in re.finditer(r"['\"]([^'\"]+)['\"]", source)])
+        if source:
+            candidates.append(source)
+
+    candidate = max(candidates, key=len, default=(goal_text or user_request or ""))
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", candidate.lower())
+    words = []
+    for word in cleaned.split():
+        if (len(word) < 3 and word != "tea") or word in _QUERY_STOPWORDS:
+            continue
+        if word not in words:
+            words.append(word)
+
+    phrases = []
+    for idx in range(len(words) - 1):
+        phrase = f"{words[idx]} {words[idx + 1]}"
+        if phrase not in phrases:
+            phrases.append(phrase)
+
+    return words, phrases
+
+
+def _product_search_goal_satisfied(
+    goal_text: str,
+    user_request: str,
+    url: str,
+    page_title: str,
+    page_text: str,
+) -> bool:
+    """Detect when a search goal has already reached a matching product page."""
+    goal_lower = (goal_text or "").lower()
+    if not any(kw in goal_lower for kw in ("search", "find", "look for", "browse")):
+        return False
+
+    try:
+        from urllib.parse import urlparse as _urlparse
+        parsed = _urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+    except Exception:
+        host = ""
+        path = ""
+
+    if "amazon." not in host or not any(part in path for part in ("/dp/", "/gp/product/")):
+        return False
+
+    # Only trust the product page title for search-goal completion.
+    haystack = (page_title or "").lower()
+    keywords, phrases = _extract_goal_query_terms(goal_text, user_request)
+    keyword_matches = sum(1 for keyword in keywords if keyword in haystack)
+    phrase_matches = sum(1 for phrase in phrases if phrase in haystack)
+
+    if not keywords:
+        return True
+    if len(keywords) <= 2:
+        return keyword_matches >= len(keywords)
+    return (phrase_matches >= 1 and keyword_matches >= 2) or keyword_matches >= 3
+
+
+def _detect_google_account_choices(url: str, page_text: str, elements: list[dict]) -> list[dict]:
+    """Extract visible Google account choices from the account chooser page."""
+    url_lower = (url or "").lower()
+    text_lower = (page_text or "").lower()
+    if "accounts.google.com" not in url_lower:
+        return []
+    if "accountchooser" not in url_lower and "choose an account" not in text_lower:
+        return []
+
+    skip_terms = (
+        "use another account", "remove an account", "forgot email",
+        "create account", "privacy", "terms", "help", "learn more",
+    )
+    choices = []
+    seen = set()
+
+    for el in elements or []:
+        text_value = str(el.get("text") or "").strip()
+        aria_value = str(el.get("aria_label") or el.get("aria-label") or "").strip()
+        label = re.sub(r"\s+", " ", text_value or aria_value).strip()
+        label_lower = label.lower()
+        if not label:
+            continue
+        if any(term in label_lower for term in skip_terms):
+            continue
+        if "@" not in label_lower:
+            continue
+
+        target = {}
+        if text_value:
+            target["text"] = text_value[:80]
+        if el.get("id"):
+            target["id"] = el["id"]
+        if el.get("href"):
+            target["href"] = el["href"]
+        if el.get("name"):
+            target["name"] = el["name"]
+        if el.get("aria_label"):
+            target["aria_label"] = el["aria_label"]
+        if el.get("role"):
+            target["role"] = el["role"]
+
+        sig = (target.get("text") or target.get("aria_label") or label).lower()
+        if sig in seen:
+            continue
+        seen.add(sig)
+        choices.append({"label": label[:120], "target": target})
+
+    return choices
+
+
+def _detect_form_dialog(elements: list[dict]) -> tuple[bool, list[str]]:
+    """Detect an active overlay/modal form and summarize its visible fields."""
+    overlay_inputs = []
+    for el in elements or []:
+        if not el.get("in_overlay"):
+            continue
+        if el.get("t") != "in":
+            continue
+        label = (
+            el.get("placeholder")
+            or el.get("aria_label")
+            or el.get("name")
+            or el.get("id")
+            or el.get("text")
+            or el.get("role")
+            or "input"
+        )
+        label = re.sub(r"\s+", " ", str(label)).strip()
+        if not label:
+            label = "input"
+        overlay_inputs.append(label[:80])
+
+    deduped = list(dict.fromkeys(overlay_inputs))
+    return (len(deduped) > 0, deduped[:8])
+
+
+def _detect_jira_quick_add(url: str, elements: list[dict]) -> tuple[bool, dict, str]:
+    """Detect Jira board quick-add input like 'What needs to be done?'."""
+    url_lower = (url or "").lower()
+    if "atlassian.net" not in url_lower or "/boards/" not in url_lower:
+        return False, {}, ""
+
+    for el in elements or []:
+        if el.get("t") != "in":
+            continue
+        placeholder = str(el.get("placeholder") or "").strip()
+        aria = str(el.get("aria_label") or "").strip()
+        name = str(el.get("name") or "").strip()
+        label = placeholder or aria or name
+        label_lower = label.lower()
+        if "what needs to be done" not in label_lower:
+            continue
+
+        target = {}
+        if el.get("id"):
+            target["id"] = el["id"]
+        if el.get("name"):
+            target["name"] = el["name"]
+        if el.get("placeholder"):
+            target["placeholder"] = el["placeholder"]
+        if el.get("aria_label"):
+            target["aria-label"] = el["aria_label"]
+        if el.get("role"):
+            target["role"] = el["role"]
+        if el.get("input_type"):
+            target["type"] = el["input_type"]
+        return True, target, label or "What needs to be done?"
+
+    return False, {}, ""
+
+
+def _detect_jira_add_to_sprint(url: str, page_text: str, elements: list[dict]) -> tuple[dict, str]:
+    """Detect Jira's post-create toast action like 'Add to SCRUM Sprint 0'."""
+    url_lower = (url or "").lower()
+    if "atlassian.net" not in url_lower:
+        return {}, ""
+
+    page_text_lower = str(page_text or "").lower()
+    board_warning_visible = (
+        "isn't visible on the board" in page_text_lower
+        or "is not visible on the board" in page_text_lower
+        or "visible on the board" in page_text_lower
+    )
+
+    for el in elements or []:
+        text = str(el.get("text") or "").strip()
+        aria = str(el.get("aria_label") or "").strip()
+        name = str(el.get("name") or "").strip()
+        value = str(el.get("value") or "").strip()
+        label = text or aria or name or value
+        label_lower = label.lower()
+
+        exact_sprint_action = "add to " in label_lower and "sprint" in label_lower
+        board_followup_action = (
+            board_warning_visible
+            and "sprint" in label_lower
+            and any(word in label_lower for word in ("add", "move", "show", "put"))
+        )
+        if not exact_sprint_action and not board_followup_action:
+            continue
+        target = {}
+        if el.get("id"):
+            target["id"] = el["id"]
+        if el.get("href"):
+            target["href"] = el["href"]
+        if el.get("name"):
+            target["name"] = el["name"]
+        if el.get("aria_label"):
+            target["aria_label"] = el["aria_label"]
+        if el.get("role"):
+            target["role"] = el["role"]
+        if label:
+            target["text"] = label
+        return target, label
+
+    if board_warning_visible:
+        return {"text": "Add to Sprint", "role": "button"}, "Add to Sprint"
+
+    return {}, ""
+
+
+def _extract_known_jira_url(state: AgentState) -> str:
+    """Find the best known user Jira workspace URL from state/history."""
+    candidates: list[str] = []
+
+    current_url = str(state.get("current_url") or "")
+    if ".atlassian.net" in current_url:
+        candidates.append(current_url)
+
+    for tab in state.get("open_tabs") or []:
+        url = str((tab or {}).get("url") or "")
+        if ".atlassian.net" in url:
+            candidates.append(url)
+
+    for msg in state.get("conversation_history") or []:
+        content = str((msg or {}).get("content") or "")
+        candidates.extend(
+            re.findall(r"https://[A-Za-z0-9.-]+\.atlassian\.net[^\s\"')\]]*", content)
+        )
+
+    board_candidates = [
+        url for url in candidates
+        if "/boards/" in url or "/jira/software/projects/" in url
+    ]
+    if board_candidates:
+        return board_candidates[-1]
+
+    return candidates[-1] if candidates else ""
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +647,7 @@ def build_graph(agent):
                 "step_up_message": "",
                 "action_category": "none",
                 "final_response": answer,
+            "github_issues": [],
                 "progress_lines": progress,
             }
 
@@ -581,6 +858,7 @@ def build_graph(agent):
             "action_category": "none",
             "final_response": "",
             "github_repos": [],
+            "github_issues": [],
             "progress_lines": progress,
         }
 
@@ -720,9 +998,14 @@ def build_graph(agent):
         if url and elements:
             logged_in_signals = []
             url_lower = url.lower()
+            _google_account_chooser = (
+                "accounts.google.com" in url_lower and "accountchooser" in url_lower
+            )
             if any(frag in url_lower for frag in ("/inbox", "/#inbox", "/mail/u/",
                                                    "/feed", "/home", "/dashboard",
-                                                   "/my-account", "/account")):
+                                                   "/my-account")) or (
+                "/account" in url_lower and not _google_account_chooser
+            ):
                 logged_in_signals.append("authenticated page loaded")
             for el in elements:
                 el_text = (el.get("text") or "").lower()
@@ -737,6 +1020,9 @@ def build_graph(agent):
                 if any(kw in el_aria for kw in ("my account", "account menu",
                                                  "profile", "user menu")):
                     logged_in_signals.append("account/profile menu visible")
+                    break
+                if "amazon." in url_lower and "hello," in el_text and "account" in el_text and "lists" in el_text:
+                    logged_in_signals.append("amazon account greeting visible")
                     break
             if logged_in_signals:
                 login_state = f"ALREADY LOGGED IN ({', '.join(logged_in_signals)})"
@@ -775,6 +1061,37 @@ def build_graph(agent):
             progress = _emit_progress(state, f"OBSERVE|Viewing {_obs_host}")
             _obs_ret["progress_lines"] = progress
 
+        current_goal_lower = ((state.get("sub_goals") or [""])[state.get("current_goal_index", 0)]
+                              if (state.get("sub_goals") or []) and state.get("current_goal_index", 0) < len(state.get("sub_goals") or [])
+                              else "").lower()
+        current_goal_text = ((state.get("sub_goals") or [""])[state.get("current_goal_index", 0)]
+                             if (state.get("sub_goals") or []) and state.get("current_goal_index", 0) < len(state.get("sub_goals") or [])
+                             else "")
+        google_account_choices = _detect_google_account_choices(url, text, elements)
+        login_goal_satisfied = bool(login_state) and any(
+            kw in current_goal_lower for kw in ("sign in", "signin", "log in", "login", "authenticate", "use my account")
+        )
+        product_search_goal_satisfied = _product_search_goal_satisfied(
+            current_goal_text,
+            state.get("user_request", ""),
+            url,
+            title,
+            text,
+        )
+        form_dialog_visible, form_field_hints = _detect_form_dialog(elements)
+        jira_quick_add_visible, jira_quick_add_target, jira_quick_add_label = _detect_jira_quick_add(url, elements)
+        jira_add_to_sprint_target, jira_add_to_sprint_label = _detect_jira_add_to_sprint(url, text, elements)
+        chooser_prompt = ""
+        if len(google_account_choices) > 1:
+            options_text = "\n".join(
+                f"{i + 1}. {choice['label']}" for i, choice in enumerate(google_account_choices[:10])
+            )
+            chooser_prompt = (
+                "Google is asking which account to use for sign-in. "
+                "Reply with the account number or the email to continue:\n"
+                f"{options_text}"
+            )
+
         return {
             "current_url": url,
             "page_title": title,
@@ -784,8 +1101,21 @@ def build_graph(agent):
             "page_vision": page_vision,
             "has_overlay": has_overlay,
             "login_state": login_state,
+            "login_goal_satisfied": login_goal_satisfied,
+            "product_search_goal_satisfied": product_search_goal_satisfied,
+            "google_account_options": [choice["label"] for choice in google_account_choices],
+            "google_single_account_target": google_account_choices[0]["target"] if len(google_account_choices) == 1 else {},
+            "google_account_choice_needed": len(google_account_choices) > 1,
+            "form_dialog_visible": form_dialog_visible,
+            "form_field_hints": form_field_hints,
+            "jira_quick_add_visible": jira_quick_add_visible,
+            "jira_quick_add_target": jira_quick_add_target,
+            "jira_quick_add_label": jira_quick_add_label,
+            "jira_add_to_sprint_target": jira_add_to_sprint_target,
+            "jira_add_to_sprint_label": jira_add_to_sprint_label,
             "active_tab": active_tab,
             "open_tabs": open_tabs,
+            "final_response": chooser_prompt,
             **_obs_ret,
         }
 
@@ -837,6 +1167,45 @@ def build_graph(agent):
         login_info = ""
         if state.get("login_state"):
             login_info = f"⚠ {state['login_state']} — do NOT call get_saved_credentials or auto_login.\n"
+
+        form_info = ""
+        if state.get("form_dialog_visible"):
+            fields = state.get("form_field_hints") or []
+            form_info = (
+                "📝 FORM DIALOG OPEN: A modal/create form is visible on top of the page. "
+                "Do NOT click the opener button again. Fill the visible form fields first, "
+                "then submit once the necessary fields are populated.\n"
+                "Read the dialog content and fields before interacting with anything behind it.\n"
+            )
+            if fields:
+                form_info += f"Visible form fields: {fields}\n"
+
+        jira_info = ""
+        if state.get("jira_quick_add_visible"):
+            jira_info = (
+                "🧩 JIRA QUICK ADD AVAILABLE: The board has an inline task input "
+                f"('{state.get('jira_quick_add_label') or 'What needs to be done?'}'). "
+                "Prefer this over opening the full Create dialog. Type ONE concrete "
+                "engineering task, press Enter, then repeat for the next issue.\n"
+            )
+        if state.get("jira_add_to_sprint_target"):
+            jira_info += (
+                f"📌 JIRA SPRINT ACTION AVAILABLE: '{state.get('jira_add_to_sprint_label')}'. "
+                "After creating the work item, click this so it becomes visible on the board.\n"
+            )
+
+        issue_info = ""
+        if state.get("github_issues"):
+            _issue_lines = []
+            for issue in (state.get("github_issues") or [])[:3]:
+                title = str(issue.get("title") or "").strip()
+                body = re.sub(r"\s+", " ", str(issue.get("body") or "").strip())[:220]
+                url = str(issue.get("html_url") or "").strip()
+                number = issue.get("number")
+                prefix = f"#{number} " if number else ""
+                _issue_lines.append(f"- {prefix}{title} | {body} | {url}")
+            if _issue_lines:
+                issue_info = "GitHub issues available for this task:\n" + "\n".join(_issue_lines) + "\n"
 
         # Hint when the page has no interactive elements
         nav_hint = ""
@@ -927,6 +1296,9 @@ def build_graph(agent):
             f"{price_hint}"
             f"{scroll_hint}"
             f"{login_info}"
+            f"{form_info}"
+            f"{jira_info}"
+            f"{issue_info}"
             f"{vision_info}"
             f"{security_info}"
             f"{tabs_info}"
@@ -940,6 +1312,101 @@ def build_graph(agent):
 
         from datetime import datetime as _dt
         _today = _dt.now().strftime("%A, %B %d, %Y")
+
+        current_goal_lower = current_goal.lower()
+        user_request_lower = (state.get("user_request") or "").lower()
+        _host_lower = (_cur_host or "").lower()
+        _site_guidance: list[str] = []
+
+        _login_words = ("sign in", "signin", "log in", "login", "authenticate", "use my account")
+        if (
+            any(word in current_goal_lower for word in _login_words)
+            or any(word in user_request_lower for word in _login_words)
+            or "accountchooser" in (state.get("current_url") or "").lower()
+            or "login" in _host_lower
+            or "accounts.google.com" in _host_lower
+        ):
+            _site_guidance.append(
+                "LOGIN FLOW — MANDATORY:\n"
+                "- BEFORE attempting any login, CHECK if you are ALREADY LOGGED IN.\n"
+                "- Only call get_saved_credentials + auto_login when you are on a site's login page AND login fields are visible.\n"
+                "- Navigate to the site's homepage first, then click a visible Sign in / Log in control.\n"
+                "- NEVER manually type usernames or passwords with type_text.\n"
+                "- If a Google account chooser appears after 'Sign in with Google':\n"
+                "  1. If exactly ONE visible account is shown, select it.\n"
+                "  2. If MULTIPLE accounts are shown, STOP and ask the user which account to use.\n"
+            )
+
+        if state.get("form_dialog_visible") or any(word in current_goal_lower for word in ("create", "new", "compose", "add")):
+            _site_guidance.append(
+                "CREATE FORMS / MODALS:\n"
+                "- After clicking buttons like 'Create', 'New', 'Compose', or 'Add', LOOK at the new page state.\n"
+                "- If a modal/dialog form appears, STOP reopening it and use the visible form fields shown in [PAGE STATE].\n"
+                "- Only click the final submit button after the necessary fields are populated.\n"
+            )
+
+        if "atlassian.net" in _host_lower or "jira" in current_goal_lower or "jira" in user_request_lower:
+            _known_jira_url = _extract_known_jira_url(state)
+            jira_section = (
+                "JIRA BOARD WORKFLOW:\n"
+                "- Prefer the board's inline quick-add input when it is visible.\n"
+                "- If you see an input like 'What needs to be done?', type ONE task there and press Enter after each task.\n"
+                "- Convert GitHub issues into concise engineering backlog items, not generic facts.\n"
+                "- Good tasks are specific features, bug fixes, or tests for the application.\n"
+                "- If the full Jira create dialog is open, fill Summary first, then Description, then click the final Create button.\n"
+                "- In Jira create dialogs, Summary should be the GitHub issue title.\n"
+                "- Description should include the important issue details and the GitHub issue URL so the developer can trace the source.\n"
+                "- Do not click the final Create button until BOTH Summary and Description are populated.\n"
+                "- Do NOT navigate to public Jira sites like jira.atlassian.com when the task is about the user's own scrum board.\n"
+                "- Example style: 'Add regression test for Google account chooser', "
+                "'Implement Jira board quick-add fallback', "
+                "'Fix Amazon product-title verification on search results'.\n"
+            )
+            if _known_jira_url:
+                jira_section += f"- Known Jira workspace/board URL: {_known_jira_url}\n"
+            else:
+                jira_section += "- If the user's actual workspace URL is unknown, ask for it instead of guessing a public Jira URL.\n"
+            if state.get("jira_quick_add_visible"):
+                jira_section += "- The quick-add input is visible right now, so use it instead of the full Create dialog.\n"
+            _site_guidance.append(jira_section)
+
+        if any(word in current_goal_lower for word in ("email", "verification code", "2fa")):
+            _site_guidance.append(
+                "EMAIL & VERIFICATION CODE WORKFLOW:\n"
+                "- Use get_page_content to READ the email body text.\n"
+                "- NEVER ask the user for the verification code if it is present in the inbox/email body.\n"
+                "- Switch back to the original site before typing the code.\n"
+            )
+
+        if _host_lower in {"www.google.com", "google.com", "www.bing.com", "bing.com"} or any(
+            word in current_goal_lower for word in ("research", "search", "look up", "look for")
+        ):
+            _site_guidance.append(
+                "WEB SEARCH / RESEARCH:\n"
+                "- Use the main search page, then open 1-2 real result pages to read actual content.\n"
+                "- Google snippets alone are not enough for research goals.\n"
+                "- Use the exact href from the interactive elements list when opening results.\n"
+            )
+
+        if "github.com" in _host_lower or "github" in current_goal_lower or "github" in user_request_lower:
+            _site_guidance.append(
+                "GITHUB NAVIGATION:\n"
+                "- Prefer the repo root and API data over guessing paths.\n"
+                "- Never guess owner/repo names when the API can provide them.\n"
+            )
+
+        if any(word in current_goal_lower for word in ("cart", "buy", "product", "flavor", "search amazon", "search ebay")) or any(
+            host in _host_lower for host in ("amazon.", "ebay.")
+        ):
+            _site_guidance.append(
+                "PRODUCT SEARCH:\n"
+                "- On e-commerce sites, prefer products whose visible title matches all important requested words.\n"
+                "- If adding to cart, open the product page first and verify the title before buying/adding.\n"
+            )
+
+        conditional_prompt = ""
+        if _site_guidance:
+            conditional_prompt = "\n".join(section.strip() for section in _site_guidance) + "\n\n"
 
         system_prompt = (
             "You are a browser automation agent with FULL control of a real browser.\n"
@@ -1010,99 +1477,12 @@ def build_graph(agent):
             "  button — just press Enter. This is MORE RELIABLE.\n"
             "- For any form with a single input (search, verification code, etc.),\n"
             "  prefer pressing Enter over finding and clicking a submit button.\n\n"
-            "LOGIN FLOW — MANDATORY:\n"
-            "- BEFORE attempting any login, CHECK if you are ALREADY LOGGED IN.\n"
-            "  The observation above includes a login-state line when the page\n"
-            "  shows authenticated indicators (inbox loaded, compose button,\n"
-            "  sign-out link, account/profile menu). If you see\n"
-            "  '⚠ ALREADY LOGGED IN', SKIP get_saved_credentials and auto_login.\n"
-            "- Only call get_saved_credentials + auto_login when you are on a\n"
-            "  site's login page AND the page has login input fields.\n"
-            "- When you DO need to log in:\n"
-            "  1. Navigate to the site's OWN login page FIRST.\n"
-            "  2. Call get_saved_credentials with the site's domain.\n"
-            "  3. If credentials are found, call auto_login immediately.\n"
-            "  4. auto_login handles multi-step forms, entering both username\n"
-            "     AND password, clicking continue/next, and dismissing popups.\n"
-            "  5. NEVER manually type usernames or passwords with type_text.\n"
-            "  6. Only ask the user if NO saved credentials exist.\n"
-            "- ⚠ auto_login ONLY works on the site's OWN login page.\n"
-            "  Do NOT call auto_login while on an unrelated site.\n"
-            "  Example: to log into Gmail, navigate to mail.google.com FIRST.\n"
-            "- Do NOT pre-fetch credentials for sites you haven't navigated to yet.\n"
-            "  Only look up credentials when you are ABOUT to log in.\n\n"
-            "EMAIL & VERIFICATION CODE WORKFLOW — CRITICAL:\n"
-            "- In email inboxes (Gmail, Outlook, Yahoo), the NEWEST emails\n"
-            "  appear at the TOP of the inbox list.\n"
-            "- In email THREADS (multiple replies in a conversation), the\n"
-            "  NEWEST message is at the BOTTOM of the thread.\n"
-            "- To extract a verification code from an email:\n"
-            "  1. Open the email in the inbox.\n"
-            "  2. Use get_page_content to READ the email body text.\n"
-            "  3. Find the numeric code in the text (e.g. 5-6 digit number).\n"
-            "  4. NEVER ask the user for the code — extract it yourself.\n"
-            "- AFTER extracting the code, you MUST switch_to_tab to the\n"
-            "  ORIGINAL site (e.g. investopedia, ebay) BEFORE typing the code.\n"
-            "  ⚠ NEVER type a verification code into the email page.\n"
-            "  ⚠ ALWAYS check the current URL — if it contains 'mail.google',\n"
-            "  'outlook', or 'yahoo', you are on the EMAIL tab, NOT the target.\n"
-            "  ⚠ switch_to_tab FIRST, then type the code.\n\n"
-            "TAB MANAGEMENT:\n"
-            "- Use open_new_tab when you need to visit a DIFFERENT site without\n"
-            "  losing your place (e.g. checking email for a 2FA code, comparing\n"
-            "  prices on another site, looking up information).\n"
-            "- Give tabs short, meaningful labels (e.g. 'gmail', 'ebay', 'amazon').\n"
-            "- After completing work in a secondary tab, ALWAYS switch_to_tab\n"
-            "  back to the original tab.\n"
-            "- Close tabs you no longer need with close_tab.\n"
-            "- When a task requires 2FA / verification codes sent via email:\n"
-            "  1. open_new_tab to the email provider (e.g. mail.google.com)\n"
-            "  2. Call get_saved_credentials + auto_login if login is needed\n"
-            "  3. Find the verification email and open it\n"
-            "  4. Use get_page_content to READ the code from the email body\n"
-            "  5. switch_to_tab back to the ORIGINAL site\n"
-            "  6. Type the code into the verification field on that site\n"
-            "  7. close_tab the email tab when done\n\n"
             "INFORMATION EXTRACTION — READ BEFORE ACTING:\n"
             "- The Content section in [PAGE STATE] contains the visible text on\n"
             "  the current page. READ IT before deciding your next action.\n"
             "- REMEMBER what you read! When you later compose an email or report,\n"
             "  use the information you already extracted from earlier pages.\n"
             "  Your full conversation history is preserved.\n\n"
-            "WEB SEARCH & RESEARCH — MANDATORY STEPS:\n"
-            "- To search the web, navigate to https://www.google.com (NOT imghp,\n"
-            "  NOT images.google.com). Use the main search page.\n"
-            "- Type your query into the search box and press Enter.\n"
-            "- When typing into a search box that already has text, the field\n"
-            "  is auto-cleared. Just provide your full new query.\n"
-            "- After search results load, read the snippets for an overview.\n"
-            "- Google snippets alone are NOT enough for research goals.\n"
-            "  Open 1-2 of the top results to read full article content.\n"
-            "- SPEED RULE: Visit at MOST 2-3 pages per research goal. Read\n"
-            "  each page ONCE, extract what you need, then move on. Do NOT\n"
-            "  visit 5+ pages — depth beats breadth for a demo.\n"
-            "- PREFER OFFICIAL SOURCES: When researching specific companies\n"
-            "  (OpenAI, Google, Anthropic, etc.), go directly to their official\n"
-            "  blog/newsroom after the Google search. Skip news aggregators.\n"
-            "- CRITICAL: When clicking search results, use the EXACT href\n"
-            "  from the interactive elements list. The href contains the\n"
-            "  full URL (e.g. https://reuters.com/technology/ai-breakthrough-2026).\n"
-            "  Pass this full href to open_link. Do NOT guess or shorten URLs.\n"
-            "  Do NOT navigate to generic section pages like /artificial-intelligence/.\n"
-            "- After reading an article, move on. Do NOT go_back to search\n"
-            "  results unless you found zero useful information.\n"
-            "- NEVER go_back more than once. Try a DIFFERENT site with open_link.\n"
-            "- Only AFTER you have read actual article content should you\n"
-            "  consider the research goal complete.\n\n"
-            "GITHUB NAVIGATION:\n"
-            "- When visiting a GitHub repository, always navigate to the repo\n"
-            "  ROOT (e.g. https://github.com/owner/repo), not to tabs like\n"
-            "  /actions, /issues, or /pulls.\n"
-            "- The README is displayed on the repo root page — scroll down\n"
-            "  to read it. You do NOT need to open /blob/main/README.md.\n"
-            "- When reading a long page (README, article), scrolling multiple\n"
-            "  times is perfectly fine — keep scrolling until you've read\n"
-            "  the content you need.\n\n"
             "ON-SITE SEARCH — USE IT WISELY:\n"
             "- When [PAGE STATE] shows a 🔍 SEARCH BAR hint, use it ONLY to\n"
             "  find content that BELONGS to the current site.\n"
@@ -1113,29 +1493,7 @@ def build_graph(agent):
             "  blog.google — navigate directly to anthropic.com instead).\n"
             "- Only go back to Google if the current site doesn't have what\n"
             "  you're looking for.\n\n"
-            "PRODUCT SEARCH & PRICE COMPARISON:\n"
-            "- On e-commerce sites (Amazon, eBay, etc.), product search result\n"
-            "  pages ALREADY show product names, prices, and ratings in the\n"
-            "  Content section. READ the Content — you do NOT need to scroll\n"
-            "  endlessly. Scroll 1-2 times to see more results, then EXTRACT\n"
-            "  the information and respond with a text summary.\n"
-            "- If you need detailed info (full specs, reviews), click into ONE\n"
-            "  product page, read it, then respond.\n"
-            "- STOP SCROLLING RULE: If you have scrolled 3+ times on the same\n"
-            "  page, you have enough data. Respond with what you found.\n"
-            "- When comparing prices across sites, note the price on site A,\n"
-            "  then open_new_tab or switch_to_tab to site B, find the product,\n"
-            "  note that price, then give the comparison in a text response.\n"
-            "- Close tabs you no longer need to keep context manageable.\n\n"
-            "PREFERRED SERVICE URLS (use these instead of guessing):\n"
-            "- Google Search → https://www.google.com\n"
-            "- Gmail / Google login → https://mail.google.com\n"
-            "- Outlook / Microsoft → https://outlook.live.com\n"
-            "- Yahoo Mail → https://mail.yahoo.com\n"
-            "- Amazon → https://www.amazon.com\n"
-            "- eBay → https://www.ebay.com\n"
-            "- GitHub → https://github.com\n"
-            "Do NOT use marketing/workspace/promo/images URLs.\n\n"
+            f"{conditional_prompt}"
             "GOAL FOCUS — CRITICAL:\n"
             "- [TASK] shows your CURRENT GOAL. Focus ONLY on that goal.\n"
             "- You MUST use browser tools (navigate, click, type, open_link)\n"
@@ -1289,10 +1647,18 @@ def build_graph(agent):
         last_name = ""
         category = "none"
         _gh_repos_update = None
+        _gh_issues_update = None
 
         for tc in pending:
             name = tc["name"]
             last_name = name
+            _goal_idx = state.get("current_goal_index", 0)
+            _goals = state.get("sub_goals") or []
+            _current_goal = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
+            _login_kw = {"sign in", "signin", "log in", "login",
+                         "sign-in", "log-in", "authenticate",
+                         "use my account", "my account"}
+            _login_goal_active = any(w in _current_goal for w in _login_kw)
 
             # Classify action
             if name in MUTATING_ACTIONS:
@@ -1308,10 +1674,17 @@ def build_graph(agent):
                     _args = json.loads(tc["arguments"]) if tc["arguments"] else {}
                     _target = _args.get("target") or {}
                     _target_text = (_target.get("text") or "").strip()
-                    _has_id = bool(_target.get("id") or _target.get("href")
-                                   or _target.get("aria-label") or _target.get("aria_label")
-                                   or _target.get("name"))
-                    if not _has_id and (not _target_text or _target_text.lower() == "n/a"):
+                    _cur_url = (state.get("current_url") or "").lower()
+                    _href = (_target.get("href") or "").strip()
+                    _has_useful_locator = bool(
+                        _target.get("id")
+                        or _target.get("selector")
+                        or _target.get("aria-label")
+                        or _target.get("aria_label")
+                        or _target.get("name")
+                        or (_href and _href.lower() != _cur_url)
+                    )
+                    if not _has_useful_locator and (not _target_text or _target_text.lower() == "n/a"):
                         print(f"  BLOCKED: click with empty target — read the page content instead")
                         new_turn.append({
                             "role": "tool",
@@ -1328,23 +1701,144 @@ def build_graph(agent):
                         last_result = {"success": False, "error": "empty target blocked"}
                         category = "read_only"
                         continue
+                    if _login_goal_active and (
+                        "amazon." in _cur_url or _cur_url.rstrip("/") in {"https://www.amazon.com", "http://www.amazon.com"}
+                    ):
+                        _loginish = {"sign in", "signin", "log in", "login", "account", "accounts & lists"}
+                        _locator_text = " ".join([
+                            _target_text.lower(),
+                            str(_target.get("aria-label") or _target.get("aria_label") or "").lower(),
+                            str(_target.get("name") or "").lower(),
+                        ])
+                        if not any(word in _locator_text for word in _loginish):
+                            print("  BLOCKED: login click must target a visible sign-in/account control")
+                            new_turn.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": name,
+                                "content": json.dumps({
+                                    "success": False,
+                                    "error": "You are on the homepage and need to log in. Click a real visible sign-in/account control from the Interactive elements list, not a generic or empty target."
+                                }),
+                            })
+                            last_result = {"success": False, "error": "homepage login click blocked"}
+                            category = "read_only"
+                            continue
+                    if "amazon." in _cur_url and "/s?" in _cur_url:
+                        _cartish = {"add to cart", "add to basket"}
+                        if _target_text.lower() in _cartish:
+                            _locator_text = " ".join([
+                                _target_text.lower(),
+                                str(_target.get("href") or "").lower(),
+                                str(_target.get("id") or "").lower(),
+                                str(_target.get("selector") or "").lower(),
+                            ])
+                            if "result" not in _locator_text and "asin" not in _locator_text and (_target.get("href") or "").strip() == "":
+                                print("  BLOCKED: generic add-to-cart click on Amazon results")
+                                new_turn.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc["id"],
+                                    "name": name,
+                                    "content": json.dumps({
+                                        "success": False,
+                                        "error": "Do not click a generic 'Add to cart' button on Amazon search results. First open the product whose title best matches the requested flavor words, verify the product page title, then add that specific item to cart."
+                                    }),
+                                })
+                                last_result = {"success": False, "error": "generic add-to-cart blocked"}
+                                category = "read_only"
+                                continue
+                    if "atlassian.net" in _cur_url and state.get("form_dialog_visible"):
+                        _closeish = {"close", "cancel", "dismiss", "x", "discard", "discard draft"}
+                        _user_req_lower = (state.get("user_request") or "").lower()
+                        _goal_lower = str((_goals[_goal_idx] if _goal_idx < len(_goals) else "")).lower()
+                        _user_wants_abandon = any(
+                            phrase in _user_req_lower or phrase in _goal_lower
+                            for phrase in ("cancel", "close", "discard", "abandon", "stop creating")
+                        )
+                        if _target_text.lower() in _closeish and not _user_wants_abandon:
+                            print("  BLOCKED: Jira create dialog close/cancel")
+                            new_turn.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": name,
+                                "content": json.dumps({
+                                    "success": False,
+                                    "error": "A Jira create dialog is open. Do not close, cancel, dismiss, or discard it unless the user explicitly asks to abandon the draft. Fill Summary and Description, then click the final Create button inside the dialog."
+                                }),
+                            })
+                            last_result = {"success": False, "error": "jira dialog close blocked"}
+                            category = "read_only"
+                            continue
+                    if (
+                        "atlassian.net" in _cur_url
+                        and "/boards/" in _cur_url
+                        and _target_text.lower() == "create"
+                        and state.get("jira_quick_add_visible")
+                    ):
+                        _goal_lower = (state.get("sub_goals") or [""])[state.get("current_goal_index", 0)] if (state.get("sub_goals") or []) else ""
+                        _goal_lower = str(_goal_lower).lower()
+                        if "open the scrum board" in _goal_lower or "open your scrum board" in _goal_lower:
+                            print("  BLOCKED: Jira board already open")
+                            new_turn.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": name,
+                                "content": json.dumps({
+                                    "success": False,
+                                    "error": "You are already on the Jira scrum board. Do not click 'Create' during the board-navigation goal. Finish this goal by confirming the board is open."
+                                }),
+                            })
+                            last_result = {"success": False, "error": "jira board already open"}
+                            category = "read_only"
+                            continue
+                        if "create task" in _goal_lower or "create tasks" in _goal_lower or "create issue" in _goal_lower:
+                            print("  BLOCKED: Use Jira quick-add instead of Create")
+                            new_turn.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": name,
+                                "content": json.dumps({
+                                    "success": False,
+                                    "error": "On this Jira board, add tasks through the inline To Do input labeled 'What needs to be done?'. Type one concrete engineering task there, press Enter, then repeat for the next task. Do not click the full 'Create' button for this workflow."
+                                }),
+                            })
+                            last_result = {"success": False, "error": "use jira quick-add instead of create"}
+                            category = "read_only"
+                            continue
                 except Exception:
                     pass
 
             # Block auto-login when the user never asked to sign in.
             if name in ("get_saved_credentials", "auto_login"):
-                _user_req_login = (state.get("user_request") or "").lower()
-                _login_kw = {"sign in", "signin", "log in", "login",
-                             "sign-in", "log-in", "authenticate",
-                             "use my account", "my account"}
-                if not any(w in _user_req_login for w in _login_kw):
+                if state.get("login_state"):
                     msg = (
-                        "Login was not requested by the user. Do NOT attempt "
-                        "to sign in unless the user explicitly asks. Most "
-                        "sites allow browsing and searching without an account. "
-                        "Navigate to the site's main page instead."
+                        f"{state['login_state']}. You are already authenticated, so "
+                        f"do not use {name}. Continue with the requested task."
                     )
-                    print(f"  BLOCKED: {name} — user did not request login")
+                    print(f"  BLOCKED: {name} — {state['login_state']}")
+                    new_turn.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "name": name,
+                        "content": json.dumps({
+                            "success": True,
+                            "already_logged_in": True,
+                            "message": msg,
+                        }),
+                    })
+                    last_result = {
+                        "success": True,
+                        "already_logged_in": True,
+                        "message": msg,
+                    }
+                    category = "read_only"
+                    continue
+                if not _login_goal_active:
+                    msg = (
+                        "The current goal is not a login step. Do not use login tools "
+                        "after the workflow has already moved on to another goal."
+                    )
+                    print(f"  BLOCKED: {name} — login goal is not active")
                     new_turn.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -1354,6 +1848,36 @@ def build_graph(agent):
                     last_result = {"success": False, "error": msg}
                     category = "read_only"
                     continue
+                if name == "get_saved_credentials":
+                    _cur_url = (state.get("current_url") or "").lower()
+                    _elements = state.get("visible_elements") or []
+                    _has_login_fields = False
+                    for _el in (_elements or []):
+                        _itype = (_el.get("input_type") or _el.get("type") or "").lower()
+                        _ename = (_el.get("name") or "").lower()
+                        _placeholder = (_el.get("placeholder") or "").lower()
+                        if _itype in ("email", "password") or _ename in ("email", "username", "password", "login_email", "userid"):
+                            _has_login_fields = True
+                            break
+                        if any(kw in _placeholder for kw in ("email", "password", "username", "user id", "sign in")):
+                            _has_login_fields = True
+                            break
+                    if not _has_login_fields:
+                        msg = (
+                            "Do not fetch credentials yet. Start from the site's homepage, "
+                            "click a visible Sign in / Log in / Account control, and only "
+                            "call get_saved_credentials after the login form is visible."
+                        )
+                        print(f"  BLOCKED: {name} — login form not visible on current page")
+                        new_turn.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": name,
+                            "content": json.dumps({"success": False, "error": msg, "current_url": _cur_url}),
+                        })
+                        last_result = {"success": False, "error": msg}
+                        category = "read_only"
+                        continue
 
             # Goal-relevance guard for call_external_api: block API calls
             # whose provider doesn't match the current goal to prevent the
@@ -1432,11 +1956,34 @@ def build_graph(agent):
                 try:
                     _parsed = json.loads(_tc_args) if _tc_args else {}
                     _google_web = "https://www.google.com/webhp?hl=en"
+                    _known_jira_url = _extract_known_jira_url(state)
+                    _goal_idx = state.get("current_goal_index", 0)
+                    _goals = state.get("sub_goals") or []
+                    _cur_goal = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
+                    _user_req = (state.get("user_request") or "").lower()
+                    _jira_board_goal = (
+                        "jira" in _cur_goal
+                        or "jira" in _user_req
+                        or "scrum board" in _cur_goal
+                        or "scrum board" in _user_req
+                    )
                     _rewritten = False
                     for _key in ("url", "href"):
                         _val = _parsed.get(_key, "")
                         if not _val:
                             continue
+                        if _jira_board_goal and _known_jira_url:
+                            _val_lower = _val.lower()
+                            if (
+                                "jira.atlassian.com" in _val_lower
+                                or "atlassian.com/software/jira" in _val_lower
+                                or _val_lower.endswith("/secure/dashboard.jspa")
+                                or _val_lower.endswith("/secure/browseprojects.jspa")
+                            ):
+                                print(f"  REWRITE: {_val} → {_known_jira_url}")
+                                _parsed[_key] = _known_jira_url
+                                _rewritten = True
+                                continue
                         if ("google.com/imghp" in _val
                                 or "images.google.com" in _val):
                             print(f"  REWRITE: {_val} → {_google_web}")
@@ -1471,10 +2018,21 @@ def build_graph(agent):
                         # login/signin path and the user didn't ask to log
                         # in, strip it back to the site root.
                         _user_req = (state.get("user_request") or "").lower()
+                        _cur_goal = ""
+                        try:
+                            _goal_idx = state.get("current_goal_index", 0)
+                            _goals = state.get("sub_goals") or []
+                            _cur_goal = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
+                        except Exception:
+                            _cur_goal = ""
                         _login_words = {"sign in", "signin", "log in", "login",
                                         "sign-in", "log-in", "authenticate",
                                         "use my account"}
-                        _user_wants_login = any(w in _user_req for w in _login_words)
+                        _user_wants_login = (
+                            any(w in _user_req for w in _login_words)
+                            or any(w in _cur_goal for w in _login_words)
+                            or any(frag in _val.lower() for frag in _LOGIN_PATH_FRAGMENTS)
+                        )
                         if not _user_wants_login and not _rewritten:
                             from urllib.parse import urlparse as _urlparse
                             try:
@@ -1499,7 +2057,69 @@ def build_graph(agent):
                                     _rewritten = True
                             except Exception:
                                 pass
+                    if (
+                        name == "agenttrust_browser_action"
+                        and state.get("form_dialog_visible")
+                        and "atlassian.net" in (state.get("current_url") or "").lower()
+                    ):
+                        _target = _parsed.get("target") or {}
+                        _target_text = str(_target.get("text") or "").strip().lower()
+                        if _target_text == "create":
+                            _parsed["target"] = {
+                                "text": "Create",
+                                "selector": "button[data-testid='issue-create.common.ui.footer.create-button'][form='issue-create.ui.modal.create-form'][type='submit']",
+                                "data-testid": "issue-create.common.ui.footer.create-button",
+                                "form": "issue-create.ui.modal.create-form",
+                                "type": "submit",
+                            }
+                            _rewritten = True
                     if _rewritten:
+                        _tc_args = json.dumps(_parsed)
+                except Exception:
+                    pass
+
+            # Rewrite Jira board task entry to the inline quick-add input and
+            # force Enter so each task is actually created on the board.
+            if name == "type_text":
+                try:
+                    _parsed = json.loads(_tc_args) if _tc_args else {}
+                    _cur_url = (state.get("current_url") or "").lower()
+                    _goal_idx = state.get("current_goal_index", 0)
+                    _goals = state.get("sub_goals") or []
+                    _goal_lower = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
+                    if (
+                        "atlassian.net" in _cur_url
+                        and "/boards/" in _cur_url
+                        and state.get("jira_quick_add_visible")
+                        and ("create task" in _goal_lower or "create tasks" in _goal_lower or "create issue" in _goal_lower)
+                    ):
+                        _parsed["target"] = state.get("jira_quick_add_target") or {"placeholder": "What needs to be done?"}
+                        _parsed["press_enter"] = True
+                    elif (
+                        "atlassian.net" in _cur_url
+                        and state.get("form_dialog_visible")
+                        and (
+                            "create task" in _goal_lower
+                            or "create tasks" in _goal_lower
+                            or "create issue" in _goal_lower
+                            or "edit the jira task" in _goal_lower
+                            or "update the jira task" in _goal_lower
+                            or "summary and description" in _goal_lower
+                        )
+                    ):
+                        _text = str(_parsed.get("text") or "")
+                        _target = _parsed.get("target") or {}
+                        _hint = " ".join(
+                            str(_target.get(k) or "")
+                            for k in ("id", "name", "placeholder", "aria-label", "role", "selector", "type")
+                        ).lower()
+                        _mentions_summary = any(k in _hint for k in ("summary", "title"))
+                        _mentions_description = any(k in _hint for k in ("description", "details", "body"))
+                        _looks_like_description = ("\n" in _text) or (len(_text) > 140) or ("- " in _text) or ("* " in _text)
+                        if _mentions_description or _looks_like_description:
+                            _parsed["target"] = {"aria-label": "Description", "role": "textbox"}
+                        elif _mentions_summary or _text.strip():
+                            _parsed["target"] = {"aria-label": "Summary"}
                         _tc_args = json.dumps(_parsed)
                 except Exception:
                     pass
@@ -1563,6 +2183,21 @@ def build_graph(agent):
                             ]
                             if _gh_repos_update:
                                 print(f"  GITHUB CACHE: {len(_gh_repos_update)} repos discovered")
+                    if "api.github.com/repos/" in _url2 and "/issues" in _url2 and isinstance(result, dict):
+                        _data = result.get("data") or result.get("result")
+                        if isinstance(_data, list):
+                            _gh_issues_update = [
+                                {
+                                    "title": issue.get("title", ""),
+                                    "body": issue.get("body", ""),
+                                    "html_url": issue.get("html_url", ""),
+                                    "number": issue.get("number"),
+                                }
+                                for issue in _data
+                                if isinstance(issue, dict) and issue.get("title")
+                            ]
+                            if _gh_issues_update:
+                                print(f"  GITHUB ISSUES: {len(_gh_issues_update)} issues cached")
                 except Exception:
                     pass
 
@@ -1656,6 +2291,8 @@ def build_graph(agent):
         }
         if _gh_repos_update:
             ret["github_repos"] = _gh_repos_update
+        if _gh_issues_update:
+            ret["github_issues"] = _gh_issues_update
         return ret
 
     # ================================================================== #
@@ -1761,6 +2398,14 @@ def build_graph(agent):
         recent = state.get("recent_actions") or []
         sub_goals = state.get("sub_goals") or []
 
+        if state.get("consecutive_failures", 0) > 0:
+            return {
+                "final_response": state.get("final_response") or (
+                    "I could not complete the current goal because the last action failed. "
+                    "Please check the page state and try again."
+                )
+            }
+
         is_last_goal = (goal_idx + 1 >= len(sub_goals))
         prior_had_actions = state.get("total_actions", 0) > 0
 
@@ -1821,6 +2466,95 @@ def build_graph(agent):
         }
 
     # ================================================================== #
+    #  GOOGLE ACCOUNT CHOOSER node — resolve single-account chooser       #
+    # ================================================================== #
+    def google_account_chooser_node(state: AgentState) -> dict:
+        """Auto-select the only visible Google account choice."""
+        target = state.get("google_single_account_target") or {}
+        current_url = state.get("current_url") or ""
+        label = ((state.get("google_account_options") or ["Google account"])[0])[:80]
+        if not target or not current_url:
+            return {
+                "final_response": (
+                    "Google asked which account to use, but I could not identify a clickable account option. "
+                    "Please choose the account manually and try again."
+                )
+            }
+
+        print(f"  GOOGLE CHOOSER: auto-selecting sole account '{label}'")
+        fc = type(
+            "FC",
+            (),
+            {
+                "name": "agenttrust_browser_action",
+                "arguments": json.dumps(
+                    {"action_type": "click", "url": current_url, "target": target}
+                ),
+            },
+        )()
+        result = agent.handle_function_call(fc)
+        progress = _emit_progress(state, f"ACT|Choosing Google account: {label}")
+
+        recent = list(state.get("recent_actions") or [])
+        recent.append(f"agenttrust_browser_action:google-account:{label[:60]}")
+        if len(recent) > 10:
+            recent = recent[-10:]
+
+        return {
+            "last_action_result": result,
+            "last_action_name": "agenttrust_browser_action",
+            "action_category": "mutating",
+            "total_actions": state.get("total_actions", 0) + 1,
+            "recent_actions": recent,
+            "progress_lines": progress,
+            "final_response": "",
+        }
+
+    # ================================================================== #
+    #  JIRA ADD TO SPRINT node — click Jira toast action                  #
+    # ================================================================== #
+    def jira_add_to_sprint_node(state: AgentState) -> dict:
+        """Click Jira's 'Add to ... Sprint' action when it appears."""
+        target = state.get("jira_add_to_sprint_target") or {}
+        current_url = state.get("current_url") or ""
+        label = (state.get("jira_add_to_sprint_label") or "Add to Sprint")[:80]
+        if not target or not current_url:
+            return {
+                "final_response": (
+                    "The Jira Add to Sprint action appeared, but I could not identify a clickable target."
+                )
+            }
+
+        print(f"  JIRA: clicking sprint action '{label}'")
+        fc = type(
+            "FC",
+            (),
+            {
+                "name": "agenttrust_browser_action",
+                "arguments": json.dumps(
+                    {"action_type": "click", "url": current_url, "target": target}
+                ),
+            },
+        )()
+        result = agent.handle_function_call(fc)
+        progress = _emit_progress(state, f"ACT|{label}")
+
+        recent = list(state.get("recent_actions") or [])
+        recent.append(f"agenttrust_browser_action:jira-sprint:{label[:60]}")
+        if len(recent) > 10:
+            recent = recent[-10:]
+
+        return {
+            "last_action_result": result,
+            "last_action_name": "agenttrust_browser_action",
+            "action_category": "mutating",
+            "total_actions": state.get("total_actions", 0) + 1,
+            "recent_actions": recent,
+            "progress_lines": progress,
+            "final_response": "",
+        }
+
+    # ================================================================== #
     #  RESPOND node — produce final output                                #
     # ================================================================== #
     def respond_node(state: AgentState) -> dict:
@@ -1869,6 +2603,8 @@ def build_graph(agent):
         """After the LLM call: execute tools, advance goal, or respond."""
         if state.get("pending_tool_calls"):
             return "tools"
+        if state.get("consecutive_failures", 0) > 0:
+            return "respond"
         # Agent returned text — check if there are more goals
         goal_idx = state.get("current_goal_index", 0)
         sub_goals = state.get("sub_goals") or []
@@ -1892,6 +2628,24 @@ def build_graph(agent):
 
         return "agent"
 
+    def route_after_observe(state: AgentState) -> str:
+        """After observing the page, resolve chooser pages or skip satisfied goals."""
+        if state.get("google_account_choice_needed"):
+            return "respond"
+        _goal_idx = state.get("current_goal_index", 0)
+        _goals = state.get("sub_goals") or []
+        _goal_lower = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
+        if (
+            state.get("jira_add_to_sprint_target")
+            and ("create task" in _goal_lower or "create tasks" in _goal_lower or "create issue" in _goal_lower)
+        ):
+            return "jira_add_to_sprint"
+        if state.get("google_single_account_target"):
+            return "google_account_chooser"
+        if state.get("login_goal_satisfied") or state.get("product_search_goal_satisfied"):
+            return "advance_goal"
+        return "agent"
+
     # ================================================================== #
     #  Assemble the graph                                                 #
     # ================================================================== #
@@ -1899,6 +2653,8 @@ def build_graph(agent):
 
     graph.add_node("plan", plan_node)
     graph.add_node("observe", observe_node)
+    graph.add_node("google_account_chooser", google_account_chooser_node)
+    graph.add_node("jira_add_to_sprint", jira_add_to_sprint_node)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
     graph.add_node("verify", verify_node)
@@ -1921,8 +2677,15 @@ def build_graph(agent):
         {"observe": "observe", "respond": "respond"},
     )
 
-    # observe → agent (LLM sees fresh page state)
-    graph.add_edge("observe", "agent")
+    # observe → advance_goal when login is already satisfied, else → agent
+    graph.add_conditional_edges(
+        "observe",
+        route_after_observe,
+        {"google_account_chooser": "google_account_chooser", "jira_add_to_sprint": "jira_add_to_sprint", "advance_goal": "advance_goal", "agent": "agent", "respond": "respond"},
+    )
+
+    graph.add_edge("google_account_chooser", "verify")
+    graph.add_edge("jira_add_to_sprint", "verify")
 
     # agent → tools | advance_goal (text + more goals) | respond (text + last goal)
     graph.add_conditional_edges(

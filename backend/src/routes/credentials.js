@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { authenticateUser, validateAction } = require('../middleware/auth');
 const pool = require('../config/database');
+const approvalsModule = require('./approvals');
 
 const { encryptJSON, decryptJSON } = require('../utils/crypto');
 const { cwLog } = require('../services/cloudwatch');
@@ -166,12 +167,55 @@ router.delete('/:id', authenticateUser, async (req, res) => {
 router.get('/lookup', validateAction, async (req, res) => {
   await ensureTable();
   try {
-    const { domain } = req.query;
+    const { domain, approvalId } = req.query;
     if (!domain) {
       return res.status(400).json({ success: false, error: 'domain query param required' });
     }
 
     const normalized = normalizeDomain(domain);
+    const approvalUrl = `credential://${normalized}`;
+
+    if (!approvalId) {
+      const approval = approvalsModule.createApproval({
+        sessionId: req.query.sessionId || null,
+        actionId: null,
+        type: 'credential_access',
+        domain: normalized,
+        url: approvalUrl,
+        riskLevel: 'high',
+        reason: `Reveal saved credentials for ${normalized} — requires user approval`,
+        preview: { domain: normalized, username: '(hidden until approved)' },
+        impactSummary: `Reveal saved login credentials for ${normalized}`
+      });
+      return res.status(403).json({
+        success: false,
+        error: `Credential access for ${normalized} requires user approval`,
+        requiresStepUp: true,
+        approvalId: approval.id,
+        riskLevel: 'high',
+        status: 'step_up_required'
+      });
+    }
+
+    const approval = approvalsModule.__pendingApprovals.get(approvalId);
+    if (!approval || approval.type !== 'credential_access' || approval.url !== approvalUrl) {
+      return res.status(403).json({
+        success: false,
+        error: 'Credential access approval is missing or expired',
+        requiresStepUp: true,
+        status: 'step_up_required'
+      });
+    }
+    if (approval.status !== 'approved') {
+      return res.status(403).json({
+        success: false,
+        error: approval.status === 'denied' ? 'Credential access denied by user' : 'Credential access approval pending',
+        requiresStepUp: true,
+        approvalId,
+        riskLevel: 'high',
+        status: 'step_up_required'
+      });
+    }
 
     // Try exact match first, then substring match in both directions
     const result = await pool.query(

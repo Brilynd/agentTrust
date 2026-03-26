@@ -26,6 +26,7 @@ import sys
 import base64
 import io
 import time
+import re
 import zipfile
 import shutil
 
@@ -695,21 +696,66 @@ class BrowserController:
         """
         drv = self._actual_driver
 
-        # Try to extract just the main content area, fall back to body
-        main_text = drv.execute_script("""
+        # Prefer the active modal/dialog when one is visible. This keeps the
+        # agent focused on the popup it must act on instead of reading the page
+        # behind it.
+        content_bits = drv.execute_script("""
+            function isVisible(el) {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && el.offsetParent !== null;
+            }
+
+            const dialogSelectors = [
+                '[role="dialog"]',
+                '[role="alertdialog"]',
+                '[aria-modal="true"]',
+                '[class*="modal"]',
+                '[class*="dialog"]',
+                '[class*="popup"]',
+                '[class*="overlay"]'
+            ];
+
+            const dialogs = Array.from(document.querySelectorAll(dialogSelectors.join(',')))
+                .filter(isVisible)
+                .sort((a, b) => {
+                    const az = parseInt(window.getComputedStyle(a).zIndex || '0', 10) || 0;
+                    const bz = parseInt(window.getComputedStyle(b).zIndex || '0', 10) || 0;
+                    return bz - az;
+                });
+
+            if (dialogs.length > 0) {
+                const dlg = dialogs[0];
+                const heading = dlg.querySelector('h1, h2, h3, [role="heading"]');
+                const headingText = heading ? (heading.innerText || heading.textContent || '').trim() : '';
+                const text = (dlg.innerText || dlg.textContent || '').trim().substring(0, 4000);
+                return {
+                    source: 'dialog',
+                    title: headingText || document.title || '',
+                    text,
+                    html: dlg.outerHTML ? dlg.outerHTML.substring(0, 6000) : ''
+                };
+            }
+
             const main = document.querySelector('main, [role="main"], #content, #main, .main-content, #search, #center-col');
-            if (main) return main.innerText.substring(0, 4000);
-            return document.body.innerText.substring(0, 4000);
-        """) or ""
+            const pageText = main ? main.innerText : document.body.innerText;
+            return {
+                source: 'page',
+                title: document.title || '',
+                text: (pageText || '').substring(0, 4000),
+                html: include_html ? (main ? main.outerHTML : document.body.outerHTML).substring(0, 6000) : ''
+            };
+        """) or {}
 
         content = {
             "url": drv.current_url,
-            "title": drv.title,
-            "text": main_text
+            "title": content_bits.get("title") or drv.title,
+            "text": content_bits.get("text") or "",
+            "source": content_bits.get("source") or "page",
         }
         
         if include_html:
-            content["html"] = drv.page_source[:6000]
+            content["html"] = content_bits.get("html") or drv.page_source[:6000]
         
         return content
     
@@ -852,11 +898,324 @@ class BrowserController:
         Uses _actual_driver directly — validation is handled by BrowserActionExecutor.
         """
         import time
+        from selenium.webdriver.common.keys import Keys
         drv = self._actual_driver
         try:
             element = None
             text_safe = (target.get("text") or "")[:80].strip()
             text_xpath = text_safe.replace("'", "''") if text_safe else ""
+            current_url_lower = (drv.current_url or "").lower()
+            google_account_chooser = (
+                "accounts.google.com" in current_url_lower
+                and "accountchooser" in current_url_lower
+            )
+            jira_page = "atlassian.net" in current_url_lower
+
+            def _first_visible(elements):
+                for el in elements or []:
+                    try:
+                        if el.is_displayed() and el.is_enabled():
+                            return el
+                    except Exception:
+                        continue
+                return None
+
+            def _google_account_row():
+                """Find the actual clickable Google account row, not a child label."""
+                try:
+                    rows = drv.find_elements(
+                        By.XPATH,
+                        "//*[@data-identifier or @data-email or @role='link' or @role='button' or self::button or self::a]"
+                    )
+                    visible_rows = []
+                    seen = set()
+                    for row in rows:
+                        try:
+                            if not row.is_displayed() or not row.is_enabled():
+                                continue
+                            sig = (
+                                row.get_attribute("data-identifier")
+                                or row.get_attribute("data-email")
+                                or row.get_attribute("id")
+                                or row.text
+                            )
+                            sig = (sig or "").strip()
+                            if not sig or sig in seen:
+                                continue
+                            seen.add(sig)
+                            visible_rows.append(row)
+                        except Exception:
+                            continue
+
+                    if len(visible_rows) == 1:
+                        return visible_rows[0]
+                except Exception:
+                    pass
+
+                if not text_xpath:
+                    return None
+
+                chooser_xpaths = [
+                    f"//*[@data-identifier][contains(normalize-space(.), '{text_xpath}')]",
+                    f"//*[@data-email][contains(normalize-space(.), '{text_xpath}')]",
+                    f"//*[@role='link'][contains(normalize-space(.), '{text_xpath}')]",
+                    f"//*[@role='button'][contains(normalize-space(.), '{text_xpath}')]",
+                    f"//button[contains(normalize-space(.), '{text_xpath}')]",
+                    f"//a[contains(normalize-space(.), '{text_xpath}')]",
+                    f"//*[contains(normalize-space(.), '{text_xpath}')]/ancestor::*[@data-identifier or @data-email or @role='link' or @role='button' or self::button or self::a][1]",
+                ]
+                for xpath in chooser_xpaths:
+                    try:
+                        found = drv.find_elements(By.XPATH, xpath)
+                        picked = _first_visible(found)
+                        if picked is not None:
+                            return picked
+                    except Exception:
+                        continue
+                return None
+
+            def _google_chooser_state():
+                """Capture lightweight state so chooser progress can be detected."""
+                try:
+                    content = self.get_page_content(include_html=False) or {}
+                    page_text = (content.get("text") or "")[:800].strip().lower()
+                    page_title = (content.get("title") or "").strip().lower()
+                except Exception:
+                    page_text = ""
+                    page_title = ""
+                try:
+                    has_password = bool(
+                        drv.find_elements(By.CSS_SELECTOR, "input[type='password']")
+                    )
+                except Exception:
+                    has_password = False
+                return {
+                    "url": drv.current_url,
+                    "title": page_title,
+                    "text": page_text,
+                    "has_password": has_password,
+                }
+
+            def _google_chooser_progressed(before_state):
+                """Google may keep the host while changing the page meaningfully."""
+                current_state = _google_chooser_state()
+                cur_url_lower = (current_state["url"] or "").lower()
+                before_url_lower = (before_state.get("url") or "").lower()
+                if cur_url_lower != before_url_lower:
+                    return True, current_state
+                if "accountchooser" not in cur_url_lower:
+                    return True, current_state
+                if current_state.get("has_password"):
+                    return True, current_state
+                if current_state.get("title") != before_state.get("title"):
+                    return True, current_state
+                before_text = before_state.get("text") or ""
+                current_text = current_state.get("text") or ""
+                if current_text and current_text != before_text:
+                    chooser_terms = ("choose an account", "use another account")
+                    if any(term in before_text for term in chooser_terms) and not any(
+                        term in current_text for term in chooser_terms
+                    ):
+                        return True, current_state
+                    if "continue" in current_text and "atlassian" in current_text:
+                        return True, current_state
+                    if "allow" in current_text and "atlassian" in current_text:
+                        return True, current_state
+                return False, current_state
+
+            def _jira_dialog_button():
+                """Prefer buttons inside the active Jira dialog over page chrome."""
+                if not jira_page or not text_safe:
+                    return None
+                try:
+                    def _exact_create_button():
+                        for sel in (
+                            "button[data-testid='issue-create.common.ui.footer.create-button'][form='issue-create.ui.modal.create-form'][type='submit']",
+                            "button[data-testid='issue-create.common.ui.footer.create-button'][type='submit']",
+                            "button[form='issue-create.ui.modal.create-form'][type='submit']",
+                        ):
+                            try:
+                                picked = _first_visible(drv.find_elements(By.CSS_SELECTOR, sel))
+                                if picked is not None:
+                                    return picked
+                            except Exception:
+                                continue
+                        return None
+
+                    dialogs = drv.find_elements(By.CSS_SELECTOR, "[role='dialog'], [aria-modal='true']")
+                    visible_dialogs = []
+                    for dlg in dialogs:
+                        try:
+                            if dlg.is_displayed():
+                                visible_dialogs.append(dlg)
+                        except Exception:
+                            continue
+                    if not visible_dialogs:
+                        return None
+
+                    draft_dialog = None
+                    create_dialog = None
+                    for dlg in visible_dialogs:
+                        try:
+                            dlg_text = (dlg.text or "").lower()
+                        except Exception:
+                            dlg_text = ""
+                        if "draft work item in progress" in dlg_text:
+                            draft_dialog = dlg
+                        if ("create task" in dlg_text or "create issue" in dlg_text or "summary" in dlg_text):
+                            create_dialog = dlg
+
+                    # If the agent asks for Create while the draft warning is on screen,
+                    # keep the current draft instead of discarding or closing it.
+                    if draft_dialog is not None and text_safe.lower() == "create":
+                        exact_create = _exact_create_button()
+                        if exact_create is not None:
+                            return exact_create
+                        for sel in (
+                            ".//button[contains(normalize-space(.), 'Keep editing')]",
+                            ".//*[@role='button'][contains(normalize-space(.), 'Keep editing')]",
+                        ):
+                            try:
+                                btn = draft_dialog.find_element(By.XPATH, sel)
+                                if btn.is_displayed() and btn.is_enabled():
+                                    return btn
+                            except Exception:
+                                continue
+
+                    active_dialog = draft_dialog or create_dialog
+                    if active_dialog is None:
+                        return None
+
+                    desired_text = text_safe.lower()
+                    if desired_text == "create" and create_dialog is not None:
+                        # Prefer Jira's actual modal submit button over any other
+                        # visible "Create" control on the page.
+                        exact_create = _exact_create_button()
+                        if exact_create is not None:
+                            return exact_create
+                        xpath_candidates = [
+                            ".//button[normalize-space(.)='Create']",
+                            ".//*[@role='button'][normalize-space(.)='Create']",
+                            ".//button[contains(normalize-space(.), 'Create')]",
+                            ".//*[@role='button'][contains(normalize-space(.), 'Create')]",
+                            ".//input[@type='submit' and (@value='Create' or contains(@value, 'Create'))]",
+                        ]
+                    elif desired_text in {"keep editing", "discard draft", "cancel"}:
+                        xpath_candidates = [
+                            f".//button[contains(normalize-space(.), '{text_xpath}')]",
+                            f".//*[@role='button'][contains(normalize-space(.), '{text_xpath}')]",
+                        ]
+                    else:
+                        xpath_candidates = []
+
+                    for xpath in xpath_candidates:
+                        try:
+                            found = active_dialog.find_elements(By.XPATH, xpath)
+                            picked = _first_visible(found)
+                            if picked is not None:
+                                return picked
+                        except Exception:
+                            continue
+                except Exception:
+                    return None
+                return None
+
+            def _jira_create_dialog_ready():
+                """Check whether Jira create dialog has the required fields filled."""
+                if not jira_page:
+                    return True, ""
+                try:
+                    def _normalize_jira_description(raw: str) -> str:
+                        text = (raw or "").strip()
+                        if not text:
+                            return ""
+                        # Strip common Jira editor placeholder/chrome text so
+                        # only actual user-entered description content counts.
+                        junk_phrases = [
+                            "improve description",
+                            "type /ai to ask rovo or @ to mention and notify someone.",
+                            "type /ai to ask rovo",
+                            "ask rovo",
+                            "similar work items",
+                            "no results found.",
+                        ]
+                        lowered = text.lower()
+                        for phrase in junk_phrases:
+                            lowered = lowered.replace(phrase, "")
+                        # Remove leftover toolbar-only glyph/shortcut labels.
+                        lowered = re.sub(r"\b(tt|b|a)\b", " ", lowered)
+                        lowered = re.sub(r"\s+", " ", lowered).strip()
+                        return lowered
+
+                    dialogs = drv.find_elements(By.CSS_SELECTOR, "[role='dialog'], [aria-modal='true']")
+                    create_dialog = None
+                    for dlg in dialogs:
+                        try:
+                            if not dlg.is_displayed():
+                                continue
+                            dlg_text = (dlg.text or "").lower()
+                            if "create task" in dlg_text or "create issue" in dlg_text or "summary" in dlg_text:
+                                create_dialog = dlg
+                                break
+                        except Exception:
+                            continue
+                    if create_dialog is None:
+                        return True, ""
+
+                    summary_value = ""
+                    for sel in (
+                        "input[aria-label*='Summary']",
+                        "textarea[aria-label*='Summary']",
+                        "input[name*='summary']",
+                        "textarea[name*='summary']",
+                        "input[id*='summary']",
+                        "textarea[id*='summary']",
+                    ):
+                        try:
+                            for el in create_dialog.find_elements(By.CSS_SELECTOR, sel):
+                                if el.is_displayed():
+                                    summary_value = (el.get_attribute("value") or el.text or "").strip()
+                                    if summary_value:
+                                        break
+                        except Exception:
+                            continue
+                        if summary_value:
+                            break
+
+                    description_value = ""
+                    for sel in (
+                        "textarea[aria-label*='Description']",
+                        "textarea[name*='description']",
+                        "textarea[id*='description']",
+                        "[data-testid*='description'] [contenteditable='true']",
+                        "[contenteditable='true'][role='textbox']",
+                        ".ProseMirror",
+                        "[contenteditable='true']",
+                    ):
+                        try:
+                            for el in create_dialog.find_elements(By.CSS_SELECTOR, sel):
+                                if not el.is_displayed():
+                                    continue
+                                description_value = _normalize_jira_description(
+                                    el.get_attribute("value")
+                                    or el.text
+                                    or el.get_attribute("textContent")
+                                    or ""
+                                )
+                                if description_value:
+                                    break
+                        except Exception:
+                            continue
+                        if description_value:
+                            break
+
+                    if not summary_value:
+                        return False, "Jira Create Task dialog is missing Summary. Fill the Summary field before creating the task."
+                    if not description_value:
+                        return False, "Jira Create Task dialog is missing Description. Fill the Description field, including the relevant GitHub issue details and link, before creating the task."
+                except Exception:
+                    return True, ""
+                return True, ""
             
             if target.get("id"):
                 try:
@@ -886,6 +1245,12 @@ class BrowserController:
                     element = drv.find_element(By.CSS_SELECTOR, f"[aria-label='{al}']")
                 except (NoSuchElementException, Exception):
                     pass
+
+            if not element and google_account_chooser:
+                element = _google_account_row()
+
+            if not element:
+                element = _jira_dialog_button()
 
             # text + optional nth (0-based) to disambiguate repeated labels like "Add to Cart"
             nth = target.get("nth", 0) if target.get("nth") is not None else 0
@@ -923,6 +1288,11 @@ class BrowserController:
             
             if not element:
                 return {"success": False, "message": "Element not found with provided identifiers"}
+
+            if jira_page and text_safe.lower() == "create":
+                _ready, _reason = _jira_create_dialog_ready()
+                if not _ready:
+                    return {"success": False, "message": _reason}
             
             # Scroll into view
             try:
@@ -943,6 +1313,8 @@ class BrowserController:
                 return {"success": False, "message": "Element found but not visible"}
             
             clicked = False
+            before_url = drv.current_url
+            before_state = _google_chooser_state() if google_account_chooser else {}
             try:
                 element.click()
                 clicked = True
@@ -958,7 +1330,121 @@ class BrowserController:
                         pass
             
             if clicked:
-                time.sleep(0.3)
+                if google_account_chooser:
+                    progressed = False
+                    latest_state = before_state
+                    for _ in range(12):
+                        time.sleep(0.5)
+                        progressed, latest_state = _google_chooser_progressed(before_state)
+                        if progressed:
+                            break
+                    if not progressed:
+                        try:
+                            drv.execute_script("arguments[0].focus();", element)
+                        except Exception:
+                            pass
+                        try:
+                            element.send_keys(Keys.RETURN)
+                        except Exception:
+                            try:
+                                drv.find_element(By.TAG_NAME, "body").send_keys(Keys.RETURN)
+                            except Exception:
+                                pass
+                        for _ in range(8):
+                            time.sleep(0.5)
+                            progressed, latest_state = _google_chooser_progressed(before_state)
+                            if progressed:
+                                break
+                    if not progressed:
+                        return {
+                            "success": False,
+                            "message": "Google account chooser did not advance after selecting the account",
+                            "new_url": latest_state.get("url") or drv.current_url,
+                        }
+                else:
+                    time.sleep(0.3)
+
+                if jira_page and text_safe.lower() == "create":
+                    try:
+                        draft_dialogs = drv.find_elements(By.CSS_SELECTOR, "[role='dialog'], [aria-modal='true']")
+                        draft_visible = False
+                        for dlg in draft_dialogs:
+                            try:
+                                if dlg.is_displayed() and "draft work item in progress" in (dlg.text or "").lower():
+                                    draft_visible = True
+                                    break
+                            except Exception:
+                                continue
+                        if draft_visible:
+                            keep_editing = _first_visible(drv.find_elements(
+                                By.XPATH,
+                                "//button[contains(normalize-space(.), 'Keep editing')]"
+                                "|//*[@role='button'][contains(normalize-space(.), 'Keep editing')]"
+                            ))
+                            if keep_editing is not None:
+                                try:
+                                    keep_editing.click()
+                                except Exception:
+                                    try:
+                                        drv.execute_script("arguments[0].click();", keep_editing)
+                                    except Exception:
+                                        keep_editing = None
+                            if keep_editing is not None:
+                                time.sleep(0.2)
+                                final_create = _first_visible(drv.find_elements(
+                                    By.CSS_SELECTOR,
+                                    "button[data-testid='issue-create.common.ui.footer.create-button'][form='issue-create.ui.modal.create-form'][type='submit'], "
+                                    "button[data-testid='issue-create.common.ui.footer.create-button'][type='submit'], "
+                                    "button[form='issue-create.ui.modal.create-form'][type='submit']"
+                                ))
+                                if final_create is not None:
+                                    try:
+                                        final_create.click()
+                                    except Exception:
+                                        drv.execute_script("arguments[0].click();", final_create)
+                                    time.sleep(0.3)
+
+                        # After Jira creates the work item, a bottom-left flag can
+                        # appear a moment later with the action that adds it to the
+                        # sprint/board. Catch that here instead of relying on a later
+                        # observe cycle to notice it in time.
+                        for _ in range(10):
+                            add_to_sprint = None
+                            try:
+                                add_to_sprint = _first_visible(drv.find_elements(
+                                    By.CSS_SELECTOR,
+                                    "[data-testid='platform.ui.flags.common.ui.common-flag-v2-actions'] button"
+                                ))
+                            except Exception:
+                                add_to_sprint = None
+
+                            if add_to_sprint is None:
+                                try:
+                                    candidates = drv.find_elements(
+                                        By.XPATH,
+                                        "//div[@data-testid='platform.ui.flags.common.ui.common-flag-v2-actions']"
+                                        "//button[contains(normalize-space(.), 'Add to ') and contains(normalize-space(.), 'Sprint')]"
+                                        "|//button[contains(normalize-space(.), 'Add to ') and contains(normalize-space(.), 'Sprint')]"
+                                    )
+                                    add_to_sprint = _first_visible(candidates)
+                                except Exception:
+                                    add_to_sprint = None
+
+                            if add_to_sprint is not None:
+                                try:
+                                    add_to_sprint.click()
+                                except Exception:
+                                    try:
+                                        drv.execute_script("arguments[0].click();", add_to_sprint)
+                                    except Exception:
+                                        add_to_sprint = None
+                                if add_to_sprint is not None:
+                                    time.sleep(0.3)
+                                    break
+
+                            time.sleep(0.5)
+                    except Exception:
+                        pass
                 return {"success": True, "message": "Element clicked successfully", "new_url": drv.current_url}
             return {"success": False, "message": "Click failed (element may be obscured or not interactable)"}
         
@@ -1089,9 +1575,149 @@ class BrowserController:
         drv = self._actual_driver
         try:
             element = None
+            current_url_lower = (drv.current_url or "").lower()
+
+            def _find_jira_dialog_field():
+                """Resolve Jira create-dialog fields by semantic label."""
+                if "atlassian.net" not in current_url_lower:
+                    return None
+                try:
+                    field_hint = " ".join(
+                        str(target.get(k) or "")
+                        for k in ("id", "name", "placeholder", "aria-label", "selector", "type", "role")
+                    ).lower()
+                    is_summary = any(k in field_hint for k in ("summary", "title"))
+                    is_description = any(k in field_hint for k in ("description", "details", "body"))
+                    is_generic = not is_summary and not is_description
+
+                    dialogs = drv.find_elements(By.CSS_SELECTOR, "[role='dialog'], [aria-modal='true']")
+                    visible_dialog = None
+                    for dlg in dialogs:
+                        try:
+                            if dlg.is_displayed():
+                                visible_dialog = dlg
+                                break
+                        except Exception:
+                            continue
+                    if visible_dialog is None:
+                        return None
+
+                    def _is_bad_jira_field(el) -> bool:
+                        """Reject prefilled Jira dropdown fields like Space/Work type/Status."""
+                        try:
+                            tag = (el.tag_name or "").lower()
+                            role = (el.get_attribute("role") or "").lower()
+                            cls = (el.get_attribute("class") or "").lower()
+                            aria = (el.get_attribute("aria-label") or "").lower()
+                            text_blob = " ".join(
+                                part for part in [
+                                    el.text or "",
+                                    el.get_attribute("value") or "",
+                                    el.get_attribute("placeholder") or "",
+                                    aria,
+                                ] if part
+                            ).lower()
+                            if role in ("combobox", "listbox"):
+                                return True
+                            if "select" in cls or "dropdown" in cls:
+                                return True
+                            if any(word in text_blob for word in ("my team", "scrum", "task", "to do")) and tag != "textarea":
+                                return True
+                        except Exception:
+                            return False
+                        return False
+
+                    jira_selectors = []
+                    if is_summary or is_generic:
+                        jira_selectors = [
+                            "input[aria-label*='Summary']",
+                            "textarea[aria-label*='Summary']",
+                            "input[name*='summary']",
+                            "textarea[name*='summary']",
+                            "input[id*='summary']",
+                            "textarea[id*='summary']",
+                            "[data-testid*='summary'] input",
+                            "[data-testid*='summary'] textarea",
+                        ]
+                    elif is_description:
+                        jira_selectors = [
+                            "textarea[aria-label*='Description']",
+                            "textarea[name*='description']",
+                            "textarea[id*='description']",
+                            "[data-testid*='description'] textarea",
+                            "[data-testid*='description'] [contenteditable='true']",
+                            "[data-testid*='description'] [role='textbox']",
+                            "[contenteditable='true'][role='textbox']",
+                            "[contenteditable='true']",
+                            "[role='textbox']",
+                            ".ProseMirror",
+                        ]
+
+                    for sel in jira_selectors:
+                        try:
+                            candidates = visible_dialog.find_elements(By.CSS_SELECTOR, sel)
+                            for cand in candidates:
+                                try:
+                                    if cand.is_displayed() and cand.is_enabled() and not _is_bad_jira_field(cand):
+                                        return cand
+                                except Exception:
+                                    continue
+                        except Exception:
+                            continue
+
+                    if is_summary or is_generic:
+                        xpath_candidates = [
+                            ".//*[self::label or self::span or self::div][contains(normalize-space(.), 'Summary')]/following::input[1]",
+                            ".//*[self::label or self::span or self::div][contains(normalize-space(.), 'Summary')]/following::textarea[1]",
+                        ]
+                    elif is_description:
+                        xpath_candidates = [
+                            ".//*[self::label or self::span or self::div][contains(normalize-space(.), 'Description')]/following::textarea[1]",
+                            ".//*[self::label or self::span or self::div][contains(normalize-space(.), 'Description')]/following::*[@contenteditable='true'][1]",
+                            ".//*[self::label or self::span or self::div][contains(normalize-space(.), 'Description')]/following::*[@role='textbox'][1]",
+                        ]
+                    else:
+                        xpath_candidates = []
+
+                    for xpath in xpath_candidates:
+                        try:
+                            cand = visible_dialog.find_element(By.XPATH, xpath)
+                            if cand.is_displayed() and cand.is_enabled() and not _is_bad_jira_field(cand):
+                                return cand
+                        except Exception:
+                            continue
+
+                    if is_summary or is_generic:
+                        try:
+                            summary_candidates = visible_dialog.find_elements(
+                                By.XPATH,
+                                ".//*[self::input or self::textarea][not(@type='hidden')]"
+                            )
+                            for cand in summary_candidates:
+                                try:
+                                    if not cand.is_displayed() or not cand.is_enabled():
+                                        continue
+                                    if _is_bad_jira_field(cand):
+                                        continue
+                                    rect = cand.rect or {}
+                                    if rect.get("width", 0) < 200:
+                                        continue
+                                    return cand
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+                except Exception:
+                    return None
+                return None
             
+            # Jira create dialogs are special: resolve Summary/Description
+            # semantically before any generic selector matching so we do not
+            # type into prefilled controls like Space.
+            element = _find_jira_dialog_field()
+
             # 1. By ID (most specific)
-            if target.get("id"):
+            if not element and target.get("id"):
                 try:
                     element = drv.find_element(By.ID, target["id"])
                 except NoSuchElementException:
@@ -1965,16 +2591,30 @@ class BrowserActionExecutor:
 
                     if _is_login_redirect:
                         _orig_req = (getattr(self, '_parent_agent', None) or self)
-                        _user_text = ""
+                        _intent_parts = []
                         if hasattr(_orig_req, 'conversation_history'):
                             for m in reversed(_orig_req.conversation_history):
                                 if m.get("role") == "user":
-                                    _user_text = (m.get("content") or "").lower()
+                                    _intent_parts.append((m.get("content") or "").lower())
                                     break
+                        _intent_parts.extend([
+                            str(getattr(_orig_req, 'user_request', '') or '').lower(),
+                            str(getattr(_orig_req, 'current_goal', '') or '').lower(),
+                            str(url or '').lower(),
+                        ])
                         _login_kw = {"sign in", "signin", "log in", "login",
                                      "sign-in", "log-in", "authenticate",
                                      "use my account"}
-                        _user_wants_login = any(w in _user_text for w in _login_kw)
+                        _request_login_frags = (
+                            "/ap/signin", "/signin", "/sign-in", "/sign_in",
+                            "/login", "/log-in", "/log_in", "/accounts/login",
+                            "/auth/", "/sso/", "/oauth/", "/i/flow/login",
+                        )
+                        _user_wants_login = any(
+                            any(w in part for w in _login_kw) for part in _intent_parts if part
+                        ) or any(
+                            frag in str(url or '').lower() for frag in _request_login_frags
+                        )
                         if not _user_wants_login:
                             try:
                                 from urllib.parse import urlparse as _lr_up2
@@ -2236,9 +2876,81 @@ class BrowserActionExecutor:
         drv = self.browser._actual_driver
         from selenium.webdriver.common.by import By
         element = None
+        current_url_lower = (drv.current_url or "").lower()
+
+        def _find_jira_dialog_field():
+            """Fallback resolver for Jira create-dialog fields."""
+            if "atlassian.net" not in current_url_lower:
+                return None
+            try:
+                field_hint = " ".join(
+                    str(target.get(k) or "")
+                    for k in ("id", "name", "placeholder", "aria-label", "selector", "type", "role")
+                ).lower()
+                is_summary = any(k in field_hint for k in ("summary", "title"))
+                is_description = any(k in field_hint for k in ("description", "details", "body"))
+                is_generic = not is_summary and not is_description
+                dialogs = drv.find_elements(By.CSS_SELECTOR, "[role='dialog'], [aria-modal='true']")
+                visible_dialog = next((d for d in dialogs if d.is_displayed()), None)
+                if visible_dialog is None:
+                    return None
+
+                def _is_bad_jira_field(el) -> bool:
+                    try:
+                        tag = (el.tag_name or "").lower()
+                        role = (el.get_attribute("role") or "").lower()
+                        cls = (el.get_attribute("class") or "").lower()
+                        text_blob = " ".join(
+                            part for part in [
+                                el.text or "",
+                                el.get_attribute("value") or "",
+                                el.get_attribute("placeholder") or "",
+                                el.get_attribute("aria-label") or "",
+                            ] if part
+                        ).lower()
+                        if role in ("combobox", "listbox"):
+                            return True
+                        if "select" in cls or "dropdown" in cls:
+                            return True
+                        if any(word in text_blob for word in ("my team", "scrum", "task", "to do")) and tag != "textarea":
+                            return True
+                    except Exception:
+                        return False
+                    return False
+
+                selectors = []
+                if is_summary or is_generic:
+                    selectors = [
+                        "input[aria-label*='Summary']",
+                        "textarea[aria-label*='Summary']",
+                        "input[name*='summary']",
+                        "input[id*='summary']",
+                    ]
+                elif is_description:
+                    selectors = [
+                        "textarea[aria-label*='Description']",
+                        "textarea[name*='description']",
+                        "[data-testid*='description'] [contenteditable='true']",
+                        "[contenteditable='true'][role='textbox']",
+                        ".ProseMirror",
+                        "[contenteditable='true']",
+                    ]
+
+                for sel in selectors:
+                    try:
+                        for cand in visible_dialog.find_elements(By.CSS_SELECTOR, sel):
+                            if cand.is_displayed() and cand.is_enabled() and not _is_bad_jira_field(cand):
+                                return cand
+                    except Exception:
+                        continue
+            except Exception:
+                return None
+            return None
+
+        element = _find_jira_dialog_field()
 
         # 1. Try aria-label (input, textarea, contenteditable — partial match)
-        if target.get("aria-label"):
+        if not element and target.get("aria-label"):
             al = target["aria-label"]
             for sel in [
                 f"input[aria-label='{al}']",
@@ -2609,6 +3321,52 @@ class BrowserActionExecutor:
 
         driver = self.browser._actual_driver
         dismissed = False
+
+        # Preserve real Jira create/task dialogs. They are not disposable
+        # popups; they are the working surface for task creation.
+        try:
+            current_url = (driver.current_url or "").lower()
+        except Exception:
+            current_url = ""
+
+        if "atlassian.net" in current_url:
+            try:
+                jira_create_dialog = driver.execute_script("""
+                    const dialogs = Array.from(document.querySelectorAll(
+                        '[role="dialog"], [role="alertdialog"], [aria-modal="true"]'
+                    ));
+                    return dialogs.some((dlg) => {
+                        const text = (dlg.innerText || dlg.textContent || '').toLowerCase();
+                        const hasCreateHeading =
+                            text.includes('create task') ||
+                            text.includes('create issue') ||
+                            text.includes('summary');
+                        const hasSummaryField =
+                            !!dlg.querySelector('input[aria-label*="Summary"], textarea[aria-label*="Summary"], input[name*="summary"], textarea[name*="summary"]');
+                        const hasCreateButton =
+                            Array.from(dlg.querySelectorAll('button, [role="button"], input[type="submit"]'))
+                                .some((el) => ((el.innerText || el.textContent || el.value || '').toLowerCase().includes('create')));
+                        return hasCreateHeading || (hasSummaryField && hasCreateButton);
+                    });
+                """)
+                if jira_create_dialog:
+                    return False
+            except Exception:
+                pass
+            try:
+                jira_draft_dialog = driver.execute_script("""
+                    const dialogs = Array.from(document.querySelectorAll(
+                        '[role="dialog"], [role="alertdialog"], [aria-modal="true"]'
+                    ));
+                    return dialogs.some((dlg) => {
+                        const text = (dlg.innerText || dlg.textContent || '').toLowerCase();
+                        return text.includes('draft work item in progress') || text.includes('keep editing');
+                    });
+                """)
+                if jira_draft_dialog:
+                    return False
+            except Exception:
+                pass
 
         # ── Phase 1: Click known close/dismiss buttons ──
         close_selectors = [
@@ -4102,14 +4860,14 @@ class ChatGPTAgentWithAgentTrust:
             }},
             {"type": "function", "function": {
                 "name": "get_saved_credentials",
-                "description": "Look up saved login credentials for a domain. Call this BEFORE asking the user for login credentials. If credentials exist, use them with auto_login. Use the BASE domain (e.g. 'google.com' not 'mail.google.com', 'amazon.com' not 'smile.amazon.com'). For Gmail/Google services, use 'google.com' or 'gmail.com'.",
+                "description": "Look up saved login credentials for a domain. Only call this AFTER you have navigated to the site's homepage, clicked a visible Sign in / Log in / Account control, and the login form is visible. If credentials exist, use them with auto_login. Use the BASE domain (e.g. 'google.com' not 'mail.google.com', 'amazon.com' not 'smile.amazon.com'). For Gmail/Google services, use 'google.com' or 'gmail.com'.",
                 "parameters": {"type": "object", "properties": {
                     "domain": {"type": "string", "description": "Base domain to look up (e.g. google.com, gmail.com, amazon.com, github.com). Use the base domain, not subdomains."}
                 }, "required": ["domain"]}
             }},
             {"type": "function", "function": {
                 "name": "auto_login",
-                "description": "Perform a complete login flow on the CURRENT page. IMPORTANT: Navigate to the website's login/sign-in page FIRST before calling this. Handles multi-step login forms (Google, Microsoft, Amazon) that show a continue/next button between username and password. Dismisses QR-code popups and overlays automatically. If you just called get_saved_credentials and credentials were found, call auto_login WITHOUT username/password — the saved credentials will be used automatically and securely. Only pass username/password if the user provided them manually.",
+                "description": "Perform a complete login flow on the CURRENT page. IMPORTANT: Start from the site's homepage, click a visible Sign in / Log in / Account control, and only call auto_login when the login form is actually visible. Do not jump straight to deep sign-in URLs unless the homepage has no usable login control. Handles multi-step login forms (Google, Microsoft, Amazon) that show a continue/next button between username and password. Dismisses QR-code popups and overlays automatically. If you just called get_saved_credentials and credentials were found, call auto_login WITHOUT username/password — the saved credentials will be used automatically and securely. Only pass username/password if the user provided them manually.",
                 "parameters": {"type": "object", "properties": {
                     "username": {"type": "string", "description": "Username or email (omit if using saved credentials from get_saved_credentials)"},
                     "password": {"type": "string", "description": "Password (omit if using saved credentials from get_saved_credentials)"}
@@ -4434,13 +5192,15 @@ LOGIN FLOW — STRICT RULES:
   Only use them when the user says something like "sign in", "log in",
   "use my account", etc.
 - If the user DOES ask you to sign in:
-  1. Navigate to the site's OWN login page FIRST.
-  2. Call get_saved_credentials with the site's domain.
-  3. If credentials are found, call auto_login immediately.
-  4. auto_login handles multi-step forms, entering both username
+  1. Navigate to the site's HOMEPAGE first.
+  2. Find and click the visible "Sign in" / "Log in" button or account entry point.
+  3. Call get_saved_credentials with the site's domain only after the login form is visible.
+  4. If credentials are found, call auto_login immediately.
+  5. auto_login handles multi-step forms, entering both username
      AND password, clicking continue/next, and dismissing popups.
-  5. NEVER manually type usernames or passwords with type_text.
-  6. Only ask the user if NO saved credentials exist.
+  6. NEVER manually type usernames or passwords with type_text.
+  7. Only ask the user if NO saved credentials exist.
+  8. Only use a deep sign-in URL when the homepage has no usable sign-in control.
 - BEFORE attempting any login, CHECK if you are ALREADY LOGGED IN.
   Signs of being logged in: inbox is loaded (URL contains /inbox),
   compose button visible, sign-out/logout link present,
@@ -4745,13 +5505,52 @@ ROUTINES:
             args = json.loads(function_call.arguments) if function_call.arguments else {}
             username = args.get("username", "")
             password = args.get("password", "")
+            current_url = self.browser_executor.browser.get_current_url() if self.browser_executor.browser else ""
+
+            # Early exit: detect if the user is already logged in before
+            # requiring credentials or enforcing login-page-only checks.
+            _already_logged_in = False
+            _url_lower = current_url.lower()
+            if any(frag in _url_lower for frag in ("/inbox", "/#inbox", "/mail/u/",
+                                                    "/feed", "/home", "/dashboard")):
+                _already_logged_in = True
+            if not _already_logged_in:
+                try:
+                    _login_check_els = self.browser_executor.get_visible_elements()
+                    _has_login_fields = False
+                    for _el in (_login_check_els or []):
+                        _itype = (_el.get("input_type") or _el.get("type") or "").lower()
+                        _ename = (_el.get("name") or "").lower()
+                        if _itype in ("email", "password") or _ename in ("email", "username", "password", "passwd"):
+                            _has_login_fields = True
+                            break
+                    if not _has_login_fields:
+                        for _el in (_login_check_els or []):
+                            _el_text = (_el.get("text") or "").lower()
+                            _el_aria = (_el.get("aria_label") or _el.get("aria-label") or "").lower()
+                            if any(kw in _el_text for kw in ("sign out", "log out", "logout", "compose")):
+                                _already_logged_in = True
+                                break
+                            if any(kw in _el_aria for kw in ("sign out", "log out", "compose", "account menu")):
+                                _already_logged_in = True
+                                break
+                except Exception:
+                    pass
+            if _already_logged_in:
+                print(f"🔐 Already logged in on {current_url} — skipping auto_login")
+                return {
+                    "success": True,
+                    "already_logged_in": True,
+                    "message": "Already logged in — no login needed.",
+                    "current_url": current_url,
+                }
+
             if (not username or not password) and getattr(self, '_cached_credentials', None):
                 username = self._cached_credentials.get("username", username)
                 password = self._cached_credentials.get("password", password)
                 self._cached_credentials = None
             if not username or not password:
                 return {"success": False, "message": "Both username and password are required"}
-            current_url = self.browser_executor.browser.get_current_url() if self.browser_executor.browser else ""
             # Guard: don't attempt login on non-login pages
             if current_url and ("localhost" in current_url or "about:blank" in current_url
                                 or "/health" in current_url or "chrome://" in current_url):
@@ -4815,43 +5614,6 @@ ROUTINES:
                     "message": "No login fields found on this page. "
                                "Navigate to the site's sign-in page first, "
                                "then call auto_login again."
-                }
-
-            # Early exit: detect if the user is already logged in
-            _already_logged_in = False
-            _url_lower = current_url.lower()
-            if any(frag in _url_lower for frag in ("/inbox", "/#inbox", "/mail/u/",
-                                                    "/feed", "/home", "/dashboard")):
-                _already_logged_in = True
-            if not _already_logged_in:
-                try:
-                    _login_check_els = self.browser_executor.get_visible_elements()
-                    _has_login_fields = False
-                    for _el in (_login_check_els or []):
-                        _itype = (_el.get("input_type") or _el.get("type") or "").lower()
-                        _ename = (_el.get("name") or "").lower()
-                        if _itype in ("email", "password") or _ename in ("email", "username", "password", "passwd"):
-                            _has_login_fields = True
-                            break
-                    if not _has_login_fields:
-                        for _el in (_login_check_els or []):
-                            _el_text = (_el.get("text") or "").lower()
-                            _el_aria = (_el.get("aria_label") or _el.get("aria-label") or "").lower()
-                            if any(kw in _el_text for kw in ("sign out", "log out", "logout", "compose")):
-                                _already_logged_in = True
-                                break
-                            if any(kw in _el_aria for kw in ("sign out", "log out", "compose", "account menu")):
-                                _already_logged_in = True
-                                break
-                except Exception:
-                    pass
-            if _already_logged_in:
-                print(f"🔐 Already logged in on {current_url} — skipping auto_login")
-                return {
-                    "success": True,
-                    "already_logged_in": True,
-                    "message": "Already logged in — no login needed.",
-                    "current_url": current_url,
                 }
 
             print(f"🔐 Auto-login on {current_url}")
