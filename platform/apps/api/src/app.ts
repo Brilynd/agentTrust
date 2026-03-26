@@ -372,8 +372,14 @@ export function createApp() {
         return res.status(404).json({ success: false, error: "Configuration not found" });
       }
 
+      const taskOverride = String(req.body?.taskOverride || "").trim();
+      const runtimeMetadata =
+        req.body?.runtimeMetadata && typeof req.body.runtimeMetadata === "object" && !Array.isArray(req.body.runtimeMetadata)
+          ? (req.body.runtimeMetadata as Record<string, unknown>)
+          : {};
+
       const input = normalizeJobInput({
-        task: configuration.task,
+        task: taskOverride || configuration.task,
         details: configuration.details
       });
       const steps = input.steps || [];
@@ -389,6 +395,7 @@ export function createApp() {
           status: "queued",
           metadata: {
             ...(input.metadata || {}),
+            ...runtimeMetadata,
             configurationId: configuration.id,
             configurationName: configuration.name
           },

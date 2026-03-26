@@ -86,25 +86,9 @@ export default function DashboardPage() {
   const [metrics, setMetrics] = useState<MetricsResponse["metrics"] | null>(null);
   const [replayCount, setReplayCount] = useState(0);
   const [activeTab, setActiveTab] = useState<"monitor" | "jobs" | "approvals" | "metrics" | "configurations">("monitor");
-  const [launchTask, setLaunchTask] = useState("");
-  const [launchDetails, setLaunchDetails] = useState(`{
-  "agentId": "dashboard-operator",
-  "allowedDomains": ["example.com"],
-  "metadata": {
-    "goal": "Replace with your own task details"
-  },
-  "steps": [
-    {
-      "id": "step-1",
-      "name": "Open homepage",
-      "action": "goto",
-      "url": "https://example.com",
-      "verification": {
-        "urlIncludes": "example.com"
-      }
-    }
-  ]
-}`);
+  const [launchConfigId, setLaunchConfigId] = useState("");
+  const [launchTaskOverride, setLaunchTaskOverride] = useState("");
+  const [launchRuntimeNotes, setLaunchRuntimeNotes] = useState("");
   const [launchError, setLaunchError] = useState("");
   const [launchSuccess, setLaunchSuccess] = useState("");
   const [contextPrompt, setContextPrompt] = useState("");
@@ -121,6 +105,8 @@ export default function DashboardPage() {
   const [configDomains, setConfigDomains] = useState("");
   const [configStartUrl, setConfigStartUrl] = useState("");
   const [configVerifyText, setConfigVerifyText] = useState("");
+  const [configHighRiskKeywords, setConfigHighRiskKeywords] = useState("");
+  const [configAuditorKeywords, setConfigAuditorKeywords] = useState("");
   const [configAdvancedJson, setConfigAdvancedJson] = useState(`{
   "metadata": {
     "notes": "Optional advanced fields"
@@ -139,6 +125,9 @@ export default function DashboardPage() {
   const loadConfigurations = async () => {
     const data = await getJson<{ configurations: ConfigurationRecord[] }>("/api/configurations");
     setConfigurations(data.configurations);
+    if (!launchConfigId && data.configurations[0]?.id) {
+      setLaunchConfigId(data.configurations[0].id);
+    }
   };
 
   const parseJsonInput = (value: string) => {
@@ -208,6 +197,8 @@ export default function DashboardPage() {
     setConfigDomains("");
     setConfigStartUrl("");
     setConfigVerifyText("");
+    setConfigHighRiskKeywords("");
+    setConfigAuditorKeywords("");
     setConfigAdvancedJson(`{
   "metadata": {
     "notes": "Optional advanced fields"
@@ -229,12 +220,30 @@ export default function DashboardPage() {
     const verifyText =
       String((steps[1]?.verification as Record<string, unknown> | undefined)?.textVisible || "");
     setConfigVerifyText(verifyText);
+    const metadata =
+      config.details.metadata && typeof config.details.metadata === "object"
+        ? (config.details.metadata as Record<string, unknown>)
+        : {};
+    setConfigHighRiskKeywords(
+      Array.isArray(metadata.highRiskKeywords) ? (metadata.highRiskKeywords as string[]).join(", ") : ""
+    );
+    setConfigAuditorKeywords(
+      Array.isArray(metadata.auditorKeywords) ? (metadata.auditorKeywords as string[]).join(", ") : ""
+    );
     setConfigAdvancedJson(JSON.stringify(config.details, null, 2));
   };
 
   const buildConfigurationDetails = () => {
     const advanced = parseJsonInput(configAdvancedJson);
     const allowedDomains = configDomains
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const highRiskKeywords = configHighRiskKeywords
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const auditorKeywords = configAuditorKeywords
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
@@ -274,7 +283,9 @@ export default function DashboardPage() {
       agentId: "dashboard-operator",
       allowedDomains,
       metadata: {
-        description: configDescription.trim()
+        description: configDescription.trim(),
+        highRiskKeywords,
+        auditorKeywords
       },
       steps: baseSteps,
       ...advanced
@@ -285,15 +296,20 @@ export default function DashboardPage() {
     setLaunchError("");
     setLaunchSuccess("");
     try {
-      const details = parseJsonInput(launchDetails);
-      const response = await postJson<{ success: true; job: JobRecord }>("/api/jobs", {
-        task: launchTask,
-        details
+      if (!launchConfigId) {
+        throw new Error("Choose a saved configuration first");
+      }
+      const response = await postJson<{ success: true; job: JobRecord }>(`/api/configurations/${launchConfigId}/launch`, {
+        taskOverride: launchTaskOverride,
+        runtimeMetadata: launchRuntimeNotes.trim()
+          ? { runtimeNotes: launchRuntimeNotes.trim() }
+          : {}
       });
-      setLaunchSuccess("Process created and queued.");
+      setLaunchSuccess("Process created from configuration and queued.");
       setSelectedJobId(response.job.id);
       upsertJob(response.job);
-      setLaunchTask("");
+      setLaunchTaskOverride("");
+      setLaunchRuntimeNotes("");
     } catch (error) {
       setLaunchError(error instanceof Error ? error.message : "Failed to create process");
     }
@@ -370,7 +386,10 @@ export default function DashboardPage() {
     setConfigError("");
     setConfigSuccess("");
     try {
-      const response = await postJson<{ success: true; job: JobRecord }>(`/api/configurations/${configId}/launch`, {});
+      const response = await postJson<{ success: true; job: JobRecord }>(`/api/configurations/${configId}/launch`, {
+        taskOverride: "",
+        runtimeMetadata: {}
+      });
       upsertJob(response.job);
       setSelectedJobId(response.job.id);
       setActiveTab("monitor");
@@ -483,10 +502,18 @@ export default function DashboardPage() {
                   <input className="at-input" value={configVerifyText} onChange={(event) => setConfigVerifyText(event.target.value)} placeholder="Visible text that confirms the bot is on the right page" />
                 </div>
                 <div className="at-field">
+                  <label className="at-label">High-risk keywords</label>
+                  <input className="at-input" value={configHighRiskKeywords} onChange={(event) => setConfigHighRiskKeywords(event.target.value)} placeholder="payment, wire, billing, submit, delete" />
+                </div>
+                <div className="at-field">
+                  <label className="at-label">Auditor course-correction keywords</label>
+                  <input className="at-input" value={configAuditorKeywords} onChange={(event) => setConfigAuditorKeywords(event.target.value)} placeholder="login, summary, description, form, account" />
+                </div>
+                <div className="at-field">
                   <label className="at-label">Advanced JSON details</label>
                   <textarea className="at-textarea" value={configAdvancedJson} onChange={(event) => setConfigAdvancedJson(event.target.value)} />
                   <div className="at-help">
-                    Optional advanced settings. You can provide extra metadata or full step overrides here.
+                    Optional advanced settings. You can provide extra metadata or full step overrides here. Keyword fields are saved into configuration metadata for future policy and auditor use.
                   </div>
                 </div>
                 {configError && <div className="at-error">{configError}</div>}
@@ -506,31 +533,43 @@ export default function DashboardPage() {
           <>
         <section className="at-card mt-3">
           <div className="at-card-header">
-            <h2 className="at-card-title">Launch New Process</h2>
-            <span className="at-subtle text-xs">Prompt the agent and attach structured JSON details</span>
+            <h2 className="at-card-title">Launch From Configuration</h2>
+            <span className="at-subtle text-xs">Use a saved bot profile instead of writing raw JSON</span>
           </div>
           <div className="at-card-body space-y-4">
             <div className="at-field">
-              <label className="at-label" htmlFor="launch-task">Task prompt</label>
-              <input
-                id="launch-task"
+              <label className="at-label" htmlFor="launch-configuration">Saved configuration</label>
+              <select
+                id="launch-configuration"
                 className="at-input"
-                value={launchTask}
-                onChange={(event) => setLaunchTask(event.target.value)}
-                placeholder="Describe the process you want the agent to execute"
+                value={launchConfigId}
+                onChange={(event) => setLaunchConfigId(event.target.value)}
+              >
+                <option value="">Select configuration</option>
+                {configurations.map((config) => (
+                  <option key={config.id} value={config.id}>{config.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="at-field">
+              <label className="at-label" htmlFor="launch-task-override">Optional task override</label>
+              <input
+                id="launch-task-override"
+                className="at-input"
+                value={launchTaskOverride}
+                onChange={(event) => setLaunchTaskOverride(event.target.value)}
+                placeholder="Optional runtime override for the selected configuration"
               />
             </div>
             <div className="at-field">
-              <label className="at-label" htmlFor="launch-details">JSON details</label>
+              <label className="at-label" htmlFor="launch-runtime-notes">Runtime notes</label>
               <textarea
-                id="launch-details"
+                id="launch-runtime-notes"
                 className="at-textarea"
-                value={launchDetails}
-                onChange={(event) => setLaunchDetails(event.target.value)}
+                value={launchRuntimeNotes}
+                onChange={(event) => setLaunchRuntimeNotes(event.target.value)}
               />
-              <div className="at-help">
-                Include `steps`, `allowedDomains`, `agentId`, and any `metadata` needed for reliable execution.
-              </div>
+              <div className="at-help">Use runtime notes for extra context. Edit steps, approval keywords, and auditor keywords in the Configurations tab.</div>
             </div>
             {launchError && <div className="at-error">{launchError}</div>}
             {launchSuccess && <div className="at-success">{launchSuccess}</div>}

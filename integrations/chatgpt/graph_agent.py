@@ -93,6 +93,11 @@ class AgentState(TypedDict, total=False):
     # --- Progress tracking (live UI in extension) ---
     progress_lines: list              # Accumulated step descriptions
 
+    # --- Auditor context ---
+    auditor_high_risk_keywords: list  # Extra operator-defined keywords that force escalation
+    auditor_feedback: str             # Last auditor explanation
+    auditor_decision: str             # allow | revise | block | escalate | skipped
+
 
 # Actions that change page state → require re-observation
 MUTATING_ACTIONS = {
@@ -134,6 +139,13 @@ READ_ONLY_ACTIONS = {
 MAX_ACTIONS = 20
 MAX_CONSECUTIVE_FAILS = 3
 
+DEFAULT_AUDITOR_HIGH_RISK_KEYWORDS = {
+    "payment", "payments", "invoice", "billing", "bank", "routing number",
+    "account number", "wire", "ach", "transfer", "refund", "salary",
+    "payroll", "ssn", "social security", "password", "delete", "remove",
+    "terminate", "close account", "submit", "purchase", "buy now",
+}
+
 PROMPT_INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all|any|previous|prior)\s+instructions", re.IGNORECASE),
     re.compile(r"disregard\s+(all|any|previous|prior)\s+instructions", re.IGNORECASE),
@@ -154,6 +166,36 @@ MALICIOUS_TERMS = [
     "remote command execution",
     "data exfiltration",
 ]
+
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    """Parse a JSON object from raw model text, even with fence noise."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _collect_auditor_high_risk_keywords(state: AgentState) -> list[str]:
+    keywords = {term.lower() for term in DEFAULT_AUDITOR_HIGH_RISK_KEYWORDS}
+    for term in state.get("auditor_high_risk_keywords") or []:
+        cleaned = str(term or "").strip().lower()
+        if cleaned:
+            keywords.add(cleaned)
+    return sorted(keywords)
 
 
 def sanitize_untrusted_page_text(text: str, max_chars: int = 3000):
@@ -1623,6 +1665,8 @@ def build_graph(agent):
                 "turn_messages": new_turn + extra_msgs,
                 "pending_tool_calls": pending,
                 "action_category": "none",
+                "auditor_feedback": "",
+                "auditor_decision": "",
             }
         else:
             # LLM returned text — task is complete
@@ -1633,7 +1677,172 @@ def build_graph(agent):
                 "pending_tool_calls": [],
                 "final_response": message.content or "",
                 "action_category": "none",
+                "auditor_feedback": "",
+                "auditor_decision": "",
             }
+
+    # ================================================================== #
+    #  AUDITOR node — validate mutating actions before execution          #
+    # ================================================================== #
+    def auditor_node(state: AgentState) -> dict:
+        pending = list(state.get("pending_tool_calls") or [])
+        if not pending:
+            return {"auditor_decision": "skipped", "auditor_feedback": ""}
+
+        tc = dict(pending[0])
+        name = tc.get("name", "")
+        if name not in (MUTATING_ACTIONS | {"call_external_api"}):
+            return {"auditor_decision": "skipped", "auditor_feedback": ""}
+
+        turn_messages = list(state.get("turn_messages") or [])
+        try:
+            arguments = json.loads(tc.get("arguments") or "{}")
+        except Exception:
+            arguments = {}
+
+        serialized_args = json.dumps(arguments, default=str).lower()
+        matched_keywords = [
+            kw for kw in _collect_auditor_high_risk_keywords(state)
+            if kw and kw in serialized_args
+        ]
+        if matched_keywords:
+            reason = (
+                "Auditor escalated this action because it matched high-risk keyword(s): "
+                + ", ".join(matched_keywords[:5])
+            )
+            print(f"  AUDIT: ESCALATE ({name}) — {reason}")
+            progress = _emit_progress(state, f"AUDIT|Escalated {name} for high-risk keyword")
+            return {
+                "auditor_decision": "escalate",
+                "auditor_feedback": reason,
+                "progress_lines": progress,
+            }
+
+        element_summaries = []
+        for el in (state.get("visible_elements") or [])[:12]:
+            label = (
+                str((el or {}).get("text") or "")
+                or str((el or {}).get("aria_label") or "")
+                or str((el or {}).get("name") or "")
+            ).strip()
+            role = str((el or {}).get("role") or (el or {}).get("tag") or "").strip()
+            if label or role:
+                element_summaries.append(f"{role or 'element'}: {label[:80]}")
+
+        goal_idx = state.get("current_goal_index", 0)
+        goals = state.get("sub_goals") or []
+        current_goal = goals[goal_idx] if goal_idx < len(goals) else state.get("user_request", "")
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the AgentTrust action auditor. Review ONE proposed browser or API action before it executes.\n"
+                    "Your job is to act like a lightweight human-in-the-loop reviewer for scale.\n"
+                    "Prefer allow when the action clearly matches the goal.\n"
+                    "Use revise only when there is an obvious low-risk correction and you can provide full replacement arguments.\n"
+                    "Use block when the action appears off-target, unsafe, or unsupported by the current page context.\n"
+                    "Use escalate only for sensitive/destructive actions or when a human should explicitly approve it.\n"
+                    "Return strict JSON only with keys: decision, reason, replacement_arguments, suggested_fix.\n"
+                    "Valid decisions: allow, revise, block, escalate."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "user_request": state.get("user_request", ""),
+                        "current_goal": current_goal,
+                        "current_url": state.get("current_url", ""),
+                        "page_title": state.get("page_title", ""),
+                        "page_text_excerpt": (state.get("page_text", "") or "")[:1500],
+                        "visible_elements": element_summaries,
+                        "tool_name": name,
+                        "tool_arguments": arguments,
+                        "prior_auditor_feedback": state.get("auditor_feedback", ""),
+                    },
+                    default=str,
+                ),
+            },
+        ]
+
+        try:
+            response = agent._chat_completion(
+                model=getattr(agent, "model_fast", agent.model),
+                messages=messages,
+                tool_choice="none",
+            )
+            audit = _extract_json_object(response.choices[0].message.content or "") or {}
+        except Exception as exc:
+            print(f"  AUDIT: fallback allow — {exc}")
+            audit = {"decision": "allow", "reason": "Auditor unavailable, allowed by fallback."}
+
+        decision = str(audit.get("decision") or "allow").strip().lower()
+        reason = str(audit.get("reason") or "Auditor allowed the action.").strip()
+        replacement_arguments = audit.get("replacement_arguments")
+        suggested_fix = str(audit.get("suggested_fix") or "").strip()
+
+        if decision == "revise" and isinstance(replacement_arguments, dict):
+            pending[0]["arguments"] = json.dumps(replacement_arguments)
+            for msg in reversed(turn_messages):
+                if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                    continue
+                for tool_call in msg.get("tool_calls") or []:
+                    if tool_call.get("id") == tc.get("id"):
+                        tool_call.setdefault("function", {})["arguments"] = pending[0]["arguments"]
+                        break
+                break
+            print(f"  AUDIT: REVISE ({name}) — {reason[:120]}")
+            progress = _emit_progress(state, f"AUDIT|Revised {name}")
+            return {
+                "pending_tool_calls": pending,
+                "turn_messages": turn_messages,
+                "auditor_decision": "revise",
+                "auditor_feedback": reason,
+                "progress_lines": progress,
+            }
+
+        if decision == "block":
+            payload = {
+                "success": False,
+                "error": "auditor_rejected",
+                "message": reason,
+            }
+            if suggested_fix:
+                payload["suggested_fix"] = suggested_fix
+            turn_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.get("id"),
+                    "name": name,
+                    "content": json.dumps(payload, default=str),
+                }
+            )
+            print(f"  AUDIT: BLOCK ({name}) — {reason[:120]}")
+            progress = _emit_progress(state, f"AUDIT|Blocked {name}")
+            return {
+                "pending_tool_calls": [],
+                "turn_messages": turn_messages,
+                "auditor_decision": "block",
+                "auditor_feedback": reason,
+                "progress_lines": progress,
+            }
+
+        if decision == "escalate":
+            print(f"  AUDIT: ESCALATE ({name}) — {reason[:120]}")
+            progress = _emit_progress(state, f"AUDIT|Escalated {name}")
+            return {
+                "auditor_decision": "escalate",
+                "auditor_feedback": reason,
+                "progress_lines": progress,
+            }
+
+        print(f"  AUDIT: ALLOW ({name}) — {reason[:120]}")
+        progress = _emit_progress(state, f"AUDIT|Approved {name}")
+        return {
+            "auditor_decision": "allow",
+            "auditor_feedback": reason,
+            "progress_lines": progress,
+        }
 
     # ================================================================== #
     #  TOOLS node — execute pending tool calls                            #
@@ -2602,7 +2811,7 @@ def build_graph(agent):
     def route_after_agent(state: AgentState) -> str:
         """After the LLM call: execute tools, advance goal, or respond."""
         if state.get("pending_tool_calls"):
-            return "tools"
+            return "auditor"
         if state.get("consecutive_failures", 0) > 0:
             return "respond"
         # Agent returned text — check if there are more goals
@@ -2611,6 +2820,12 @@ def build_graph(agent):
         if goal_idx + 1 < len(sub_goals):
             return "advance_goal"
         return "respond"
+
+    def route_after_auditor(state: AgentState) -> str:
+        """After auditing: execute the action or send the model back to re-plan."""
+        if state.get("pending_tool_calls"):
+            return "tools"
+        return "agent"
 
     def route_after_verify(state: AgentState) -> str:
         """After verification: re-observe, continue acting, or respond."""
@@ -2656,6 +2871,7 @@ def build_graph(agent):
     graph.add_node("google_account_chooser", google_account_chooser_node)
     graph.add_node("jira_add_to_sprint", jira_add_to_sprint_node)
     graph.add_node("agent", agent_node)
+    graph.add_node("auditor", auditor_node)
     graph.add_node("tools", tools_node)
     graph.add_node("verify", verify_node)
     graph.add_node("advance_goal", advance_goal_node)
@@ -2691,7 +2907,13 @@ def build_graph(agent):
     graph.add_conditional_edges(
         "agent",
         route_after_agent,
-        {"tools": "tools", "advance_goal": "advance_goal", "respond": "respond"},
+        {"auditor": "auditor", "advance_goal": "advance_goal", "respond": "respond"},
+    )
+
+    graph.add_conditional_edges(
+        "auditor",
+        route_after_auditor,
+        {"tools": "tools", "agent": "agent"},
     )
 
     # tools → verify (always check results)

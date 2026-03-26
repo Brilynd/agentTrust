@@ -5100,6 +5100,13 @@ class ChatGPTAgentWithAgentTrust:
             "step_up_message": "",
             "prompt_id": prompt_id or "",
             "progress_lines": [],
+            "auditor_high_risk_keywords": [
+                kw.strip()
+                for kw in os.getenv("AGENTTRUST_AUDITOR_HIGH_RISK_KEYWORDS", "").split(",")
+                if kw.strip()
+            ],
+            "auditor_feedback": "",
+            "auditor_decision": "",
         }
 
         try:
