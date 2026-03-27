@@ -9,10 +9,41 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+function hasValidDatabaseUrl(value) {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === 'postgresql:' || parsed.protocol === 'postgres:') &&
+      !!parsed.hostname &&
+      parsed.pathname &&
+      parsed.pathname !== '/' &&
+      !parsed.pathname.includes('=require')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function buildDatabaseConfigFromParts() {
+  const host = process.env.DB_HOST || '';
+  const user = process.env.DB_USER || 'postgres';
+  const password = process.env.DB_PASSWORD || '';
+  if (!host) return null;
+  return {
+    host,
+    port: parseInt(process.env.DB_PORT) || 5432,
+    user,
+    password,
+    database: process.env.DB_NAME || process.env.POSTGRES_DB || user || 'postgres'
+  };
+}
+
 // Build connection config with SSL support
 function getPoolConfig() {
   // If DATABASE_URL is provided, use it (with SSL parsing)
-  if (process.env.DATABASE_URL) {
+  const derivedConfig = buildDatabaseConfigFromParts();
+  if (hasValidDatabaseUrl(process.env.DATABASE_URL)) {
     const url = new URL(process.env.DATABASE_URL);
     const config = {
       connectionString: process.env.DATABASE_URL
@@ -27,7 +58,7 @@ function getPoolConfig() {
   }
   
   // Otherwise, use individual connection parameters
-  const config = {
+  const config = derivedConfig || {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT) || 5432,
     user: process.env.DB_USER || 'postgres',
@@ -255,6 +286,157 @@ async function migrate() {
       ALTER TABLE prompts
       ADD COLUMN IF NOT EXISTS progress TEXT
     `);
+
+    // Agent platform tables
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agent_jobs (
+        id VARCHAR(255) PRIMARY KEY,
+        external_ref VARCHAR(255) UNIQUE,
+        agent_id VARCHAR(255),
+        session_id VARCHAR(255),
+        prompt_id VARCHAR(255),
+        task TEXT NOT NULL,
+        input JSONB NOT NULL,
+        plan JSONB,
+        status VARCHAR(50) NOT NULL DEFAULT 'queued',
+        current_step_index INTEGER NOT NULL DEFAULT 0,
+        progress INTEGER NOT NULL DEFAULT 0,
+        current_step TEXT,
+        result JSONB,
+        error TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 4,
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        last_heartbeat_at TIMESTAMP,
+        pause_requested BOOLEAN NOT NULL DEFAULT FALSE,
+        cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+        metadata JSONB,
+        worker_id VARCHAR(255),
+        locked_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agent_steps (
+        id VARCHAR(255) PRIMARY KEY,
+        job_id VARCHAR(255) NOT NULL REFERENCES agent_jobs(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        action VARCHAR(100) NOT NULL,
+        selector JSONB,
+        selector_text TEXT,
+        payload JSONB,
+        verification JSONB,
+        result JSONB,
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        failure_type VARCHAR(50) NOT NULL DEFAULT 'NONE',
+        failure_message TEXT,
+        hash VARCHAR(255) NOT NULL,
+        previous_hash VARCHAR(255) NOT NULL,
+        started_at TIMESTAMP,
+        finished_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(job_id, sequence)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS approval_requests (
+        id VARCHAR(255) PRIMARY KEY,
+        job_id VARCHAR(255) NOT NULL REFERENCES agent_jobs(id) ON DELETE CASCADE,
+        step_id VARCHAR(255),
+        action VARCHAR(100) NOT NULL,
+        target JSONB,
+        policy_reason TEXT,
+        requested_by VARCHAR(255),
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        decision_by VARCHAR(255),
+        decision_comment TEXT,
+        expires_at TIMESTAMP,
+        decided_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS replay_chunks (
+        id VARCHAR(255) PRIMARY KEY,
+        job_id VARCHAR(255) NOT NULL REFERENCES agent_jobs(id) ON DELETE CASCADE,
+        step_id VARCHAR(255),
+        sequence INTEGER NOT NULL,
+        event_type VARCHAR(100) NOT NULL,
+        payload JSONB NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(job_id, sequence)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS correction_memory (
+        id VARCHAR(255) PRIMARY KEY,
+        job_id VARCHAR(255) REFERENCES agent_jobs(id) ON DELETE CASCADE,
+        domain VARCHAR(255) NOT NULL,
+        action_type VARCHAR(100) NOT NULL,
+        failure_type VARCHAR(50) NOT NULL,
+        failed_selector JSONB,
+        corrected_selector JSONB,
+        notes TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS metric_rollups (
+        id VARCHAR(255) PRIMARY KEY,
+        job_id VARCHAR(255) REFERENCES agent_jobs(id) ON DELETE CASCADE,
+        metric_key VARCHAR(100) NOT NULL,
+        metric_value DOUBLE PRECISION NOT NULL,
+        labels JSONB,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bot_configurations (
+        id VARCHAR(255) PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        task TEXT NOT NULL,
+        details JSONB NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS worker_processes (
+        id VARCHAR(255) PRIMARY KEY,
+        job_id VARCHAR(255) REFERENCES agent_jobs(id) ON DELETE SET NULL,
+        host VARCHAR(255),
+        pid INTEGER,
+        status VARCHAR(50) NOT NULL DEFAULT 'starting',
+        last_heartbeat_at TIMESTAMP,
+        started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        exited_at TIMESTAMP,
+        exit_code INTEGER,
+        metadata JSONB
+      )
+    `);
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_agent_jobs_status_created_at ON agent_jobs(status, created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_agent_steps_job_status ON agent_steps(job_id, status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_approval_requests_job_status ON approval_requests(job_id, status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_replay_chunks_job_step ON replay_chunks(job_id, step_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_correction_memory_domain_action ON correction_memory(domain, action_type)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_metric_rollups_job_metric ON metric_rollups(job_id, metric_key)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bot_configurations_created_at ON bot_configurations(created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_worker_processes_job_status ON worker_processes(job_id, status)`);
     
     console.log('Migrations completed successfully!');
     

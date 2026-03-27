@@ -163,3 +163,15 @@ model MetricRollup {
 
   @@index([jobId, metricKey])
 }
+
+model BotConfiguration {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  task        String
+  details     Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdAt])
+}

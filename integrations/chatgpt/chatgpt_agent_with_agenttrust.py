@@ -29,6 +29,8 @@ import time
 import re
 import zipfile
 import shutil
+import tempfile
+import hashlib
 
 # Fix emoji output on Windows terminals that use cp1252
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -39,7 +41,7 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 import requests
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from openai import OpenAI
 from agenttrust_client import AgentTrustClient, AGENTTRUST_FUNCTION_DEFINITION
 
@@ -474,6 +476,9 @@ class BrowserController:
         
         extension_path = self._get_extension_path()
         load_ext = extension_path and os.getenv("AGENTTRUST_LOAD_EXTENSION", "true").lower() == "true"
+        if headless and load_ext and os.getenv("AGENTTRUST_ALLOW_EXTENSION_IN_HEADLESS", "false").lower() != "true":
+            print("⚠️  Headless worker detected; disabling browser extension for startup stability.")
+            load_ext = False
         chrome_for_testing = self._get_chrome_for_testing_path()
         force_reinstall = os.getenv("AGENTTRUST_REINSTALL_CHROMIUM", "").lower() == "true"
         if load_ext and not chrome_for_testing and os.getenv("AGENTTRUST_AUTO_INSTALL_CHROMIUM", "true").lower() == "true":
@@ -484,12 +489,6 @@ class BrowserController:
             print("❌ Chrome for Testing required for extension. Set CHROME_FOR_TESTING_PATH or run with auto-install (default).")
             raise RuntimeError("Chrome for Testing not found. Delete integrations/chatgpt/chrome-for-testing and run again to re-download.")
         
-        options = webdriver.ChromeOptions()
-        if headless:
-            options.add_argument('--headless=new')
-        if chrome_for_testing:
-            options.binary_location = chrome_for_testing
-        
         chrome_profile = os.getenv("CHROME_PROFILE_DIR")
         if not chrome_profile:
             chrome_profile = os.path.join(
@@ -498,6 +497,7 @@ class BrowserController:
         chrome_profile = os.path.abspath(chrome_profile)
         chrome_profile_name = os.getenv("CHROME_PROFILE_NAME", "Default").strip() or "Default"
         os.makedirs(chrome_profile, exist_ok=True)
+        self._temp_profile_dir = None
         # Remove stale lock files from previous unclean shutdowns
         for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             lock_path = os.path.join(chrome_profile, lock_name)
@@ -506,46 +506,121 @@ class BrowserController:
                     os.remove(lock_path)
             except OSError:
                 pass
-        options.add_argument(f'--user-data-dir={chrome_profile}')
-        options.add_argument(f'--profile-directory={chrome_profile_name}')
-        
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        # Disable passkey / WebAuthn / Google Password Manager prompts
-        options.add_argument('--disable-features='
-                             'WebAuthentication,'
-                             'WebAuthenticationConditionalUI,'
-                             'PasswordManagerOnboarding,'
-                             'PasswordManagerSetting,'
-                             'ChromePasswordManagerUI,'
-                             'IdentityCredentialAutoReauthn')
-        options.add_argument('--disable-component-update')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.add_experimental_option("prefs", {
-            "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
-            "profile.password_manager_leak_detection": False,
-            "profile.default_content_setting_values.notifications": 2,
-            "profile.default_content_setting_values.popups": 2,
-            "profile.default_content_setting_values.ads": 2,
-            "autofill.profile_enabled": False,
-            "autofill.credit_card_enabled": False,
-            "password_manager.enabled": False,
-            "password_manager.leak_detection": False,
-            "password_manager.auto_signin.enabled": False,
-            "webauthn.allow_virtual_authenticator": False,
-        })
-        
-        if load_ext:
-            options.add_argument(f'--load-extension={extension_path}')
-        
+
+        def _build_options(profile_dir: str, profile_name: Optional[str]) -> webdriver.ChromeOptions:
+            options = webdriver.ChromeOptions()
+            if headless:
+                options.add_argument('--headless=new')
+            if chrome_for_testing:
+                options.binary_location = chrome_for_testing
+            options.add_argument(f'--user-data-dir={profile_dir}')
+            if profile_name:
+                options.add_argument(f'--profile-directory={profile_name}')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--no-first-run')
+            options.add_argument('--no-default-browser-check')
+            options.add_argument('--disable-background-networking')
+            options.add_argument('--disable-background-timer-throttling')
+            options.add_argument('--disable-backgrounding-occluded-windows')
+            options.add_argument('--disable-renderer-backgrounding')
+            options.add_argument('--remote-debugging-port=0')
+            options.add_argument('--lang=en-US,en')
+            options.add_argument('--window-size=1440,960')
+            # Disable passkey / WebAuthn / Google Password Manager prompts
+            options.add_argument('--disable-features='
+                                 'WebAuthentication,'
+                                 'WebAuthenticationConditionalUI,'
+                                 'PasswordManagerOnboarding,'
+                                 'PasswordManagerSetting,'
+                                 'ChromePasswordManagerUI,'
+                                 'IdentityCredentialAutoReauthn')
+            options.add_argument('--disable-component-update')
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
+            options.add_experimental_option("prefs", {
+                "credentials_enable_service": False,
+                "profile.password_manager_enabled": False,
+                "profile.password_manager_leak_detection": False,
+                "profile.default_content_setting_values.notifications": 2,
+                "profile.default_content_setting_values.popups": 2,
+                "profile.default_content_setting_values.ads": 2,
+                "autofill.profile_enabled": False,
+                "autofill.credit_card_enabled": False,
+                "password_manager.enabled": False,
+                "password_manager.leak_detection": False,
+                "password_manager.auto_signin.enabled": False,
+                "webauthn.allow_virtual_authenticator": False,
+            })
+            if load_ext:
+                options.add_argument(f'--load-extension={extension_path}')
+            return options
+
         print(f"📁 Persistent browser profile: {chrome_profile} [{chrome_profile_name}]")
-        actual_driver = webdriver.Chrome(options=options)
+        try:
+            actual_driver = webdriver.Chrome(options=_build_options(chrome_profile, chrome_profile_name))
+        except Exception as primary_error:
+            error_text = str(primary_error)
+            recoverable_profile_error = any(token in error_text for token in [
+                "DevToolsActivePort file doesn't exist",
+                "user data directory is already in use",
+                "session not created",
+                "Chrome failed to start"
+            ])
+            if not recoverable_profile_error:
+                raise
+
+            self._temp_profile_dir = tempfile.mkdtemp(
+                prefix="agenttrust-chrome-",
+                dir=os.path.dirname(chrome_profile)
+            )
+            print(f"⚠️  Persistent Chrome profile could not be opened: {primary_error}")
+            print(f"↪ Retrying with temporary browser profile: {self._temp_profile_dir}")
+            actual_driver = webdriver.Chrome(options=_build_options(self._temp_profile_dir, None))
+
         if load_ext:
             print("✅ AgentTrust extension installed")
         actual_driver.implicitly_wait(2)
+        try:
+            if not headless:
+                actual_driver.maximize_window()
+        except Exception:
+            pass
+
+        try:
+            actual_driver.execute_cdp_cmd("Network.enable", {})
+            browser_version = actual_driver.execute_cdp_cmd("Browser.getVersion", {})
+            current_ua = str(browser_version.get("userAgent") or "")
+            normal_ua = current_ua.replace("HeadlessChrome", "Chrome") if current_ua else (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+            )
+            actual_driver.execute_cdp_cmd("Network.setUserAgentOverride", {
+                "userAgent": normal_ua,
+                "acceptLanguage": "en-US,en;q=0.9",
+                "platform": "Win32",
+                "userAgentMetadata": {
+                    "platform": "Windows",
+                    "platformVersion": "10.0.0",
+                    "architecture": "x86",
+                    "model": "",
+                    "mobile": False,
+                    "brands": [
+                        {"brand": "Chromium", "version": "136"},
+                        {"brand": "Google Chrome", "version": "136"},
+                        {"brand": "Not.A/Brand", "version": "24"},
+                    ],
+                    "fullVersionList": [
+                        {"brand": "Chromium", "version": "136.0.0.0"},
+                        {"brand": "Google Chrome", "version": "136.0.0.0"},
+                        {"brand": "Not.A/Brand", "version": "24.0.0.0"},
+                    ],
+                },
+            })
+        except Exception:
+            pass
         
         # Suppress the native passkey / WebAuthn dialog via DevTools Protocol
         try:
@@ -566,6 +641,75 @@ class BrowserController:
         try:
             actual_driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': '''
+                    const override = (obj, key, value) => {
+                        try {
+                            Object.defineProperty(obj, key, {
+                                get: () => value,
+                                configurable: true
+                            });
+                        } catch (e) {}
+                    };
+
+                    override(Navigator.prototype, 'webdriver', undefined);
+                    override(Navigator.prototype, 'platform', 'Win32');
+                    override(Navigator.prototype, 'vendor', 'Google Inc.');
+                    override(Navigator.prototype, 'language', 'en-US');
+                    override(Navigator.prototype, 'languages', ['en-US', 'en']);
+                    override(Navigator.prototype, 'hardwareConcurrency', 8);
+                    override(Navigator.prototype, 'deviceMemory', 8);
+                    override(Navigator.prototype, 'maxTouchPoints', 0);
+
+                    const fakePlugins = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+                    ];
+                    override(Navigator.prototype, 'plugins', fakePlugins);
+                    override(Navigator.prototype, 'mimeTypes', [
+                        { type: 'application/pdf', suffixes: 'pdf', description: '', enabledPlugin: fakePlugins[0] }
+                    ]);
+
+                    if (!window.chrome) {
+                        window.chrome = {};
+                    }
+                    if (!window.chrome.runtime) {
+                        window.chrome.runtime = {};
+                    }
+                    if (!window.chrome.app) {
+                        window.chrome.app = {
+                            isInstalled: false,
+                            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+                        };
+                    }
+
+                    const originalQuery = window.navigator.permissions && window.navigator.permissions.query
+                        ? window.navigator.permissions.query.bind(window.navigator.permissions)
+                        : null;
+                    if (originalQuery) {
+                        window.navigator.permissions.query = (parameters) => {
+                            if (parameters && parameters.name === 'notifications') {
+                                return Promise.resolve({ state: Notification.permission });
+                            }
+                            return originalQuery(parameters);
+                        };
+                    }
+
+                    const getParameter = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                        if (parameter === 37445) return 'Intel Inc.';
+                        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                        return getParameter.call(this, parameter);
+                    };
+                    if (window.WebGL2RenderingContext) {
+                        const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+                        WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+                            if (parameter === 37445) return 'Intel Inc.';
+                            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                            return getParameter2.call(this, parameter);
+                        };
+                    }
+
                     if (navigator.credentials) {
                         navigator.credentials.get = () => Promise.reject(new Error('disabled'));
                         navigator.credentials.create = () => Promise.reject(new Error('disabled'));
@@ -672,6 +816,131 @@ class BrowserController:
         self._actual_driver.get(url)
         self.current_url = self._actual_driver.current_url
         return {"success": True, "url": self.current_url}
+
+    def get_interactive_readiness(self) -> Dict[str, Any]:
+        """
+        Inspect whether the current page appears meaningfully interactive yet.
+
+        This is intentionally generic: it looks for visible primary controls,
+        meaningful text, or an active dialog instead of relying on site-specific
+        selectors.
+        """
+        drv = self._actual_driver
+        try:
+            readiness = drv.execute_script("""
+                function isVisible(el) {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }
+
+                function visibleCount(selector, limit = 50) {
+                    const nodes = Array.from(document.querySelectorAll(selector));
+                    let count = 0;
+                    for (const el of nodes) {
+                        if (isVisible(el)) {
+                            count += 1;
+                            if (count >= limit) break;
+                        }
+                    }
+                    return count;
+                }
+
+                const bodyText = ((document.body && (document.body.innerText || document.body.textContent)) || '').replace(/\\s+/g, ' ').trim();
+                const main = document.querySelector('main, [role="main"], #content, #main, .main-content, #search, #center-col, ytd-page-manager');
+                const mainText = ((main && (main.innerText || main.textContent)) || '').replace(/\\s+/g, ' ').trim();
+                const dialogs = visibleCount('[role="dialog"], [role="alertdialog"], [aria-modal="true"]', 10);
+                const inputs = visibleCount('input:not([type="hidden"]):not([type="submit"]), textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="combobox"], [role="searchbox"]');
+                const buttons = visibleCount('button, input[type="submit"], input[type="button"], [role="button"]');
+                const links = visibleCount('a[href]');
+                const headings = visibleCount('h1, h2, h3, [role="heading"]');
+                const searchInputs = visibleCount('input[type="search"], [role="searchbox"], [role="search"] input, form[role="search"] input, input[name*="search"], input[name*="query"], input[placeholder*="Search" i], input[aria-label*="Search" i]');
+                const spinnerVisible = visibleCount('[role="progressbar"], .loading, .spinner, ytd-continuation-item-renderer', 20);
+                const interactiveCount = inputs + buttons + Math.min(links, 6);
+                const textLength = Math.max(bodyText.length, mainText.length);
+
+                let ready = false;
+                let reason = 'waiting for meaningful interactive content';
+                if (dialogs > 0 && (inputs + buttons) > 0) {
+                    ready = true;
+                    reason = 'interactive dialog is visible';
+                } else if (searchInputs > 0) {
+                    ready = true;
+                    reason = 'search input is visible';
+                } else if (inputs > 0 && buttons > 0) {
+                    ready = true;
+                    reason = 'form controls are visible';
+                } else if (interactiveCount >= 4 && textLength >= 120) {
+                    ready = true;
+                    reason = 'page has visible controls and content';
+                } else if (headings > 0 && interactiveCount >= 2 && textLength >= 80) {
+                    ready = true;
+                    reason = 'page chrome and content are visible';
+                } else if (spinnerVisible > 0 && interactiveCount < 2) {
+                    reason = 'page is still rendering';
+                } else if (textLength < 40 && interactiveCount < 2) {
+                    reason = 'page shell loaded without meaningful content yet';
+                }
+
+                return {
+                    readyState: document.readyState || '',
+                    url: location.href || '',
+                    title: document.title || '',
+                    ready,
+                    reason,
+                    textLength,
+                    mainTextLength: mainText.length,
+                    dialogCount: dialogs,
+                    inputCount: inputs,
+                    buttonCount: buttons,
+                    linkCount: links,
+                    headingCount: headings,
+                    searchInputCount: searchInputs,
+                    spinnerCount: spinnerVisible,
+                    interactiveCount
+                };
+            """) or {}
+        except Exception as exc:
+            return {
+                "readyState": "",
+                "ready": True,
+                "reason": f"readiness check unavailable: {exc}",
+                "interactiveCount": 0,
+                "searchInputCount": 0,
+                "textLength": 0,
+            }
+
+        if readiness.get("readyState") != "complete":
+            readiness["ready"] = False
+            readiness["reason"] = "document is still loading"
+        return readiness
+
+    def wait_for_interactive_page(self, timeout: float = 6.0) -> Dict[str, Any]:
+        """Wait briefly for the current page to become meaningfully interactive."""
+        if not self.is_alive():
+            return {"ready": False, "reason": "browser session unavailable"}
+
+        driver = self._actual_driver
+        final_state = self.get_interactive_readiness()
+        try:
+            WebDriverWait(driver, timeout).until(
+                lambda _drv: (self.get_interactive_readiness() or {}).get("ready")
+            )
+            final_state = self.get_interactive_readiness()
+        except Exception:
+            final_state = self.get_interactive_readiness()
+
+        if not final_state.get("ready"):
+            try:
+                time.sleep(0.4)
+                refreshed_state = self.get_interactive_readiness()
+                if refreshed_state:
+                    final_state = refreshed_state
+            except Exception:
+                pass
+        return final_state
     
     def is_alive(self) -> bool:
         """Check if the browser/ChromeDriver session is still running."""
@@ -700,6 +969,8 @@ class BrowserController:
         # agent focused on the popup it must act on instead of reading the page
         # behind it.
         content_bits = drv.execute_script("""
+            const includeHtml = Boolean(arguments[0]);
+
             function isVisible(el) {
                 if (!el) return false;
                 const r = el.getBoundingClientRect();
@@ -733,7 +1004,7 @@ class BrowserController:
                     source: 'dialog',
                     title: headingText || document.title || '',
                     text,
-                    html: dlg.outerHTML ? dlg.outerHTML.substring(0, 6000) : ''
+                    html: includeHtml && dlg.outerHTML ? dlg.outerHTML.substring(0, 6000) : ''
                 };
             }
 
@@ -743,9 +1014,9 @@ class BrowserController:
                 source: 'page',
                 title: document.title || '',
                 text: (pageText || '').substring(0, 4000),
-                html: include_html ? (main ? main.outerHTML : document.body.outerHTML).substring(0, 6000) : ''
+                html: includeHtml ? (main ? main.outerHTML : document.body.outerHTML).substring(0, 6000) : ''
             };
-        """) or {}
+        """, include_html) or {}
 
         content = {
             "url": drv.current_url,
@@ -806,6 +1077,28 @@ class BrowserController:
             return false;
         }
 
+        function cssEscapeValue(value) {
+            const raw = String(value || '');
+            if (window.CSS && typeof window.CSS.escape === 'function') {
+                return window.CSS.escape(raw);
+            }
+            return raw.replace(/["\\\\]/g, '\\\\$&');
+        }
+
+        function buildSelector(el, tag) {
+            if (!el || !tag) return '';
+            if (el.id) return `${tag}#${cssEscapeValue(el.id)}`;
+            const aria = el.getAttribute('aria-label') || '';
+            if (aria) return `${tag}[aria-label="${cssEscapeValue(aria)}"]`;
+            const name = el.getAttribute('name') || '';
+            if (name) return `${tag}[name="${cssEscapeValue(name)}"]`;
+            const placeholder = el.getAttribute('placeholder') || '';
+            if (placeholder) return `${tag}[placeholder="${cssEscapeValue(placeholder)}"]`;
+            const role = el.getAttribute('role') || '';
+            if (role) return `${tag}[role="${cssEscapeValue(role)}"]`;
+            return tag;
+        }
+
         for (let i = 0; i < all.length && out.length < MAX * 3; i++) {
             const el = all[i];
             const r = el.getBoundingClientRect();
@@ -847,12 +1140,24 @@ class BrowserController:
 
             // Get input type for inputs
             const inputType = (tag === 'input') ? (el.type || 'text').toLowerCase() : '';
+            const searchBlob = `${txt} ${ariaLabel} ${el.placeholder || ''} ${el.name || ''} ${el.id || ''} ${role}`.toLowerCase();
+            const isSearch =
+                inputType === 'search'
+                || role === 'searchbox'
+                || role === 'search'
+                || searchBlob.includes('search')
+                || searchBlob.includes('find')
+                || searchBlob.includes('query');
+            const selector = buildSelector(el, tag);
 
             out.push({t, txt, id:el.id||'', nm:el.name||'', hp,
                 al: ariaLabel,
                 ph: el.placeholder||'',
                 v: (el.value||'').substring(0,30),
                 it: inputType,
+                tg: tag,
+                sel: selector,
+                sr: isSearch ? 1 : 0,
                 rl: role,
                 ov: inOverlay(el) ? 1 : 0,
                 n: near, y: Math.round(r.top)});
@@ -874,6 +1179,9 @@ class BrowserController:
                 if r.get("ph"):  e["placeholder"] = r["ph"]
                 if r.get("v"):   e["value"] = r["v"]
                 if r.get("it"):  e["input_type"] = r["it"]
+                if r.get("tg"):  e["tag"] = r["tg"]
+                if r.get("sel"): e["selector"] = r["sel"]
+                if r.get("sr"):  e["is_search"] = True
                 if r.get("rl"):  e["role"] = r["rl"]
                 if r.get("ov"):  e["in_overlay"] = True
                 elements.append(e)
@@ -881,6 +1189,230 @@ class BrowserController:
         except Exception as e:
             print(f"⚠️  Error getting elements: {e}")
             return []
+
+    def highlight_interactive_elements(
+        self,
+        element_type: Optional[str] = None,
+        max_elements: int = 25,
+    ) -> Dict[str, Any]:
+        """Draw Browser Use-style numbered highlights for interactive elements."""
+        drv = self._actual_driver
+        js = """
+        const F = arguments[0] || null;
+        const MAX = Math.max(1, Math.min(Number(arguments[1] || 25), 60));
+        const OVERLAY_ID = '__agenttrust-highlight-overlay__';
+
+        function removeExisting() {
+            const existing = document.getElementById(OVERLAY_ID);
+            if (existing) existing.remove();
+        }
+
+        function inOverlay(el) {
+            let p = el;
+            while (p && p !== document.body) {
+                const role = (p.getAttribute && p.getAttribute('role')) || '';
+                const cls = (p.className && typeof p.className === 'string') ? p.className.toLowerCase() : '';
+                if (role === 'dialog' || role === 'alertdialog' ||
+                    cls.includes('modal') || cls.includes('overlay') ||
+                    cls.includes('popup') || cls.includes('dialog') ||
+                    cls.includes('drawer') || cls.includes('lightbox') ||
+                    (p.getAttribute && p.getAttribute('aria-modal') === 'true')) {
+                    return true;
+                }
+                p = p.parentElement;
+            }
+            return false;
+        }
+
+        function cssEscapeValue(value) {
+            const raw = String(value || '');
+            if (window.CSS && typeof window.CSS.escape === 'function') {
+                return window.CSS.escape(raw);
+            }
+            return raw.replace(/["\\\\]/g, '\\\\$&');
+        }
+
+        function buildSelector(el, tag) {
+            if (!el || !tag) return '';
+            if (el.id) return `${tag}#${cssEscapeValue(el.id)}`;
+            const aria = el.getAttribute('aria-label') || '';
+            if (aria) return `${tag}[aria-label="${cssEscapeValue(aria)}"]`;
+            const name = el.getAttribute('name') || '';
+            if (name) return `${tag}[name="${cssEscapeValue(name)}"]`;
+            const placeholder = el.getAttribute('placeholder') || '';
+            if (placeholder) return `${tag}[placeholder="${cssEscapeValue(placeholder)}"]`;
+            const role = el.getAttribute('role') || '';
+            if (role) return `${tag}[role="${cssEscapeValue(role)}"]`;
+            return tag;
+        }
+
+        function classify(el) {
+            const tag = el.tagName.toLowerCase();
+            const role = (el.getAttribute('role') || '').toLowerCase();
+            if (tag === 'a') return 'link';
+            if (tag === 'button' || role === 'button') return 'btn';
+            if (tag === 'input') {
+                const it = (el.type || '').toLowerCase();
+                return (it === 'submit' || it === 'button') ? 'btn' : 'in';
+            }
+            if (tag === 'textarea' || tag === 'select' || el.isContentEditable) return 'in';
+            if (role === 'search' || role === 'searchbox' || role === 'combobox' || role === 'textbox') return 'in';
+            return 'btn';
+        }
+
+        function isVisible(el) {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            if (!rect.width && !rect.height) return false;
+            if (el.offsetParent === null && el.tagName !== 'BODY') return false;
+            const style = window.getComputedStyle(el);
+            if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
+            return rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+        }
+
+        const all = document.querySelectorAll(
+            'a, button, input, select, textarea, ' +
+            '[contenteditable="true"], [contenteditable=""], ' +
+            '[role="button"], [role="search"], [role="searchbox"], ' +
+            '[role="combobox"], [role="textbox"], input[type="submit"]'
+        );
+
+        const out = [];
+        for (let i = 0; i < all.length && out.length < MAX * 3; i++) {
+            const el = all[i];
+            if (!isVisible(el)) continue;
+
+            const t = classify(el);
+            if (F && t !== F && !(F === 'button' && t === 'btn') && !(F === 'input' && t === 'in')) continue;
+
+            const rect = el.getBoundingClientRect();
+            const txt = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 60);
+            const ariaLabel = el.getAttribute('aria-label') || '';
+            if (!txt && !el.id && !el.name && !el.placeholder && !ariaLabel && !el.getAttribute('role')) continue;
+
+            const tag = el.tagName.toLowerCase();
+            out.push({
+                element: el,
+                t,
+                txt,
+                id: el.id || '',
+                nm: el.name || '',
+                al: ariaLabel,
+                ph: el.placeholder || '',
+                it: tag === 'input' ? (el.type || 'text').toLowerCase() : '',
+                tg: tag,
+                rl: (el.getAttribute('role') || '').toLowerCase(),
+                ov: inOverlay(el) ? 1 : 0,
+                sel: buildSelector(el, tag),
+                y: Math.round(rect.top),
+                area: rect.width * rect.height,
+            });
+        }
+
+        out.sort((a, b) => a.y !== b.y ? a.y - b.y : b.area - a.area);
+        const finalItems = out.slice(0, MAX);
+
+        removeExisting();
+        const overlay = document.createElement('div');
+        overlay.id = OVERLAY_ID;
+        overlay.setAttribute('aria-hidden', 'true');
+        overlay.style.position = 'fixed';
+        overlay.style.inset = '0';
+        overlay.style.pointerEvents = 'none';
+        overlay.style.zIndex = '2147483647';
+        overlay.style.fontFamily = 'Inter, ui-sans-serif, system-ui, sans-serif';
+        document.documentElement.appendChild(overlay);
+
+        const palette = {
+            btn: { border: '#8ea0ff', fill: 'rgba(142,160,255,0.14)', badge: '#8ea0ff', text: '#081020' },
+            link: { border: '#22d3ee', fill: 'rgba(34,211,238,0.14)', badge: '#22d3ee', text: '#06232a' },
+            in: { border: '#4ade80', fill: 'rgba(74,222,128,0.14)', badge: '#4ade80', text: '#07170d' },
+            select: { border: '#fbbf24', fill: 'rgba(251,191,36,0.14)', badge: '#fbbf24', text: '#241604' },
+        };
+
+        const serialized = [];
+        finalItems.forEach((item, index) => {
+            const el = item.element;
+            const rect = el.getBoundingClientRect();
+            const colors = palette[item.t] || palette.btn;
+
+            const box = document.createElement('div');
+            box.style.position = 'fixed';
+            box.style.left = `${Math.max(0, rect.left)}px`;
+            box.style.top = `${Math.max(0, rect.top)}px`;
+            box.style.width = `${Math.max(0, rect.width)}px`;
+            box.style.height = `${Math.max(0, rect.height)}px`;
+            box.style.border = `2px solid ${colors.border}`;
+            box.style.background = colors.fill;
+            box.style.borderRadius = '10px';
+            box.style.boxSizing = 'border-box';
+            box.style.boxShadow = `0 0 0 1px rgba(255,255,255,0.08), 0 8px 24px ${colors.fill}`;
+
+            const badge = document.createElement('div');
+            badge.textContent = String(index);
+            badge.style.position = 'absolute';
+            badge.style.left = '0';
+            badge.style.top = '0';
+            badge.style.transform = 'translate(-30%, -35%)';
+            badge.style.minWidth = '22px';
+            badge.style.height = '22px';
+            badge.style.padding = '0 6px';
+            badge.style.display = 'inline-flex';
+            badge.style.alignItems = 'center';
+            badge.style.justifyContent = 'center';
+            badge.style.borderRadius = '999px';
+            badge.style.background = colors.badge;
+            badge.style.color = colors.text;
+            badge.style.fontSize = '11px';
+            badge.style.fontWeight = '800';
+            badge.style.lineHeight = '1';
+            badge.style.boxShadow = '0 6px 18px rgba(0,0,0,0.28)';
+            box.appendChild(badge);
+            overlay.appendChild(box);
+
+            serialized.push({
+                i: index,
+                t: item.t,
+                text: item.txt,
+                id: item.id,
+                name: item.nm,
+                aria_label: item.al,
+                placeholder: item.ph,
+                input_type: item.it,
+                tag: item.tg,
+                role: item.rl,
+                selector: item.sel,
+                in_overlay: Boolean(item.ov),
+            });
+        });
+
+        return { success: true, count: serialized.length, elements: serialized };
+        """
+
+        try:
+            return drv.execute_script(js, element_type, max_elements) or {
+                "success": False,
+                "count": 0,
+                "elements": [],
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error highlighting elements: {e}", "count": 0, "elements": []}
+
+    def clear_highlight_overlays(self) -> Dict[str, Any]:
+        """Remove previously injected interactive-element highlights."""
+        drv = self._actual_driver
+        try:
+            removed = drv.execute_script("""
+                const existing = document.getElementById('__agenttrust-highlight-overlay__');
+                if (existing) {
+                    existing.remove();
+                    return true;
+                }
+                return false;
+            """)
+            return {"success": True, "removed": bool(removed)}
+        except Exception as e:
+            return {"success": False, "message": f"Error clearing highlights: {e}"}
     
     def _unwrap_element(self, element):
         """Get the actual Selenium WebElement from InterceptedWebElement wrapper."""
@@ -891,6 +1423,698 @@ class BrowserController:
         if not text:
             return ""
         return str(text).replace("'", "''")
+
+    def _normalize_lookup_text(self, value: Any) -> str:
+        """Normalize freeform locator text for fuzzy matching."""
+        if value is None:
+            return ""
+        return " ".join(str(value).strip().lower().split())
+
+    def _target_value(self, target: Dict[str, Any], *keys: str) -> Any:
+        """Read the first non-empty target value across alternate key spellings."""
+        for key in keys:
+            value = target.get(key)
+            if value not in (None, ""):
+                return value
+        return None
+
+    def _find_select_like_element(self, target: Dict[str, Any]):
+        """Resolve either a native select or a custom combobox/listbox control."""
+        drv = self._actual_driver
+        element = None
+
+        def _first_interactable(candidates):
+            for candidate in candidates or []:
+                try:
+                    if candidate.is_displayed() and candidate.is_enabled():
+                        return candidate
+                except Exception:
+                    continue
+            return None
+
+        def _resolve_selectable(candidate):
+            candidate = self._unwrap_element(candidate)
+            if not candidate:
+                return None
+            try:
+                tag = (candidate.tag_name or "").lower()
+                role = str(candidate.get_attribute("role") or "").lower()
+                popup = str(candidate.get_attribute("aria-haspopup") or "").lower()
+                if tag == "select" or role in ("combobox", "listbox") or popup == "listbox":
+                    return candidate
+            except Exception:
+                pass
+
+            descendant_selectors = (
+                "select",
+                "[role='combobox']",
+                "[role='listbox']",
+                "[aria-haspopup='listbox']",
+                "input[role='combobox']",
+                "div[role='combobox']",
+                "span[role='combobox']",
+            )
+            for selector in descendant_selectors:
+                try:
+                    nested = _first_interactable(candidate.find_elements(By.CSS_SELECTOR, selector))
+                    if nested is not None:
+                        return nested
+                except Exception:
+                    continue
+
+            ancestor_xpath = (
+                "./ancestor-or-self::*[@role='combobox' or @role='listbox' or "
+                "@aria-haspopup='listbox' or self::select][1]"
+            )
+            try:
+                ancestors = candidate.find_elements(By.XPATH, ancestor_xpath)
+                resolved = _first_interactable(ancestors)
+                if resolved is not None:
+                    return resolved
+            except Exception:
+                pass
+            return candidate
+
+        target_id = self._target_value(target, "id")
+        if target_id:
+            try:
+                element = _resolve_selectable(drv.find_element(By.ID, target_id))
+            except NoSuchElementException:
+                pass
+
+        target_name = self._target_value(target, "name")
+        if not element and target_name:
+            try:
+                element = _resolve_selectable(drv.find_element(By.NAME, target_name))
+            except NoSuchElementException:
+                pass
+
+        selector = self._target_value(target, "selector")
+        if not element and selector:
+            try:
+                element = _resolve_selectable(drv.find_element(By.CSS_SELECTOR, selector))
+            except NoSuchElementException:
+                pass
+
+        aria = self._target_value(target, "aria-label", "aria_label")
+        if not element and aria:
+            escaped_aria = str(aria).replace("'", "\\'")
+            for xpath in (
+                f"//select[@aria-label='{escaped_aria}' or contains(@aria-label,'{escaped_aria}')]",
+                f"//*[@role='combobox'][@aria-label='{escaped_aria}' or contains(@aria-label,'{escaped_aria}')]",
+                f"//*[@role='listbox'][@aria-label='{escaped_aria}' or contains(@aria-label,'{escaped_aria}')]",
+                f"//*[self::div or self::span or self::input][@aria-label='{escaped_aria}' or contains(@aria-label,'{escaped_aria}')]",
+            ):
+                try:
+                    matches = drv.find_elements(By.XPATH, xpath)
+                    element = next(
+                        (_resolve_selectable(match) for match in matches if match.is_displayed() and match.is_enabled()),
+                        None,
+                    )
+                    if element is not None:
+                        break
+                except Exception:
+                    continue
+
+        text = str(self._target_value(target, "text") or "").strip()
+        if not element and text:
+            escaped_text = self._xpath_escape(text[:80])
+            for xpath in (
+                f"//select[contains(normalize-space(.), '{escaped_text}')]",
+                f"//*[@role='combobox'][contains(normalize-space(.), '{escaped_text}')]",
+                f"//*[@role='listbox'][contains(normalize-space(.), '{escaped_text}')]",
+                f"//*[contains(normalize-space(.), '{escaped_text}')][@role='combobox' or @role='listbox']",
+            ):
+                try:
+                    matches = drv.find_elements(By.XPATH, xpath)
+                    element = next(
+                        (_resolve_selectable(match) for match in matches if match.is_displayed() and match.is_enabled()),
+                        None,
+                    )
+                    if element is not None:
+                        break
+                except Exception:
+                    continue
+
+        return element
+
+    def _select_custom_dropdown_option(
+        self,
+        element,
+        target: Dict[str, Any],
+        value: Optional[str] = None,
+        label: Optional[str] = None,
+        index: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Select from a custom JS dropdown/combobox such as Google's signup fields."""
+        import time
+        from selenium.webdriver.common.keys import Keys
+
+        drv = self._actual_driver
+
+        try:
+            drv.execute_script(
+                "arguments[0].scrollIntoView({behavior:'instant', block:'center', inline:'center'});",
+                element,
+            )
+        except Exception:
+            pass
+
+        opened = False
+        for opener in (
+            lambda: element.click(),
+            lambda: drv.execute_script("arguments[0].click();", element),
+        ):
+            try:
+                opener()
+                opened = True
+                break
+            except Exception:
+                continue
+
+        if not opened:
+            return {"success": False, "message": "Could not open custom dropdown"}
+
+        time.sleep(0.2)
+
+        desired = label if label not in (None, "") else value
+        desired_norm = self._normalize_lookup_text(desired)
+
+        def _visible_options():
+            options = []
+            selectors = (
+                "[role='option']",
+                "[role='menuitemradio']",
+                "[role='radio']",
+                "[role='listbox'] [aria-selected]",
+                "[aria-haspopup='listbox'] [role='option']",
+                "[role='presentation'] [role='option']",
+                "[data-value]",
+                "li",
+            )
+            for selector in selectors:
+                try:
+                    for option in drv.find_elements(By.CSS_SELECTOR, selector):
+                        try:
+                            if not option.is_displayed() or not option.is_enabled():
+                                continue
+                            blob = self._normalize_lookup_text(
+                                " ".join(
+                                    filter(
+                                        None,
+                                        [
+                                            option.text,
+                                            option.get_attribute("aria-label"),
+                                            option.get_attribute("data-value"),
+                                            option.get_attribute("value"),
+                                        ],
+                                    )
+                                )
+                            )
+                            if blob:
+                                options.append((blob, option))
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+            deduped = []
+            seen = set()
+            for blob, option in options:
+                key = getattr(option, "id", None) or id(option)
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append((blob, option))
+            return deduped
+
+        def _expand_with_keyboard():
+            for key in (Keys.SPACE, Keys.ARROW_DOWN, Keys.ENTER):
+                try:
+                    element.send_keys(key)
+                    time.sleep(0.15)
+                    if _visible_options():
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        options = _visible_options()
+        if not options:
+            _expand_with_keyboard()
+            options = _visible_options()
+        if not options:
+            return {"success": False, "message": "Custom dropdown opened but no visible options were found"}
+
+        option_to_click = None
+        if index is not None:
+            visible_only = [option for _, option in options]
+            if 0 <= int(index) < len(visible_only):
+                option_to_click = visible_only[int(index)]
+            else:
+                return {"success": False, "message": f"Dropdown option index {index} is out of range"}
+        elif desired_norm:
+            exact_matches = [option for blob, option in options if blob == desired_norm]
+            partial_matches = [option for blob, option in options if desired_norm in blob]
+            option_to_click = (exact_matches or partial_matches or [None])[0]
+            if option_to_click is None and element.get_attribute("role") == "combobox":
+                try:
+                    element.send_keys(str(desired))
+                    time.sleep(0.1)
+                    options = _visible_options()
+                    exact_matches = [option for blob, option in options if blob == desired_norm]
+                    partial_matches = [option for blob, option in options if desired_norm in blob]
+                    option_to_click = (exact_matches or partial_matches or [None])[0]
+                except Exception:
+                    option_to_click = None
+            if option_to_click is None:
+                return {"success": False, "message": f"Dropdown option '{desired}' was not found"}
+        else:
+            return {"success": False, "message": "Select requires label, value, or index"}
+
+        try:
+            drv.execute_script("arguments[0].scrollIntoView({block:'nearest'});", option_to_click)
+        except Exception:
+            pass
+
+        for clicker in (
+            lambda: option_to_click.click(),
+            lambda: drv.execute_script("arguments[0].click();", option_to_click),
+        ):
+            try:
+                clicker()
+                return {"success": True, "message": f"Selected option {label or value or index}"}
+            except Exception:
+                continue
+
+        return {"success": False, "message": f"Dropdown option '{label or value or index}' could not be clicked"}
+
+    def _element_lookup_blob(self, element) -> str:
+        """Build a searchable blob of meaningful element attributes."""
+        parts: List[str] = []
+        try:
+            tag = (element.tag_name or "").lower()
+            if tag:
+                parts.append(tag)
+        except Exception:
+            pass
+
+        for attr in (
+            "id",
+            "name",
+            "type",
+            "role",
+            "placeholder",
+            "aria-label",
+            "title",
+            "class",
+            "autocomplete",
+            "data-testid",
+            "data-test",
+            "value",
+        ):
+            try:
+                value = element.get_attribute(attr)
+                if value:
+                    parts.append(str(value))
+            except Exception:
+                continue
+
+        try:
+            text = element.text or ""
+            if text:
+                parts.append(text)
+        except Exception:
+            pass
+
+        return self._normalize_lookup_text(" ".join(parts))
+
+    def _element_search_context_blob(self, element) -> str:
+        """Collect nearby form/container metadata to detect search inputs generically."""
+        try:
+            raw = self._actual_driver.execute_script(
+                """
+                const el = arguments[0];
+                if (!el) return "";
+                const attrs = (node) => {
+                    if (!node || !node.getAttribute) return "";
+                    const values = [];
+                    for (const name of ["id", "name", "role", "action", "method", "placeholder", "aria-label", "title", "class", "data-testid", "data-test", "type", "autocomplete", "aria-autocomplete"]) {
+                        const value = node.getAttribute(name);
+                        if (value) values.push(String(value));
+                    }
+                    const text = (node.innerText || node.textContent || "").trim();
+                    if (text) values.push(text.slice(0, 120));
+                    return values.join(" ");
+                };
+                const chunks = [attrs(el)];
+                let parent = el.parentElement;
+                for (let depth = 0; parent && depth < 4; depth += 1, parent = parent.parentElement) {
+                    chunks.push(attrs(parent));
+                }
+                const form = el.closest("form");
+                if (form) {
+                    chunks.push(attrs(form));
+                    const submit = form.querySelector("button, input[type='submit'], button[type='submit']");
+                    if (submit) chunks.push(attrs(submit));
+                }
+                return chunks.filter(Boolean).join(" ");
+                """,
+                element,
+            )
+        except Exception:
+            raw = ""
+        return self._normalize_lookup_text(raw)
+
+    def _target_lookup_blob(self, target: Dict[str, Any]) -> str:
+        """Build a normalized blob from model-provided target hints."""
+        parts = [
+            target.get("text"),
+            target.get("id"),
+            target.get("name"),
+            target.get("placeholder"),
+            target.get("aria_label"),
+            target.get("aria-label"),
+            target.get("selector"),
+            target.get("input_type"),
+            target.get("type"),
+            target.get("role"),
+            target.get("tag"),
+            target.get("tagName"),
+            target.get("is_search"),
+        ]
+        return self._normalize_lookup_text(" ".join(str(part or "") for part in parts))
+
+    def _target_prefers_search_input(self, target: Dict[str, Any], typed_text: Optional[str] = None) -> bool:
+        """Detect when the intended element is likely a site search box."""
+        target_blob = self._target_lookup_blob(target)
+        search_markers = (
+            "search",
+            "searchbox",
+            "find",
+            "query",
+            "look up",
+            "lookup",
+        )
+        if any(marker in target_blob for marker in search_markers):
+            return True
+        target_type = self._normalize_lookup_text(self._target_value(target, "type", "input_type"))
+        target_role = self._normalize_lookup_text(target.get("role"))
+        target_name = self._normalize_lookup_text(target.get("name"))
+        target_placeholder = self._normalize_lookup_text(target.get("placeholder"))
+        return (
+            target_type == "search"
+            or target_role in ("searchbox", "search", "combobox")
+            or "search" in target_name
+            or "query" in target_name
+            or "search" in target_placeholder
+            or "find" in target_placeholder
+        )
+
+    def _read_text_entry_value(self, element) -> str:
+        """Read the current visible value/text from an input-like element."""
+        try:
+            if element.get_attribute("contenteditable") in ("true", ""):
+                try:
+                    raw = self._actual_driver.execute_script(
+                        "const el = arguments[0]; return (el.innerText || el.textContent || '').trim();",
+                        element,
+                    )
+                except Exception:
+                    raw = element.text or ""
+                return str(raw or "")
+            return str(element.get_attribute("value") or "")
+        except Exception:
+            return ""
+
+    def _clear_text_entry(self, element) -> None:
+        """Clear text robustly for JS-controlled inputs and contenteditables."""
+        from selenium.webdriver.common.keys import Keys
+        import time
+
+        try:
+            element.click()
+        except Exception:
+            try:
+                self._actual_driver.execute_script("arguments[0].focus();", element)
+            except Exception:
+                pass
+
+        is_contenteditable = False
+        try:
+            is_contenteditable = element.get_attribute("contenteditable") in ("true", "")
+        except Exception:
+            is_contenteditable = False
+
+        if not is_contenteditable:
+            try:
+                element.clear()
+                time.sleep(0.05)
+            except Exception:
+                pass
+
+        for modifier in (Keys.CONTROL, Keys.COMMAND):
+            try:
+                element.send_keys(modifier + "a")
+                time.sleep(0.04)
+                element.send_keys(Keys.DELETE)
+                time.sleep(0.04)
+                if not self._read_text_entry_value(element):
+                    return
+            except Exception:
+                continue
+
+        try:
+            if is_contenteditable:
+                self._actual_driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    if (!el) return;
+                    el.innerHTML = '';
+                    el.textContent = '';
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    """,
+                    element,
+                )
+            else:
+                self._actual_driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    if (!el) return;
+                    el.value = '';
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    """,
+                    element,
+                )
+                time.sleep(0.04)
+        except Exception:
+            pass
+
+    def _collect_input_candidates(self, root=None):
+        """Collect visible, enabled text-entry candidates across common input patterns."""
+        drv = root or self._actual_driver
+        selectors = [
+            "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']):not([type='file'])",
+            "textarea",
+            "select",
+            "[contenteditable='true']",
+            "[contenteditable='']",
+            "[role='textbox']",
+            "[role='searchbox']",
+            "[role='combobox']",
+            "[role='search'] input",
+            "form[role='search'] input",
+            "form[action*='search'] input",
+            "form[action*='results'] input",
+            "input[name*='search']",
+            "input[name*='query']",
+            "input[aria-autocomplete='list']",
+            "[data-testid*='search' i] input",
+            "[class*='search' i] input",
+            "[id*='search' i] input",
+        ]
+        seen = set()
+        candidates = []
+        for sel in selectors:
+            try:
+                for el in drv.find_elements(By.CSS_SELECTOR, sel):
+                    try:
+                        raw = self._unwrap_element(el)
+                        key = getattr(raw, "id", None) or id(raw)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if not raw.is_displayed() or not raw.is_enabled():
+                            continue
+                        if str(raw.get_attribute("readonly") or "").lower() in ("true", "readonly"):
+                            continue
+                        candidates.append(raw)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return candidates
+
+    def _score_input_candidate(self, element, target: Dict[str, Any], prefer_search: bool = False) -> float:
+        """Rank likely input matches, heavily boosting search-like controls when requested."""
+        try:
+            rect = element.rect or {}
+        except Exception:
+            rect = {}
+        width = float(rect.get("width") or 0)
+        top = float(rect.get("y") or rect.get("top") or 0)
+
+        blob = self._element_lookup_blob(element)
+        context_blob = self._element_search_context_blob(element)
+        combined_blob = self._normalize_lookup_text(f"{blob} {context_blob}")
+        target_blob = self._target_lookup_blob(target)
+        target_id = self._normalize_lookup_text(target.get("id"))
+        target_name = self._normalize_lookup_text(target.get("name"))
+        target_placeholder = self._normalize_lookup_text(target.get("placeholder"))
+        target_aria = self._normalize_lookup_text(self._target_value(target, "aria-label", "aria_label"))
+        target_selector = self._normalize_lookup_text(target.get("selector"))
+        target_role = self._normalize_lookup_text(target.get("role"))
+        target_type = self._normalize_lookup_text(self._target_value(target, "type", "input_type"))
+
+        score = 0.0
+
+        for exact_attr, points in (
+            ("id", 80),
+            ("name", 70),
+            ("placeholder", 65),
+            ("aria-label", 65),
+            ("role", 50),
+            ("type", 40),
+        ):
+            wanted = self._normalize_lookup_text(target.get(exact_attr))
+            if not wanted:
+                continue
+            try:
+                actual = self._normalize_lookup_text(element.get_attribute(exact_attr))
+            except Exception:
+                actual = ""
+            if wanted and actual == wanted:
+                score += points
+
+        if target_blob and combined_blob:
+            if combined_blob == target_blob:
+                score += 120
+            elif target_blob in combined_blob:
+                score += 75
+            else:
+                target_terms = [part for part in target_blob.split() if len(part) > 2]
+                score += sum(12 for part in target_terms[:8] if part in combined_blob)
+
+        if target_selector:
+            try:
+                tag = self._normalize_lookup_text(element.tag_name)
+            except Exception:
+                tag = ""
+            if tag and tag in target_selector:
+                score += 10
+
+        try:
+            input_type = self._normalize_lookup_text(element.get_attribute("type"))
+            role = self._normalize_lookup_text(element.get_attribute("role"))
+            name = self._normalize_lookup_text(element.get_attribute("name"))
+            aria_autocomplete = self._normalize_lookup_text(element.get_attribute("aria-autocomplete"))
+        except Exception:
+            input_type = ""
+            role = ""
+            name = ""
+            aria_autocomplete = ""
+
+        search_like = any(token in combined_blob for token in ("search", "searchbox", "find", "query", "results"))
+        if prefer_search:
+            if input_type == "search":
+                score += 120
+            if role in ("searchbox", "search", "combobox"):
+                score += 100
+            if search_like:
+                score += 90
+            if name in ("q", "s", "query", "search", "search_query", "searchquery"):
+                score += 100
+            elif any(token in name for token in ("search", "query", "keyword", "term")):
+                score += 80
+            if aria_autocomplete == "list":
+                score += 25
+            if "search" in context_blob or "results" in context_blob:
+                score += 70
+            if width >= 180:
+                score += 20
+            if 0 <= top <= 260:
+                score += 25
+            elif 260 < top <= 520:
+                score += 10
+        else:
+            if input_type in ("text", "email", "search", ""):
+                score += 10
+            if role in ("textbox", "combobox", "searchbox"):
+                score += 12
+
+        if target_role and target_role == role:
+            score += 35
+        if target_type and target_type == input_type:
+            score += 30
+        if target_id and target_id in blob:
+            score += 20
+        if target_name and target_name in combined_blob:
+            score += 20
+        if target_placeholder and target_placeholder in combined_blob:
+            score += 20
+        if target_aria and target_aria in combined_blob:
+            score += 20
+
+        if width < 60:
+            score -= 25
+        if prefer_search and "password" in combined_blob:
+            score -= 200
+        if "hidden" in combined_blob:
+            score -= 60
+
+        return score
+
+    def _resolve_ranked_input_candidate(self, target: Dict[str, Any], typed_text: Optional[str] = None, root=None):
+        """Resolve the best candidate input for a target, preferring search bars when appropriate."""
+        prefer_search = self._target_prefers_search_input(target, typed_text=typed_text)
+        ranked_target = dict(target or {})
+        if prefer_search:
+            ranked_target.setdefault("placeholder", "Search")
+            ranked_target.setdefault("role", ranked_target.get("role") or "searchbox")
+        target_blob = self._target_lookup_blob(ranked_target)
+        if not prefer_search and not target_blob:
+            return None
+        candidates = self._collect_input_candidates(root=root)
+        if not candidates:
+            return None
+
+        ranked = []
+        for el in candidates:
+            try:
+                score = self._score_input_candidate(el, ranked_target, prefer_search=prefer_search)
+                ranked.append((score, el))
+            except Exception:
+                continue
+
+        if not ranked:
+            return None
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_element = ranked[0]
+        if best_score < (40 if prefer_search else 20):
+            return None
+        return best_element
+
+    def _wait_for_ranked_input_candidate(self, target: Dict[str, Any], typed_text: Optional[str] = None, timeout: float = 2.5, root=None):
+        """Wait briefly for hydrated inputs to appear, then return the best candidate."""
+        drv = root or self._actual_driver
+        try:
+            return WebDriverWait(drv, timeout).until(
+                lambda _drv: self._resolve_ranked_input_candidate(target, typed_text=typed_text, root=root) or False
+            )
+        except TimeoutException:
+            return self._resolve_ranked_input_candidate(target, typed_text=typed_text, root=root)
     
     def click_element(self, target: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1716,6 +2940,12 @@ class BrowserController:
             # type into prefilled controls like Space.
             element = _find_jira_dialog_field()
 
+            # Prefer a visible, high-confidence candidate before first-match
+            # selectors so modern search bars (often duplicated in hidden DOM)
+            # resolve to the actionable control.
+            if not element:
+                element = self._wait_for_ranked_input_candidate(target, typed_text=text)
+
             # 1. By ID (most specific)
             if not element and target.get("id"):
                 try:
@@ -1731,8 +2961,9 @@ class BrowserController:
                     pass
             
             # 3. By aria-label (broad: input, textarea, contenteditable)
-            if not element and target.get("aria-label"):
-                al = target["aria-label"]
+            aria_label = self._target_value(target, "aria-label", "aria_label")
+            if not element and aria_label:
+                al = aria_label
                 for sel in [
                     f"//input[@aria-label='{al}']",
                     f"//textarea[@aria-label='{al}']",
@@ -1765,10 +2996,11 @@ class BrowserController:
                         element = None
             
             # 5. By input type attribute (e.g. "search", "email", "text")
-            if not element and target.get("type"):
+            target_input_type = self._target_value(target, "type", "input_type")
+            if not element and target_input_type:
                 try:
                     element = drv.find_element(
-                        By.CSS_SELECTOR, f"input[type='{target['type']}']"
+                        By.CSS_SELECTOR, f"input[type='{target_input_type}']"
                     )
                 except NoSuchElementException:
                     pass
@@ -1793,21 +3025,33 @@ class BrowserController:
             if element and element.is_displayed():
                 from selenium.webdriver.common.keys import Keys
                 import time
+                is_search_input = self._target_prefers_search_input(target, typed_text=text)
+                current_value = self._read_text_entry_value(element)
+                if is_search_input:
+                    normalized_current = self._normalize_lookup_text(current_value)
+                    normalized_target = self._normalize_lookup_text(text)
+                    if normalized_current and normalized_current == normalized_target:
+                        if press_enter:
+                            time.sleep(0.1)
+                            element.send_keys(Keys.RETURN)
+                            time.sleep(0.3)
+                            return {
+                                "success": True,
+                                "message": f"Search query already present: {text[:50]} + Enter pressed"
+                            }
+                        return {
+                            "success": True,
+                            "message": f"Search query already present: {text[:50]}"
+                        }
+
+                if current_value:
+                    self._clear_text_entry(element)
+                    time.sleep(0.05)
+
                 if element.get_attribute("contenteditable") in ("true", ""):
                     element.click()
                     time.sleep(0.05)
-                    # Select-all then replace to clear React-controlled fields
-                    element.send_keys(Keys.CONTROL + "a")
-                    time.sleep(0.05)
-                    element.send_keys(text)
-                else:
-                    # .clear() can fail on JS-controlled inputs; select-all as fallback
-                    element.clear()
-                    time.sleep(0.05)
-                    if element.get_attribute("value"):
-                        element.send_keys(Keys.CONTROL + "a")
-                        time.sleep(0.05)
-                    element.send_keys(text)
+                element.send_keys(text)
                 if press_enter:
                     time.sleep(0.15)
                     element.send_keys(Keys.RETURN)
@@ -1863,6 +3107,129 @@ class BrowserController:
             return {"success": True, "message": "Navigated forward", "url": drv.current_url}
         except Exception as e:
             return {"success": False, "message": f"Error going forward: {str(e)}"}
+
+    def reload_page(self) -> Dict[str, Any]:
+        """Reload the current page."""
+        drv = self._actual_driver
+        try:
+            drv.refresh()
+            import time
+            time.sleep(0.4)
+            readiness = self.wait_for_interactive_page(timeout=6.0)
+            return {
+                "success": True,
+                "message": "Page reloaded",
+                "url": drv.current_url,
+                "readiness": readiness,
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error reloading page: {str(e)}"}
+
+    def find_text_on_page(
+        self,
+        text: str,
+        exact_match: bool = False,
+        scroll_behavior: str = "center",
+    ) -> Dict[str, Any]:
+        """Find visible text on the page and scroll the best match into view."""
+        drv = self._actual_driver
+        try:
+            result = drv.execute_script(
+                """
+                const needleRaw = arguments[0] || '';
+                const exact = Boolean(arguments[1]);
+                const behavior = arguments[2] || 'center';
+
+                function isVisible(el) {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }
+
+                function textBlob(el) {
+                    return ((el.innerText || el.textContent || '') + '').replace(/\\s+/g, ' ').trim();
+                }
+
+                function describe(el) {
+                    if (!el) return '';
+                    const tag = (el.tagName || '').toLowerCase();
+                    const id = el.id ? `#${el.id}` : '';
+                    const cls = (el.className && typeof el.className === 'string')
+                        ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.')
+                        : '';
+                    return `${tag}${id}${cls}`;
+                }
+
+                const needle = needleRaw.replace(/\\s+/g, ' ').trim().toLowerCase();
+                if (!needle) {
+                    return { success: false, message: 'No text provided' };
+                }
+
+                const selectors = [
+                    'main',
+                    '[role="main"]',
+                    '[role="dialog"]',
+                    '[aria-modal="true"]',
+                    'h1, h2, h3, h4, p, li, a, button, label, span, div'
+                ];
+
+                const nodes = Array.from(document.querySelectorAll(selectors.join(',')));
+                let best = null;
+
+                for (const el of nodes) {
+                    if (!isVisible(el)) continue;
+                    const blob = textBlob(el);
+                    if (!blob) continue;
+                    const haystack = blob.toLowerCase();
+                    const matched = exact ? haystack === needle : haystack.includes(needle);
+                    if (!matched) continue;
+
+                    const score =
+                        (exact ? 200 : 0) +
+                        Math.max(0, 120 - Math.abs(blob.length - needle.length)) +
+                        (/^(h1|h2|h3|button|label|a)$/i.test(el.tagName || '') ? 20 : 0) +
+                        (el.closest('[role="dialog"], [aria-modal="true"]') ? 15 : 0);
+
+                    if (!best || score > best.score) {
+                        best = {
+                            element: el,
+                            score,
+                            text: blob.slice(0, 220),
+                            selector: describe(el),
+                            tag: (el.tagName || '').toLowerCase(),
+                        };
+                    }
+                }
+
+                if (!best) {
+                    return { success: false, message: `Text not found: ${needleRaw}` };
+                }
+
+                best.element.scrollIntoView({ block: behavior, inline: 'nearest', behavior: 'instant' });
+                const rect = best.element.getBoundingClientRect();
+                return {
+                    success: true,
+                    message: `Found text: ${needleRaw}`,
+                    matched_text: best.text,
+                    selector: best.selector,
+                    tag: best.tag,
+                    viewport: {
+                        top: Math.round(rect.top),
+                        left: Math.round(rect.left),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height),
+                    }
+                };
+                """,
+                text,
+                exact_match,
+                scroll_behavior,
+            ) or {}
+            return result
+        except Exception as e:
+            return {"success": False, "message": f"Error finding text: {str(e)}"}
     
     def wait_for_element(self, target: Dict[str, Any], timeout: int = 10) -> Dict[str, Any]:
         """
@@ -1901,6 +3268,119 @@ class BrowserController:
             return {"success": False, "message": f"Element not found within {timeout} seconds"}
         except Exception as e:
             return {"success": False, "message": f"Error waiting for element: {str(e)}"}
+
+    def press_key(self, key: str, target: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Press a key on the page or a target element."""
+        drv = self._actual_driver
+        try:
+            from selenium.webdriver.common.keys import Keys
+
+            key_map = {
+                "enter": Keys.RETURN,
+                "return": Keys.RETURN,
+                "tab": Keys.TAB,
+                "escape": Keys.ESCAPE,
+                "esc": Keys.ESCAPE,
+                "space": Keys.SPACE,
+                "arrowdown": Keys.ARROW_DOWN,
+                "down": Keys.ARROW_DOWN,
+                "arrowup": Keys.ARROW_UP,
+                "up": Keys.ARROW_UP,
+                "arrowleft": Keys.ARROW_LEFT,
+                "left": Keys.ARROW_LEFT,
+                "arrowright": Keys.ARROW_RIGHT,
+                "right": Keys.ARROW_RIGHT,
+                "backspace": Keys.BACKSPACE,
+                "delete": Keys.DELETE,
+            }
+            normalized = str(key or "").strip().lower()
+            resolved = key_map.get(normalized)
+            if not resolved:
+                return {"success": False, "message": f"Unsupported key: {key}"}
+
+            element = None
+            if target:
+                if target.get("id"):
+                    try:
+                        element = drv.find_element(By.ID, target["id"])
+                    except NoSuchElementException:
+                        pass
+                if not element and target.get("name"):
+                    try:
+                        element = drv.find_element(By.NAME, target["name"])
+                    except NoSuchElementException:
+                        pass
+                if not element and target.get("selector"):
+                    try:
+                        element = drv.find_element(By.CSS_SELECTOR, target["selector"])
+                    except NoSuchElementException:
+                        pass
+                if not element and target.get("aria-label"):
+                    label = str(target["aria-label"]).replace("'", "\\'")
+                    try:
+                        element = drv.find_element(By.XPATH, f"//*[@aria-label='{label}']")
+                    except NoSuchElementException:
+                        pass
+                if not element and target.get("text"):
+                    text = str(target["text"])[:80].replace("'", "\\'")
+                    try:
+                        element = drv.find_element(By.XPATH, f"//*[contains(normalize-space(.), '{text}')]")
+                    except NoSuchElementException:
+                        pass
+
+            recipient = element if element and element.is_displayed() else drv.find_element(By.TAG_NAME, "body")
+            recipient.send_keys(resolved)
+            return {"success": True, "message": f"Pressed {key}"}
+        except Exception as e:
+            return {"success": False, "message": f"Error pressing key: {str(e)}"}
+
+    def select_option(self, target: Dict[str, Any], value: Optional[str] = None, label: Optional[str] = None, index: Optional[int] = None) -> Dict[str, Any]:
+        """Select an option in a native select or custom combobox/listbox."""
+        drv = self._actual_driver
+        try:
+            from selenium.webdriver.support.ui import Select
+
+            element = self._find_select_like_element(target or {})
+            if not element:
+                return {"success": False, "message": "Select element not found"}
+
+            tag_name = (element.tag_name or "").lower()
+            role = str(element.get_attribute("role") or "").lower()
+            if tag_name == "select":
+                try:
+                    control = Select(element)
+                    if label:
+                        control.select_by_visible_text(label)
+                    elif value is not None:
+                        control.select_by_value(value)
+                    elif index is not None:
+                        control.select_by_index(int(index))
+                    else:
+                        return {"success": False, "message": "Select requires label, value, or index"}
+                except Exception:
+                    return self._select_custom_dropdown_option(
+                        element,
+                        target or {},
+                        value=value,
+                        label=label,
+                        index=index,
+                    )
+            elif role in ("combobox", "listbox") or tag_name in ("div", "span", "input"):
+                return self._select_custom_dropdown_option(
+                    element,
+                    target or {},
+                    value=value,
+                    label=label,
+                    index=index,
+                )
+            else:
+                return {
+                    "success": False,
+                    "message": f"Resolved element is not selectable ({tag_name or 'unknown'} role={role or 'none'})",
+                }
+            return {"success": True, "message": f"Selected option {label or value or index}"}
+        except Exception as e:
+            return {"success": False, "message": f"Error selecting option: {str(e)}"}
     
     @staticmethod
     def _compress_screenshot_b64(png_b64: str, max_width: int = 1280, quality: int = 55) -> str:
@@ -2161,6 +3641,8 @@ class BrowserController:
         """Close the browser."""
         if self._actual_driver:
             self._actual_driver.quit()
+        if self._temp_profile_dir:
+            shutil.rmtree(self._temp_profile_dir, ignore_errors=True)
 
 
 class BrowserActionExecutor:
@@ -2233,6 +3715,153 @@ class BrowserActionExecutor:
             return str(text)[:3000]
         except Exception:
             return ""
+
+    def _capture_page_change_snapshot(self) -> Dict[str, Any]:
+        """Lightweight DOM/page snapshot used for reobserve decisions."""
+        if not self.browser or not hasattr(self.browser, "_actual_driver"):
+            return {}
+        try:
+            snapshot = self.browser._actual_driver.execute_script("""
+                const pickText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const interactive = Array.from(document.querySelectorAll(
+                    'a, button, input, select, textarea, [contenteditable="true"], [contenteditable=""], ' +
+                    '[role="button"], [role="searchbox"], [role="combobox"], [role="textbox"]'
+                ));
+                const items = [];
+                for (const el of interactive) {
+                    if (items.length >= 25) break;
+                    try {
+                        const rect = el.getBoundingClientRect();
+                        if ((!rect.width && !rect.height) || (el.offsetParent === null && el !== document.body)) continue;
+                        items.push({
+                            tag: (el.tagName || '').toLowerCase(),
+                            id: el.id || '',
+                            name: el.getAttribute('name') || '',
+                            role: el.getAttribute('role') || '',
+                            aria: el.getAttribute('aria-label') || '',
+                            placeholder: el.getAttribute('placeholder') || '',
+                            type: el.getAttribute('type') || '',
+                            text: pickText(el.innerText || el.textContent || '').slice(0, 80)
+                        });
+                    } catch (err) {}
+                }
+                const textSample = pickText(
+                    (document.body && (document.body.innerText || document.body.textContent)) || ''
+                ).slice(0, 1200);
+                return {
+                    url: window.location.href || '',
+                    title: document.title || '',
+                    textSample,
+                    elements: items,
+                    scrollBucket: Math.floor((window.scrollY || 0) / Math.max(window.innerHeight || 1, 1)),
+                    readyState: document.readyState || ''
+                };
+            """)
+            return snapshot if isinstance(snapshot, dict) else {}
+        except Exception:
+            return {}
+
+    def _hash_page_change_snapshot(self, snapshot: Dict[str, Any]) -> str:
+        if not snapshot:
+            return ""
+        try:
+            payload = json.dumps(
+                {
+                    "url": snapshot.get("url") or "",
+                    "title": snapshot.get("title") or "",
+                    "textSample": snapshot.get("textSample") or "",
+                    "elements": snapshot.get("elements") or [],
+                    "scrollBucket": snapshot.get("scrollBucket"),
+                    "readyState": snapshot.get("readyState") or "",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    def _summarize_page_change(self, before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]], action_name: str = "") -> Dict[str, Any]:
+        before = before or {}
+        after = after or {}
+        before_hash = self._hash_page_change_snapshot(before)
+        after_hash = self._hash_page_change_snapshot(after)
+        url_changed = (before.get("url") or "") != (after.get("url") or "")
+        title_changed = (before.get("title") or "") != (after.get("title") or "")
+        text_changed = (before.get("textSample") or "") != (after.get("textSample") or "")
+        elements_changed = (before.get("elements") or []) != (after.get("elements") or [])
+        scroll_changed = before.get("scrollBucket") != after.get("scrollBucket")
+        changed = any([url_changed, title_changed, text_changed, elements_changed, scroll_changed]) or (before_hash != after_hash)
+        changed_fields = [
+            label for label, flag in (
+                ("url", url_changed),
+                ("title", title_changed),
+                ("text", text_changed),
+                ("elements", elements_changed),
+                ("scroll", scroll_changed),
+            ) if flag
+        ]
+        discovered_new_content = action_name == "scroll_page" and (text_changed or elements_changed or scroll_changed)
+        return {
+            "changed": changed,
+            "action": action_name,
+            "changedFields": changed_fields,
+            "urlChanged": url_changed,
+            "titleChanged": title_changed,
+            "textChanged": text_changed,
+            "elementsChanged": elements_changed,
+            "scrollChanged": scroll_changed,
+            "discoveredNewContent": discovered_new_content,
+            "before": {
+                "url": before.get("url") or "",
+                "title": before.get("title") or "",
+                "scrollBucket": before.get("scrollBucket"),
+                "fingerprint": before_hash,
+            },
+            "after": {
+                "url": after.get("url") or "",
+                "title": after.get("title") or "",
+                "scrollBucket": after.get("scrollBucket"),
+                "fingerprint": after_hash,
+            },
+        }
+
+    def _attach_page_change_to_payload(
+        self,
+        payload: Dict[str, Any],
+        before_snapshot: Optional[Dict[str, Any]],
+        action_name: str,
+        *,
+        success: bool = True,
+    ) -> Dict[str, Any]:
+        if not success:
+            return payload
+        after_snapshot = self._capture_page_change_snapshot()
+        page_change = self._summarize_page_change(before_snapshot, after_snapshot, action_name=action_name)
+        payload["page_change"] = page_change
+        browser_result = payload.get("browser_result")
+        if isinstance(browser_result, dict):
+            browser_result["page_change"] = page_change
+        return payload
+
+    def _emit_platform_action_event(self, action_type: str, url: str, result: Optional[Dict[str, Any]], target=None, form_data=None):
+        """Optional hook used by the platform worker bridge."""
+        callback = getattr(self.agenttrust, "on_platform_action_event", None)
+        if not callback:
+            return
+        try:
+            callback(
+                {
+                    "action_type": action_type,
+                    "url": url,
+                    "target": target,
+                    "form_data": form_data,
+                    "result": result or {},
+                }
+            )
+        except Exception as exc:
+            print(f"⚠️  Platform action callback failed: {exc}")
     
     def execute_click(self, url: str, target: dict, **kwargs):
         """
@@ -2312,6 +3941,7 @@ class BrowserActionExecutor:
         })
         
         # Actually perform the click if browser is available
+        before_snapshot = self._capture_page_change_snapshot()
         browser_result = None
         screenshot = None
         if self.browser and target:
@@ -2334,15 +3964,24 @@ class BrowserActionExecutor:
                                action_id=result.get("action_id"),
                                target=target)
         
-        return {
+        payload = {
             "status": "allowed",
             "action_id": result.get("action_id"),
             "risk_level": result.get("risk_level"),
             "message": "Click action validated and allowed by AgentTrust",
             "executed": browser_result is not None,
+            "target": target,
             "browser_result": browser_result,
             "screenshot": screenshot
         }
+        self._attach_page_change_to_payload(
+            payload,
+            before_snapshot,
+            "click",
+            success=bool(browser_result and browser_result.get("success")),
+        )
+        self._emit_platform_action_event("click", url, payload, target=target)
+        return payload
     
     def execute_form_submit(self, url: str, form_data: dict, **kwargs):
         """
@@ -2422,6 +4061,7 @@ class BrowserActionExecutor:
         })
         
         # Actually perform the form submit if browser is available
+        before_snapshot = self._capture_page_change_snapshot()
         browser_result = None
         screenshot = None
         if self.browser and form_data:
@@ -2444,7 +4084,7 @@ class BrowserActionExecutor:
                                action_id=result.get("action_id"),
                                form_data=form_data)
         
-        return {
+        payload = {
             "status": "allowed",
             "action_id": result.get("action_id"),
             "risk_level": result.get("risk_level"),
@@ -2453,6 +4093,14 @@ class BrowserActionExecutor:
             "browser_result": browser_result,
             "screenshot": screenshot
         }
+        self._attach_page_change_to_payload(
+            payload,
+            before_snapshot,
+            "form_submit",
+            success=bool(browser_result and browser_result.get("success")),
+        )
+        self._emit_platform_action_event("form_submit", url, payload, form_data=form_data)
+        return payload
     
     def execute_navigation(self, url: str, **kwargs):
         """
@@ -2541,9 +4189,11 @@ class BrowserActionExecutor:
         })
         
         # Actually perform the navigation if browser is available
+        before_snapshot = self._capture_page_change_snapshot()
         browser_result = None
         screenshot = None
         page_error = None
+        readiness = {}
         if self.browser:
             browser_result = self.browser.navigate(url)
             if browser_result and browser_result.get("success"):
@@ -2556,6 +4206,7 @@ class BrowserActionExecutor:
                     except Exception:
                         pass
                     actual_url = driver.current_url
+                    readiness = self.browser.wait_for_interactive_page(timeout=6.0) or {}
 
                     # Guard: if Google redirected to Images, force web search
                     if ("google.com/imghp" in actual_url
@@ -2568,6 +4219,7 @@ class BrowserActionExecutor:
                             )
                         except Exception:
                             pass
+                        readiness = self.browser.wait_for_interactive_page(timeout=4.0) or readiness
                         actual_url = driver.current_url
                         print(f"  REDIRECT FIX: Google Images → {actual_url}")
 
@@ -2628,6 +4280,7 @@ class BrowserActionExecutor:
                                     )
                                 except Exception:
                                     pass
+                                readiness = self.browser.wait_for_interactive_page(timeout=4.0) or readiness
                                 actual_url = driver.current_url
                             except Exception:
                                 pass
@@ -2660,6 +4313,13 @@ class BrowserActionExecutor:
                             page_error = f"Page load error detected: '{sig}' found. The URL may be wrong or the page is unavailable."
                             break
 
+                    if isinstance(browser_result, dict):
+                        if readiness:
+                            browser_result["readiness"] = readiness
+                        browser_result["new_url"] = actual_url
+                    if readiness and not readiness.get("ready"):
+                        print(f"  WAIT: page loaded but not fully interactive yet ({readiness.get('reason', 'unknown reason')})")
+
                     screenshot = self.browser.take_screenshot()
                     if screenshot and result.get("action_id"):
                         try:
@@ -2682,12 +4342,19 @@ class BrowserActionExecutor:
             "browser_result": browser_result,
             "screenshot": screenshot
         }
+        self._attach_page_change_to_payload(
+            resp,
+            before_snapshot,
+            "navigation",
+            success=bool(browser_result and browser_result.get("success")),
+        )
         if page_error:
             resp["page_error"] = page_error
             resp["message"] = (
                 f"Navigation allowed but the page failed to load properly: {page_error} "
                 "Try navigating to the site's homepage instead and find the correct link."
             )
+        self._emit_platform_action_event("navigation", url, resp)
         return resp
     
     def _check_browser(self) -> Optional[str]:
@@ -2726,6 +4393,29 @@ class BrowserActionExecutor:
             return []
         
         return self.browser.get_visible_elements(element_type)
+
+    def highlight_interactive_elements(
+        self,
+        element_type: Optional[str] = None,
+        max_elements: int = 25,
+    ) -> Dict[str, Any]:
+        """Highlight visible interactive elements with numbered overlays."""
+        err = self._check_browser()
+        if err:
+            return {"success": False, "message": err, "count": 0, "elements": []}
+
+        return self.browser.highlight_interactive_elements(
+            element_type=element_type,
+            max_elements=max_elements,
+        )
+
+    def clear_highlight_overlays(self) -> Dict[str, Any]:
+        """Remove highlight overlays from the current page."""
+        err = self._check_browser()
+        if err:
+            return {"success": False, "message": err}
+
+        return self.browser.clear_highlight_overlays()
     
     def get_current_url(self) -> str:
         """Get current page URL - NO AgentTrust validation needed (read-only)"""
@@ -2734,6 +4424,20 @@ class BrowserActionExecutor:
             return ""
         
         return self.browser.get_current_url()
+
+    def get_interactive_readiness(self) -> Dict[str, Any]:
+        """Get generic page readiness signals without performing any action."""
+        err = self._check_browser()
+        if err:
+            return {"ready": False, "reason": err}
+        return self.browser.get_interactive_readiness()
+
+    def wait_for_interactive_page(self, timeout: float = 6.0) -> Dict[str, Any]:
+        """Wait briefly for meaningful interactive content to appear."""
+        err = self._check_browser()
+        if err:
+            return {"ready": False, "reason": err}
+        return self.browser.wait_for_interactive_page(timeout=timeout)
     
     def open_link(self, href: Optional[str] = None, link_text: Optional[str] = None, link_index: Optional[int] = None):
         """
@@ -2784,6 +4488,9 @@ class BrowserActionExecutor:
                     "risk_level": result.get("risk_level"),
                     "link_opened": True,
                     "new_url": new_url,
+                    "browser_result": result.get("browser_result"),
+                    "page_change": result.get("page_change"),
+                    "screenshot": result.get("screenshot"),
                 }
             return result
         except PermissionError as e:
@@ -2802,6 +4509,13 @@ class BrowserActionExecutor:
             return {"error": "Browser session has died (Chrome/ChromeDriver crashed). Restart the agent."}
         
         current_url = self.browser.get_current_url()
+        resolved_text, used_vault = self._resolve_sensitive_reference(text, current_url=current_url)
+        if used_vault and resolved_text is None:
+            return {
+                "status": "denied",
+                "typed": False,
+                "message": "Sensitive vault reference could not be resolved or was not approved."
+            }
         
         # Detect if this is a sensitive input (password, credit card, etc.)
         target_name = (target.get("name") or "").lower()
@@ -2810,6 +4524,7 @@ class BrowserActionExecutor:
         target_placeholder = (target.get("placeholder") or "").lower()
         is_sensitive = any(kw in f"{target_name} {target_id} {target_type} {target_placeholder}"
                           for kw in ("password", "passwd", "secret", "ssn", "credit", "card", "cvv", "pin"))
+        is_sensitive = is_sensitive or used_vault
         
         try:
             logged_field = (
@@ -2819,7 +4534,7 @@ class BrowserActionExecutor:
                 or target.get("type")
                 or "text"
             )
-            logged_value = "***" if is_sensitive else text
+            logged_value = "***" if is_sensitive else resolved_text
             result = self.agenttrust.execute_action(
                 action_type="form_input",
                 url=current_url,
@@ -2833,10 +4548,11 @@ class BrowserActionExecutor:
             status = result.get("status") if result else None
 
             if status == "allowed":
-                type_result = self.browser.type_text(target, text, press_enter=press_enter)
+                before_snapshot = self._capture_page_change_snapshot()
+                type_result = self.browser.type_text(target, resolved_text, press_enter=press_enter)
                 if not type_result.get("success"):
                     # Element not found by standard lookup — try CSS selector fallback
-                    type_result = self._type_text_fallback(target, text, press_enter=press_enter)
+                    type_result = self._type_text_fallback(target, resolved_text, press_enter=press_enter)
                 screenshot = None
                 if type_result.get("success"):
                     try:
@@ -2851,13 +4567,26 @@ class BrowserActionExecutor:
                     except:
                         pass
                 
-                return {
+                payload = {
                     "status": "allowed",
                     "action_id": result.get("action_id") if result else None,
                     "risk_level": result.get("risk_level") if result else "low",
                     "typed": type_result.get("success", False),
-                    "message": type_result.get("message", "")
+                    "message": type_result.get("message", ""),
+                    "screenshot": screenshot,
+                    "browser_result": {
+                        "success": type_result.get("success", False),
+                        "message": type_result.get("message", "")
+                    }
                 }
+                if type_result.get("success"):
+                    self._attach_page_change_to_payload(
+                        payload,
+                        before_snapshot,
+                        "type_text",
+                        success=True,
+                    )
+                return payload
             elif status == "denied":
                 return {"status": "denied", "message": result.get("message", "Typing denied by AgentTrust")}
             elif status == "step_up_required":
@@ -2949,9 +4678,13 @@ class BrowserActionExecutor:
 
         element = _find_jira_dialog_field()
 
+        if not element:
+            element = self.browser._wait_for_ranked_input_candidate(target, typed_text=text)
+
         # 1. Try aria-label (input, textarea, contenteditable — partial match)
-        if not element and target.get("aria-label"):
-            al = target["aria-label"]
+        aria_label = self.browser._target_value(target, "aria-label", "aria_label")
+        if not element and aria_label:
+            al = aria_label
             for sel in [
                 f"input[aria-label='{al}']",
                 f"textarea[aria-label='{al}']",
@@ -2969,9 +4702,10 @@ class BrowserActionExecutor:
                     continue
 
         # 2. Try type attribute (input only)
-        if not element and target.get("type"):
+        target_input_type = self.browser._target_value(target, "type", "input_type")
+        if not element and target_input_type:
             try:
-                element = drv.find_element(By.CSS_SELECTOR, f"input[type='{target['type']}']")
+                element = drv.find_element(By.CSS_SELECTOR, f"input[type='{target_input_type}']")
             except Exception:
                 pass
 
@@ -3051,18 +4785,40 @@ class BrowserActionExecutor:
 
         if element and element.is_displayed():
             try:
+                import time
+                from selenium.webdriver.common.keys import Keys
+
+                is_search_input = self.browser._target_prefers_search_input(target, typed_text=text)
+                current_value = self.browser._read_text_entry_value(element)
+                if is_search_input:
+                    normalized_current = self.browser._normalize_lookup_text(current_value)
+                    normalized_target = self.browser._normalize_lookup_text(text)
+                    if normalized_current and normalized_current == normalized_target:
+                        if press_enter:
+                            time.sleep(0.15)
+                            element.send_keys(Keys.RETURN)
+                            time.sleep(0.3)
+                            return {
+                                "success": True,
+                                "message": f"Search query already present (fallback): {text[:50]} + Enter pressed"
+                            }
+                        return {
+                            "success": True,
+                            "message": f"Search query already present (fallback): {text[:50]}"
+                        }
+
+                if current_value:
+                    self.browser._clear_text_entry(element)
+                    time.sleep(0.05)
+
                 # Handle contenteditable differently
                 if element.get_attribute("contenteditable") in ("true", ""):
                     element.click()
-                    import time; time.sleep(0.05)
-                    element.send_keys(text)
-                else:
-                    element.clear()
-                    element.send_keys(text)
+                    time.sleep(0.05)
+                element.send_keys(text)
                 # Press Enter after typing if requested
                 if press_enter:
-                    import time; time.sleep(0.15)
-                    from selenium.webdriver.common.keys import Keys
+                    time.sleep(0.15)
                     element.send_keys(Keys.RETURN)
                     time.sleep(0.3)
                 return {"success": True, "message": f"Text typed (fallback): {text[:50]}"
@@ -3075,8 +4831,22 @@ class BrowserActionExecutor:
         """Scroll the page - NO AgentTrust validation needed (read-only navigation)"""
         if not self.browser:
             return {"error": "Browser not initialized"}
-        
-        return self.browser.scroll_page(direction, amount)
+        before_snapshot = self._capture_page_change_snapshot()
+        result = self.browser.scroll_page(direction, amount)
+        payload = {
+            **(result or {}),
+            "browser_result": {
+                "success": result.get("success", False),
+                "message": result.get("message", "") if isinstance(result, dict) else "",
+            } if isinstance(result, dict) else {"success": False, "message": ""},
+        }
+        self._attach_page_change_to_payload(
+            payload,
+            before_snapshot,
+            "scroll_page",
+            success=bool(isinstance(result, dict) and result.get("success")),
+        )
+        return payload
     
     def go_back(self):
         """Go back in browser history - MANDATORY AgentTrust validation"""
@@ -3090,14 +4860,26 @@ class BrowserActionExecutor:
             # Validate navigation back
             result = self.execute_navigation(current_url)  # Navigation validation
             if result.get("status") == "allowed":
+                before_snapshot = self._capture_page_change_snapshot()
                 back_result = self.browser.go_back()
-                return {
+                payload = {
                     "status": "allowed",
                     "action_id": result.get("action_id"),
                     "risk_level": result.get("risk_level"),
                     "navigated_back": back_result.get("success", False),
-                    "url": back_result.get("url", "")
+                    "url": back_result.get("url", ""),
+                    "browser_result": {
+                        "success": back_result.get("success", False),
+                        "message": back_result.get("message", ""),
+                    },
                 }
+                self._attach_page_change_to_payload(
+                    payload,
+                    before_snapshot,
+                    "go_back",
+                    success=bool(back_result.get("success")),
+                )
+                return payload
             return result
         except PermissionError as e:
             return {"status": "denied", "message": str(e)}
@@ -3112,24 +4894,133 @@ class BrowserActionExecutor:
         try:
             result = self.execute_navigation(current_url)
             if result.get("status") == "allowed":
+                before_snapshot = self._capture_page_change_snapshot()
                 forward_result = self.browser.go_forward()
-                return {
+                payload = {
                     "status": "allowed",
                     "action_id": result.get("action_id"),
                     "risk_level": result.get("risk_level"),
                     "navigated_forward": forward_result.get("success", False),
-                    "url": forward_result.get("url", "")
+                    "url": forward_result.get("url", ""),
+                    "browser_result": {
+                        "success": forward_result.get("success", False),
+                        "message": forward_result.get("message", ""),
+                    },
                 }
+                self._attach_page_change_to_payload(
+                    payload,
+                    before_snapshot,
+                    "go_forward",
+                    success=bool(forward_result.get("success")),
+                )
+                return payload
             return result
         except PermissionError as e:
             return {"status": "denied", "message": str(e)}
+
+    def reload_page(self):
+        """Reload the current page - MANDATORY AgentTrust validation"""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+
+        current_url = self.browser.get_current_url()
+
+        try:
+            result = self.execute_navigation(current_url)
+            if result.get("status") == "allowed":
+                before_snapshot = self._capture_page_change_snapshot()
+                reload_result = self.browser.reload_page()
+                payload = {
+                    "status": "allowed",
+                    "action_id": result.get("action_id"),
+                    "risk_level": result.get("risk_level"),
+                    "reloaded": reload_result.get("success", False),
+                    "url": reload_result.get("url", ""),
+                    "readiness": reload_result.get("readiness"),
+                    "browser_result": {
+                        "success": reload_result.get("success", False),
+                        "message": reload_result.get("message", ""),
+                    },
+                }
+                self._attach_page_change_to_payload(
+                    payload,
+                    before_snapshot,
+                    "reload_page",
+                    success=bool(reload_result.get("success")),
+                )
+                return payload
+            return result
+        except PermissionError as e:
+            return {"status": "denied", "message": str(e)}
+
+    def wait_until_interactive(self, timeout: float = 6.0):
+        """Wait for the current page to become meaningfully interactive."""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+
+        before_snapshot = self._capture_page_change_snapshot()
+        result = self.browser.wait_for_interactive_page(timeout=timeout)
+        payload = {
+            **(result or {}),
+            "browser_result": {
+                "success": bool((result or {}).get("ready")),
+                "message": (result or {}).get("reason", ""),
+            },
+        }
+        self._attach_page_change_to_payload(
+            payload,
+            before_snapshot,
+            "wait_until_interactive",
+            success=bool((result or {}).get("ready")),
+        )
+        return payload
+
+    def find_text_on_page(self, text: str, exact_match: bool = False, scroll_behavior: str = "center"):
+        """Find visible text on the current page and scroll it into view."""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+
+        before_snapshot = self._capture_page_change_snapshot()
+        result = self.browser.find_text_on_page(
+            text=text,
+            exact_match=exact_match,
+            scroll_behavior=scroll_behavior,
+        )
+        payload = {
+            **(result or {}),
+            "browser_result": {
+                "success": bool((result or {}).get("success")),
+                "message": (result or {}).get("message", ""),
+            },
+        }
+        self._attach_page_change_to_payload(
+            payload,
+            before_snapshot,
+            "find_text_on_page",
+            success=bool((result or {}).get("success")),
+        )
+        return payload
     
     def wait_for_element(self, target: Dict[str, Any], timeout: int = 10):
         """Wait for element - NO AgentTrust validation needed (read-only)"""
         if not self.browser:
             return {"error": "Browser not initialized"}
-        
-        return self.browser.wait_for_element(target, timeout)
+        before_snapshot = self._capture_page_change_snapshot()
+        result = self.browser.wait_for_element(target, timeout)
+        payload = {
+            **(result or {}),
+            "browser_result": {
+                "success": result.get("success", False),
+                "message": result.get("message", "") if isinstance(result, dict) else "",
+            } if isinstance(result, dict) else {"success": False, "message": ""},
+        }
+        self._attach_page_change_to_payload(
+            payload,
+            before_snapshot,
+            "wait_for_element",
+            success=bool(isinstance(result, dict) and result.get("success")),
+        )
+        return payload
     
     def take_screenshot(self) -> str:
         """Take screenshot - NO AgentTrust validation needed (read-only)"""
@@ -3182,6 +5073,7 @@ class BrowserActionExecutor:
                 }
 
             if status == "allowed":
+                before_snapshot = self._capture_page_change_snapshot()
                 self.action_history.append({
                     "action": "navigation", "url": url,
                     "status": "allowed",
@@ -3211,6 +5103,12 @@ class BrowserActionExecutor:
                 except Exception as e:
                     print(f"⚠️  Failed to capture screenshot for new tab: {e}")
 
+                self._attach_page_change_to_payload(
+                    tab_result,
+                    before_snapshot,
+                    "open_new_tab",
+                    success=bool(tab_result.get("success")),
+                )
                 self._notify_extension("navigation", url, "allowed",
                                        risk_level=result.get("risk_level"),
                                        action_id=result.get("action_id"))
@@ -3229,6 +5127,7 @@ class BrowserActionExecutor:
         if not self.browser:
             return {"error": "Browser not initialized"}
 
+        before_snapshot = self._capture_page_change_snapshot()
         result = self.browser.switch_to_tab(label_or_index)
         if result.get("success"):
             try:
@@ -3237,6 +5136,12 @@ class BrowserActionExecutor:
                 result["screenshot"] = self.browser.take_screenshot()
             except Exception:
                 pass
+        self._attach_page_change_to_payload(
+            result,
+            before_snapshot,
+            "switch_to_tab",
+            success=bool(result.get("success")),
+        )
         return result
 
     def close_tab(self, label_or_index=None):
@@ -3264,6 +5169,7 @@ class BrowserActionExecutor:
                 return {"status": "step_up_required", "message": "Requires user approval"}
 
             if status == "allowed":
+                before_snapshot = self._capture_page_change_snapshot()
                 tab_result = self.browser.close_tab(label_or_index)
                 tab_result["action_id"] = result.get("action_id")
                 tab_result["status"] = "allowed" if tab_result.get("success") else "error"
@@ -3281,6 +5187,12 @@ class BrowserActionExecutor:
                     except Exception:
                         pass
 
+                self._attach_page_change_to_payload(
+                    tab_result,
+                    before_snapshot,
+                    "close_tab",
+                    success=bool(tab_result.get("success")),
+                )
                 return tab_result
 
             return {"status": "error", "message": f"Unexpected status: {status}"}
@@ -3532,6 +5444,115 @@ class BrowserActionExecutor:
             pass
 
         return dismissed
+
+    def press_key(self, key: str, target: Optional[Dict[str, Any]] = None):
+        """Press a key after optional AgentTrust validation."""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        current_url = self.browser.get_current_url()
+        try:
+            result = self.agenttrust.execute_action(
+                action_type="form_input",
+                url=current_url,
+                target={"type": "keyboard", "action": "press_key", **(target or {})},
+                form_data={"key": key}
+            )
+            status = result.get("status") if result else None
+            if status != "allowed":
+                return {"status": status or "error", "message": result.get("message", "Unexpected status") if result else "No response"}
+            before_snapshot = self._capture_page_change_snapshot()
+            key_result = self.browser.press_key(key, target=target)
+            screenshot = self.browser.take_screenshot() if key_result.get("success") else None
+            payload = {
+                "status": "allowed",
+                "action_id": result.get("action_id"),
+                "risk_level": result.get("risk_level"),
+                "message": key_result.get("message", ""),
+                "screenshot": screenshot,
+                "browser_result": {
+                    "success": key_result.get("success", False),
+                    "message": key_result.get("message", "")
+                }
+            }
+            self._attach_page_change_to_payload(
+                payload,
+                before_snapshot,
+                "press_key",
+                success=bool(key_result.get("success")),
+            )
+            self._emit_platform_action_event("press_key", current_url, payload, target=target, form_data={"key": key})
+            return payload
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def select_option(self, target: Dict[str, Any], value: Optional[str] = None, label: Optional[str] = None, index: Optional[int] = None):
+        """Select an option after AgentTrust validation."""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        current_url = self.browser.get_current_url()
+        chosen = label or value or index
+        try:
+            result = self.agenttrust.execute_action(
+                action_type="form_input",
+                url=current_url,
+                target={"type": "select", "action": "select_option", **(target or {})},
+                form_data={"value": chosen}
+            )
+            status = result.get("status") if result else None
+            if status != "allowed":
+                return {"status": status or "error", "message": result.get("message", "Unexpected status") if result else "No response"}
+            before_snapshot = self._capture_page_change_snapshot()
+            select_result = self.browser.select_option(target, value=value, label=label, index=index)
+            screenshot = self.browser.take_screenshot() if select_result.get("success") else None
+            payload = {
+                "status": "allowed",
+                "action_id": result.get("action_id"),
+                "risk_level": result.get("risk_level"),
+                "message": select_result.get("message", ""),
+                "screenshot": screenshot,
+                "browser_result": {
+                    "success": select_result.get("success", False),
+                    "message": select_result.get("message", "")
+                }
+            }
+            self._attach_page_change_to_payload(
+                payload,
+                before_snapshot,
+                "select_option",
+                success=bool(select_result.get("success")),
+            )
+            self._emit_platform_action_event("select_option", current_url, payload, target=target, form_data={"value": chosen})
+            return payload
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def dismiss_overlays_action(self):
+        """Dismiss overlays and record the resulting state as a mutating action."""
+        if not self.browser:
+            return {"error": "Browser not initialized"}
+        current_url = self.browser.get_current_url()
+        before_snapshot = self._capture_page_change_snapshot()
+        dismissed = self.dismiss_overlays()
+        screenshot = self.browser.take_screenshot() if dismissed else None
+        payload = {
+            "status": "allowed",
+            "action_id": None,
+            "risk_level": "low",
+            "message": "Dismissed overlays" if dismissed else "No overlays dismissed",
+            "screenshot": screenshot,
+            "browser_result": {
+                "success": bool(dismissed),
+                "message": "Dismissed overlays" if dismissed else "No overlays dismissed"
+            }
+        }
+        self._attach_page_change_to_payload(
+            payload,
+            before_snapshot,
+            "dismiss_overlays",
+            success=True,
+        )
+        self._emit_platform_action_event("dismiss_overlays", current_url, payload)
+        return payload
 
     def auto_login(self, url: str, username: str, password: str):
         """
@@ -4209,6 +6230,33 @@ class BrowserActionExecutor:
             print(f"           Credential lookup error: {e}")
         return None, None
 
+    def _resolve_sensitive_reference(self, value: str, current_url: str = "") -> Tuple[Optional[str], bool]:
+        """
+        Resolve a vault:// reference to a plaintext value without exposing
+        the raw value in prompts or logs. Returns (resolved_value, used_vault).
+        """
+        if not isinstance(value, str):
+            return value, False
+        text = value.strip()
+        if not text.startswith("vault://"):
+            return value, False
+
+        lookup_domain = ""
+        try:
+            from urllib.parse import urlparse
+            lookup_domain = urlparse(current_url).netloc or ""
+        except Exception:
+            lookup_domain = ""
+
+        try:
+            resolved = self.agenttrust.resolve_sensitive_reference(text, domain=lookup_domain)
+            if resolved is None:
+                return None, True
+            return resolved, True
+        except Exception as e:
+            print(f"           Sensitive reference lookup error: {e}")
+            return None, True
+
     def _validate_global_routine_once(self, steps: list) -> str:
         """
         One-time validation for a global routine the user doesn't own.
@@ -4631,7 +6679,12 @@ class ChatGPTAgentWithAgentTrust:
     - ChatGPT only performs allowed actions
     """
     
-    def __init__(self, enable_browser: bool = True, headless: bool = False):
+    def __init__(
+        self,
+        enable_browser: bool = True,
+        headless: bool = False,
+        agenttrust_client: Optional[AgentTrustClient] = None,
+    ):
         """
         Initialize ChatGPT agent with AgentTrust - 100% enforcement
         
@@ -4646,19 +6699,20 @@ class ChatGPTAgentWithAgentTrust:
             print("   Make sure OPENAI_API_KEY is set in environment")
             sys.exit(1)
         
-        try:
-            agenttrust_client = AgentTrustClient()
-            if agenttrust_client.dev_mode:
-                print("⚠️  AGENTTRUST_DEV_MODE=true: Running without backend (browser automation only)")
-                print("   NOTE: The browser extension chat will NOT work in dev mode.")
-                print("   Terminal input only. To enable extension chat, configure Auth0")
-                print("   and remove AGENTTRUST_DEV_MODE from your .env file.\n")
-        except ValueError as e:
-            print(f"❌ AgentTrust configuration error: {e}")
-            print("\nYou must configure Auth0 for the agent to work:")
-            print("  1. Set Auth0 env vars: AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE")
-            print("  2. Create the API identifier in your Auth0 dashboard (see README)")
-            sys.exit(1)
+        if agenttrust_client is None:
+            try:
+                agenttrust_client = AgentTrustClient()
+                if agenttrust_client.dev_mode:
+                    print("⚠️  AGENTTRUST_DEV_MODE=true: Running without backend (browser automation only)")
+                    print("   NOTE: The browser extension chat will NOT work in dev mode.")
+                    print("   Terminal input only. To enable extension chat, configure Auth0")
+                    print("   and remove AGENTTRUST_DEV_MODE from your .env file.\n")
+            except ValueError as e:
+                print(f"❌ AgentTrust configuration error: {e}")
+                print("\nYou must configure Auth0 for the agent to work:")
+                print("  1. Set Auth0 env vars: AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE")
+                print("  2. Create the API identifier in your Auth0 dashboard (see README)")
+                sys.exit(1)
         
         # CRITICAL: Create mandatory browser action executor FIRST
         # This provides the validation function needed for browser interception
@@ -4800,6 +6854,20 @@ class ChatGPTAgentWithAgentTrust:
                 }}
             }},
             {"type": "function", "function": {
+                "name": "highlight_interactive_elements",
+                "description": "Highlight visible interactive elements on the current page with numbered overlays, similar to Browser Use. Use this when visual grounding would help confirm which indexed element to target.",
+                "parameters": {"type": "object", "properties": {
+                    "element_type": {"type": "string", "enum": ["button", "link", "input", "form"],
+                                     "description": "Filter highlights by element type (optional)"},
+                    "max_elements": {"type": "integer", "description": "Maximum number of elements to highlight (default 25)."}
+                }}
+            }},
+            {"type": "function", "function": {
+                "name": "clear_highlight_overlays",
+                "description": "Remove any numbered interactive-element highlight overlays previously drawn on the page.",
+                "parameters": {"type": "object", "properties": {}}
+            }},
+            {"type": "function", "function": {
                 "name": "get_current_url",
                 "description": "Return the current page URL.",
                 "parameters": {"type": "object", "properties": {}}
@@ -4815,7 +6883,7 @@ class ChatGPTAgentWithAgentTrust:
             }},
             {"type": "function", "function": {
                 "name": "type_text",
-                "description": "Type text into an input field, textarea, or contenteditable element. Identify the target using id, name, placeholder, aria-label, input type, role, or CSS selector. For search boxes, use aria-label, role='searchbox', or type='search'. Set press_enter=true to submit the form after typing (PREFERRED over clicking a submit button for search boxes and single-input forms).",
+                "description": "Type text into an input field, textarea, or contenteditable element. Identify the target using id, name, placeholder, aria-label, input type, role, or CSS selector. For search boxes, use aria-label, role='searchbox', or type='search'. If the search box already contains text, clear the existing value before typing the new query. Set press_enter=true to submit the form after typing (PREFERRED over clicking a submit button for search boxes and single-input forms). You may also pass a secure vault reference like vault://record_ref/field_name instead of raw PII; the executor will resolve it at runtime after approval.",
                 "parameters": {"type": "object", "properties": {
                     "target": {"type": "object", "properties": {
                         "id": {"type": "string", "description": "Element id attribute"},
@@ -4826,8 +6894,8 @@ class ChatGPTAgentWithAgentTrust:
                         "role": {"type": "string", "description": "ARIA role: searchbox, combobox, textbox"},
                         "selector": {"type": "string", "description": "CSS selector (last resort)"}
                     }},
-                    "text": {"type": "string", "description": "Text to type"},
-                    "press_enter": {"type": "boolean", "description": "Press Enter after typing to submit the form. Use for search boxes, verification code inputs, and single-input forms. Default: false."}
+                    "text": {"type": "string", "description": "Text to type, or a secure vault reference like vault://record_ref/field_name"},
+                    "press_enter": {"type": "boolean", "description": "Press Enter after typing to submit the form. Use for search boxes, verification code inputs, and single-input forms. When replacing a search query, clear the field first, then type, then press Enter. Default: false."}
                 }, "required": ["target", "text"]}
             }},
             {"type": "function", "function": {
@@ -4839,6 +6907,42 @@ class ChatGPTAgentWithAgentTrust:
                 }}
             }},
             {"type": "function", "function": {
+                "name": "press_key",
+                "description": "Press a keyboard key such as Enter, Tab, Escape, ArrowDown, or ArrowUp. Use this for menus, comboboxes, dialogs, and focused controls that need keyboard interaction.",
+                "parameters": {"type": "object", "properties": {
+                    "key": {"type": "string", "description": "Keyboard key name"},
+                    "target": {"type": "object", "properties": {
+                        "id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "aria-label": {"type": "string"},
+                        "text": {"type": "string"},
+                        "selector": {"type": "string"}
+                    }}
+                }, "required": ["key"]}
+            }},
+            {"type": "function", "function": {
+                "name": "select_option",
+                "description": "Select an option from a native select or custom combobox/listbox dropdown by visible label, value, or index.",
+                "parameters": {"type": "object", "properties": {
+                    "target": {"type": "object", "properties": {
+                        "id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "aria-label": {"type": "string"},
+                        "text": {"type": "string"},
+                        "role": {"type": "string"},
+                        "selector": {"type": "string"}
+                    }},
+                    "label": {"type": "string"},
+                    "value": {"type": "string"},
+                    "index": {"type": "integer"}
+                }, "required": ["target"]}
+            }},
+            {"type": "function", "function": {
+                "name": "dismiss_overlays",
+                "description": "Dismiss popups, cookie banners, credential prompts, and other overlays before continuing.",
+                "parameters": {"type": "object", "properties": {}}
+            }},
+            {"type": "function", "function": {
                 "name": "go_back",
                 "description": "Navigate back in browser history.",
                 "parameters": {"type": "object", "properties": {}}
@@ -4847,6 +6951,27 @@ class ChatGPTAgentWithAgentTrust:
                 "name": "go_forward",
                 "description": "Navigate forward in browser history.",
                 "parameters": {"type": "object", "properties": {}}
+            }},
+            {"type": "function", "function": {
+                "name": "reload_page",
+                "description": "Reload the current page and wait briefly for it to become interactive again. Use this when a page stalls, partially renders, or needs a fresh state.",
+                "parameters": {"type": "object", "properties": {}}
+            }},
+            {"type": "function", "function": {
+                "name": "wait_until_interactive",
+                "description": "Wait until the current page looks meaningfully interactive, not just loaded. Use after navigation, redirects, or dynamic page transitions before trying to click or type.",
+                "parameters": {"type": "object", "properties": {
+                    "timeout": {"type": "number", "description": "Max seconds to wait (default 6)."}
+                }}
+            }},
+            {"type": "function", "function": {
+                "name": "find_text_on_page",
+                "description": "Find visible text on the current page and scroll the best match into view. Use this to orient on long pages, jump to a section heading, or verify the page contains the expected text before acting.",
+                "parameters": {"type": "object", "properties": {
+                    "text": {"type": "string", "description": "Visible text to locate on the page."},
+                    "exact_match": {"type": "boolean", "description": "Require an exact visible-text match instead of partial match. Default false."},
+                    "scroll_behavior": {"type": "string", "enum": ["start", "center", "end", "nearest"], "description": "Where to align the matched text in the viewport. Default center."}
+                }, "required": ["text"]}
             }},
             {"type": "function", "function": {
                 "name": "wait_for_element",
@@ -5156,6 +7281,9 @@ WORKFLOW (only when the user asks for a browser action):
 
 ELEMENT IDENTIFICATION — CRITICAL:
 - ALWAYS look at the interactive elements from get_visible_elements.
+- Use highlight_interactive_elements when visual grounding would help.
+  The numbered overlays match the returned element indexes.
+- Use clear_highlight_overlays when you want to remove those boxes.
 - NEVER send a click with empty or missing target identifiers.
 - Copy the element's id, text, href, aria-label, or name EXACTLY from
   the interactive elements into the target object.
@@ -5183,6 +7311,13 @@ SEARCH & FORM SUBMISSION:
 - When typing into search boxes, use the most specific identifier:
   aria-label (e.g. "Search"), role="searchbox" or role="combobox",
   type="search", placeholder text, or name attribute.
+- If a search box already contains any text, CLEAR the field before
+  typing the new query. Do not append a second query to an existing one.
+- After any navigation, redirect, or dynamic page change, use
+  wait_until_interactive before trying to click or type if the page
+  still looks incomplete or unstable.
+- Use find_text_on_page to jump to a heading, section label, or other
+  visible text on long pages before interacting nearby.
 - AFTER typing in a search box, use type_text with press_enter=true
   to submit the search. Do NOT try to find and click a 'Search'
   button — just press Enter. This is MORE RELIABLE.
@@ -5237,6 +7372,8 @@ TAB MANAGEMENT:
 - Use open_new_tab when you need to visit a DIFFERENT site without
   losing your place (e.g. checking email for a 2FA code, comparing
   prices on another site, looking up information).
+- Use reload_page if a site partially renders, stalls after a redirect,
+  or shows stale content that needs a clean refresh.
 - Give tabs short, meaningful labels (e.g. "gmail", "ebay", "amazon").
 - After completing work in a secondary tab, ALWAYS switch_to_tab
   back to the original tab.
@@ -5427,6 +7564,22 @@ ROUTINES:
             current_url = self.browser_executor.get_current_url()
             print(f"🔍 Found {len(elements)} visible elements on {current_url}")
             return {"elements": elements, "count": len(elements), "current_url": current_url}
+
+        elif function_name == "highlight_interactive_elements":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.highlight_interactive_elements(
+                element_type=args.get("element_type"),
+                max_elements=args.get("max_elements", 25),
+            )
+            if result.get("success"):
+                print(f"🖍️  Highlighted {result.get('count', 0)} interactive element(s)")
+            return result
+
+        elif function_name == "clear_highlight_overlays":
+            result = self.browser_executor.clear_highlight_overlays()
+            if result.get("success"):
+                print("🧹 Cleared interactive element highlights")
+            return result
         
         elif function_name == "get_current_url":
             url = self.browser_executor.get_current_url()
@@ -5458,6 +7611,15 @@ ROUTINES:
             current_url = self.browser_executor.get_current_url() if self.browser_executor.browser else ""
             result["current_url"] = current_url
             if result.get("status") == "allowed":
+                cb = getattr(self.agenttrust, "on_platform_action_event", None)
+                if cb:
+                    cb({
+                        "action_type": "type_text",
+                        "url": current_url,
+                        "target": args.get("target", {}),
+                        "form_data": {"text": args.get("text", ""), "press_enter": press_enter},
+                        "result": result
+                    })
                 enter_msg = " + Enter" if press_enter else ""
                 print(f"⌨️  Text typed into field{enter_msg}")
             return result
@@ -5470,6 +7632,33 @@ ROUTINES:
             )
             print(f"📜 Page scrolled {args.get('direction', 'down')}")
             return result
+
+        elif function_name == "press_key":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.press_key(
+                key=args.get("key", ""),
+                target=args.get("target")
+            )
+            if result.get("status") == "allowed":
+                print(f"⌨️  Key pressed: {args.get('key', '')}")
+            return result
+
+        elif function_name == "select_option":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.select_option(
+                target=args.get("target", {}),
+                value=args.get("value"),
+                label=args.get("label"),
+                index=args.get("index")
+            )
+            if result.get("status") == "allowed":
+                print("🗂️  Option selected")
+            return result
+
+        elif function_name == "dismiss_overlays":
+            result = self.browser_executor.dismiss_overlays_action()
+            print("🪟 Overlay dismissal attempted")
+            return result
         
         elif function_name == "go_back":
             result = self.browser_executor.go_back()
@@ -5481,6 +7670,34 @@ ROUTINES:
             result = self.browser_executor.go_forward()
             if result.get("status") == "allowed":
                 print(f"➡️  Navigated forward to: {result.get('url', 'N/A')}")
+            return result
+
+        elif function_name == "reload_page":
+            result = self.browser_executor.reload_page()
+            if result.get("status") == "allowed":
+                print(f"🔄 Reloaded page: {result.get('url', 'N/A')}")
+            return result
+
+        elif function_name == "wait_until_interactive":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.wait_until_interactive(
+                timeout=args.get("timeout", 6.0)
+            )
+            if result.get("ready"):
+                print(f"⏱️  Page interactive: {result.get('reason', '')}")
+            else:
+                print(f"⏱️  Page still settling: {result.get('reason', '')}")
+            return result
+
+        elif function_name == "find_text_on_page":
+            args = json.loads(function_call.arguments) if function_call.arguments else {}
+            result = self.browser_executor.find_text_on_page(
+                text=args.get("text", ""),
+                exact_match=args.get("exact_match", False),
+                scroll_behavior=args.get("scroll_behavior", "center"),
+            )
+            if result.get("success"):
+                print(f"🔎 Found text on page: {args.get('text', '')}")
             return result
         
         elif function_name == "wait_for_element":
@@ -5552,12 +7769,37 @@ ROUTINES:
                     "current_url": current_url,
                 }
 
+            has_login_fields = False
+            try:
+                elements = self.browser_executor.get_visible_elements()
+                for el in (elements or []):
+                    itype = (el.get("input_type") or el.get("type") or "").lower()
+                    ename = (el.get("name") or "").lower()
+                    placeholder = (el.get("placeholder") or "").lower()
+                    aria = (el.get("aria_label") or el.get("aria-label") or "").lower()
+                    if itype in ("email", "password") or ename in ("email", "username", "password", "login_email", "userid"):
+                        has_login_fields = True
+                        break
+                    if any(kw in f"{placeholder} {aria}" for kw in ("email", "password", "username", "user id", "sign in", "phone")):
+                        has_login_fields = True
+                        break
+            except Exception:
+                has_login_fields = True
+
             if (not username or not password) and getattr(self, '_cached_credentials', None):
                 username = self._cached_credentials.get("username", username)
                 password = self._cached_credentials.get("password", password)
                 self._cached_credentials = None
             if not username or not password:
-                return {"success": False, "message": "Both username and password are required"}
+                if not has_login_fields:
+                    return {
+                        "success": False,
+                        "message": "Login form is not visible yet. Click a real Sign in / Log in control, wait for the username/password fields to appear, then call get_saved_credentials followed by auto_login."
+                    }
+                return {
+                    "success": False,
+                    "message": "Credentials are not loaded yet. Call get_saved_credentials after the login form is visible, or pass both username and password explicitly."
+                }
             # Guard: don't attempt login on non-login pages
             if current_url and ("localhost" in current_url or "about:blank" in current_url
                                 or "/health" in current_url or "chrome://" in current_url):
@@ -5599,22 +7841,6 @@ ROUTINES:
 
             # Check if the current page actually has login fields.
             # If not, tell the agent to find the login page itself.
-            has_login_fields = False
-            try:
-                elements = self.browser_executor.get_visible_elements()
-                for el in (elements or []):
-                    itype = (el.get("input_type") or el.get("type") or "").lower()
-                    ename = (el.get("name") or "").lower()
-                    placeholder = (el.get("placeholder") or "").lower()
-                    if itype in ("email", "password") or ename in ("email", "username", "password", "login_email", "userid"):
-                        has_login_fields = True
-                        break
-                    if any(kw in placeholder for kw in ("email", "password", "username", "user id", "sign in")):
-                        has_login_fields = True
-                        break
-            except Exception:
-                has_login_fields = True
-
             if not has_login_fields:
                 return {
                     "success": False,
@@ -5748,11 +7974,14 @@ ROUTINES:
             })
             
             current_url = self.browser_executor.get_current_url() if self.browser_executor.browser else url
-            return {
+            payload = {
                 "status": "allowed",
                 "action_id": result.get("action_id"),
                 "risk_level": risk,
                 "current_url": current_url,
+                "target": target,
+                "executed": bool(result.get("executed")),
+                "clicked": bool(result.get("clicked")) if "clicked" in result else executed_ok,
                 "browser_result": {
                     "success": executed_ok,
                     "message": br.get("message", ""),
@@ -5762,6 +7991,14 @@ ROUTINES:
                            + (f"Browser: {br.get('message', 'OK')}" if br else "No browser.")
                            + f" Current page: {current_url}"
             }
+            if isinstance(result.get("page_change"), dict):
+                payload["page_change"] = result.get("page_change")
+            if isinstance(br.get("page_change"), dict):
+                payload["browser_result"]["page_change"] = br.get("page_change")
+            cb = getattr(self.agenttrust, "on_platform_action_event", None)
+            if cb:
+                cb({"action_type": action_type, "url": url, "target": target, "form_data": form_data, "result": payload})
+            return payload
         
         except PermissionError as e:
             error_msg = str(e)
@@ -5776,11 +8013,15 @@ ROUTINES:
                 self.browser_executor._notify_extension(
                     action_type, url, "step_up_required",
                     target=target, form_data=form_data)
-                return {
+                payload = {
                     "status": "step_up_required",
                     "message": error_msg,
                     "requires_user_approval": True
                 }
+                cb = getattr(self.agenttrust, "on_platform_action_event", None)
+                if cb:
+                    cb({"action_type": action_type, "url": url, "target": target, "form_data": form_data, "result": payload})
+                return payload
             else:
                 print(f"   ❌ AgentTrust: DENIED")
                 self.actions_blocked.append({
@@ -5791,11 +8032,15 @@ ROUTINES:
                 self.browser_executor._notify_extension(
                     action_type, url, "denied",
                     target=target, form_data=form_data)
-                return {
+                payload = {
                     "status": "denied",
                     "message": error_msg,
                     "reason": "Policy violation"
                 }
+                cb = getattr(self.agenttrust, "on_platform_action_event", None)
+                if cb:
+                    cb({"action_type": action_type, "url": url, "target": target, "form_data": form_data, "result": payload})
+                return payload
         
         except Exception as e:
             error_msg = str(e)
@@ -5807,12 +8052,16 @@ ROUTINES:
             self.browser_executor._notify_extension(
                 action_type, url, "error",
                 target=target, form_data=form_data)
-            return {
+            payload = {
                 "status": "error",
                 "message": f"Action failed: {error_msg}. "
                            "This may be a temporary backend/auth issue. "
                            "Try the action again, or try a different approach."
             }
+            cb = getattr(self.agenttrust, "on_platform_action_event", None)
+            if cb:
+                cb({"action_type": action_type, "url": url, "target": target, "form_data": form_data, "result": payload})
+            return payload
     
     def print_summary(self):
         """Print conversation summary"""

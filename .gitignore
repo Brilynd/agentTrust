@@ -62,3 +62,4 @@ venv/
 
 # Chrome profile (persisted between agent runs)
 .chrome-profile/
+integrations/chatgpt/agenttrust-chrome-*/

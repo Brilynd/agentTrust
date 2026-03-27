@@ -3,6 +3,7 @@
 
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -12,6 +13,7 @@ const morgan = require('morgan');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const server = http.createServer(app);
 
 // Security Middleware
 // Helmet - Set security HTTP headers
@@ -29,7 +31,7 @@ app.use(helmet({
 
 // CORS Configuration
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000'],
+  origin: process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000', 'http://localhost:3001'],
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -79,6 +81,7 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Routes
 app.use('/api/actions', require('./routes/actions'));
+app.use('/api', require('./routes/agent-platform'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/sessions', require('./routes/sessions'));
@@ -88,9 +91,13 @@ app.use('/api/prompts', require('./routes/prompts'));
 app.use('/api/commands', require('./routes/commands'));
 app.use('/api/approvals', require('./routes/approvals'));
 app.use('/api/credentials', require('./routes/credentials'));
+app.use('/api/sensitive-data', require('./routes/sensitive-data'));
 app.use('/api/token-vault', require('./routes/token-vault'));
 app.use('/api/external', require('./routes/external-api'));
 app.use('/api/routines', require('./routes/routines'));
+
+const { initPlatformSocket } = require('./services/platformSocket');
+initPlatformSocket(server);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -106,6 +113,11 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`AgentTrust backend server running on port ${PORT}`);
+  try {
+    await require('./services/workerManager').recoverWorkers();
+  } catch (error) {
+    console.error('Failed to recover backend-managed workers:', error);
+  }
 });

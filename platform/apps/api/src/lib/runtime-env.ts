@@ -1,8 +1,10 @@
-import "./runtime-env";
+import * as path from "node:path";
 
-import { PrismaClient } from "@prisma/client";
+import { config as loadEnv } from "dotenv";
 
-import { logger } from "./logger";
+function loadEnvFile(filePath: string) {
+  loadEnv({ path: filePath, override: false });
+}
 
 function hasValidDatabaseUrl(value?: string) {
   if (!value) {
@@ -45,17 +47,19 @@ function buildDatabaseUrlFromParts() {
   return url;
 }
 
-const derivedDatabaseUrl = buildDatabaseUrlFromParts();
-if (!hasValidDatabaseUrl(process.env.DATABASE_URL) && derivedDatabaseUrl) {
-  process.env.DATABASE_URL = derivedDatabaseUrl;
-  logger.info(
-    {
-      dbHost: process.env.DB_HOST,
-      dbPort: process.env.DB_PORT || "5432",
-      dbName: process.env.DB_NAME || process.env.POSTGRES_DB || process.env.DB_USER || "postgres"
-    },
-    "derived DATABASE_URL from DB_* environment variables"
-  );
-}
+const platformRoot = process.cwd();
+const repoRoot = path.resolve(platformRoot, "..");
 
-export const prisma = new PrismaClient();
+[
+  path.join(platformRoot, ".env"),
+  path.join(platformRoot, ".env.local"),
+  path.join(repoRoot, "backend", ".env"),
+  path.join(repoRoot, "integrations", "chatgpt", ".env")
+].forEach(loadEnvFile);
+
+if (!hasValidDatabaseUrl(process.env.DATABASE_URL)) {
+  const derived = buildDatabaseUrlFromParts();
+  if (derived) {
+    process.env.DATABASE_URL = derived;
+  }
+}

@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./lib/runtime-env";
 
 import http from "node:http";
 

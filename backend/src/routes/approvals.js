@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateUser, validateAction } = require('../middleware/auth');
+const store = require('../services/agentPlatformStore');
+const { emitPlatformEvent } = require('../services/platformSocket');
 
 // In-memory approval queue
 // approvalId -> { id, sessionId, actionId, type, domain, url, riskLevel, reason, status, createdAt }
@@ -11,7 +13,57 @@ const approvalWaiters = new Map();
 
 let approvalCounter = 0;
 
-function createApproval({ sessionId, actionId, type, domain, url, riskLevel, reason, target, preview, impactSummary }) {
+// Dashboard/platform approvals stored in Postgres
+router.get('/', async (_req, res, next) => {
+  try {
+    const approvals = await store.listApprovals();
+    res.json({ success: true, approvals });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:id', async (req, res, next) => {
+  try {
+    const approval = await store.getApproval(req.params.id);
+    if (!approval) {
+      return res.status(404).json({ success: false, error: 'Approval not found' });
+    }
+    res.json({ success: true, approval });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:id/decision', async (req, res, next) => {
+  try {
+    const existingLegacy = pendingApprovals.get(req.params.id);
+    const approval = await store.decideApproval(
+      req.params.id,
+      Boolean(req.body?.approved),
+      req.body?.decisionBy || 'dashboard-operator',
+      req.body?.comment || null
+    );
+    if (!approval) {
+      return res.status(404).json({ success: false, error: 'Approval not found' });
+    }
+    if (existingLegacy && existingLegacy.status === 'pending') {
+      existingLegacy.status = req.body?.approved ? 'approved' : 'denied';
+      resolveWaiters(req.params.id, {
+        approved: Boolean(req.body?.approved),
+        approvalId: req.params.id,
+        actionId: existingLegacy.actionId,
+        reason: req.body?.comment || null
+      });
+    }
+    emitPlatformEvent('approval.updated', approval);
+    res.json({ success: true, approval });
+  } catch (error) {
+    next(error);
+  }
+});
+
+function createApproval({ sessionId, actionId, type, domain, url, riskLevel, reason, target, preview, impactSummary, promptId }) {
   // Supersede any existing pending approvals for the same action
   // so the extension only shows the latest one
   for (const [existingId, existing] of pendingApprovals) {
@@ -40,6 +92,24 @@ function createApproval({ sessionId, actionId, type, domain, url, riskLevel, rea
   };
   pendingApprovals.set(id, approval);
 
+  void store.upsertApproval({
+    id,
+    jobId: promptId || null,
+    stepId: promptId ? `${promptId}:approval:${type}` : null,
+    action: type,
+    target: target || null,
+    policyReason: reason,
+    status: 'pending',
+    requestedBy: 'legacy-agenttrust',
+    expiresAt: new Date(Date.now() + 2 * 60 * 1000)
+  }).then((platformApproval) => {
+    if (platformApproval) {
+      emitPlatformEvent('approval.updated', platformApproval);
+    }
+  }).catch((error) => {
+    console.error('Failed to mirror legacy approval into platform store:', error);
+  });
+
   // Auto-expire after 2 minutes
   setTimeout(() => {
     const a = pendingApprovals.get(id);
@@ -47,6 +117,7 @@ function createApproval({ sessionId, actionId, type, domain, url, riskLevel, rea
       a.status = 'expired';
       resolveWaiters(id, { approved: false, reason: 'Approval expired' });
       pendingApprovals.delete(id);
+      void store.decideApproval(id, false, 'system', 'Approval expired').catch(() => undefined);
     }
   }, 120000);
 
@@ -63,6 +134,21 @@ function resolveWaiters(approvalId, result) {
       }
     }
     approvalWaiters.delete(approvalId);
+  }
+}
+
+function clearPendingApprovals(reason = 'Dashboard history reset') {
+  for (const [approvalId, approval] of pendingApprovals.entries()) {
+    if (approval.status === 'pending') {
+      approval.status = 'cancelled';
+      resolveWaiters(approvalId, {
+        approved: false,
+        approvalId,
+        actionId: approval.actionId,
+        reason
+      });
+    }
+    pendingApprovals.delete(approvalId);
   }
 }
 
@@ -157,3 +243,4 @@ router.get('/:id/wait', validateAction, (req, res) => {
 module.exports = router;
 module.exports.createApproval = createApproval;
 module.exports.__pendingApprovals = pendingApprovals;
+module.exports.clearPendingApprovals = clearPendingApprovals;

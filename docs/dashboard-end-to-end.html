@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentTrust - Dashboard End-to-End</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&family=SF+Pro+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #FFFFFF;
+    --text: #1D1D1F;
+    --text-secondary: #86868B;
+    --text-tertiary: #AEAEB2;
+    --card-bg: #FFFFFF;
+    --card-border: rgba(0,0,0,0.06);
+    --card-shadow: 0 2px 12px rgba(0,0,0,0.04), 0 0.5px 2px rgba(0,0,0,0.06);
+    --radius: 20px;
+    --radius-sm: 12px;
+    --radius-xs: 8px;
+
+    --dashboard: #2563EB;
+    --backend: #0071E3;
+    --worker: #30D158;
+    --vault: #BF5AF2;
+    --approval: #FF9F0A;
+    --aws: #FF9900;
+    --socket: #0EA5A4;
+    --danger: #FF453A;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    background: #FFFFFF;
+    color: var(--text);
+    padding: 80px 60px;
+    min-width: 1440px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1 {
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    text-align: center;
+    margin-bottom: 8px;
+  }
+
+  .subtitle {
+    text-align: center;
+    font-size: 21px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+    margin-bottom: 64px;
+  }
+
+  .export-bar {
+    position: fixed;
+    top: 24px;
+    right: 24px;
+    display: flex;
+    gap: 10px;
+    z-index: 100;
+  }
+
+  .export-btn {
+    border: 0;
+    border-radius: 999px;
+    background: #111827;
+    color: #FFF;
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: var(--card-shadow);
+  }
+
+  .export-btn.secondary {
+    background: #E5E7EB;
+    color: #111827;
+  }
+
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 28px;
+    margin-bottom: 56px;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  .flow {
+    position: relative;
+  }
+
+  .step-row {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 0;
+    align-items: start;
+    position: relative;
+  }
+
+  .step-num {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    color: #FFF;
+    position: relative;
+    z-index: 2;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    margin-top: 20px;
+  }
+
+  .step-connector {
+    position: absolute;
+    left: 23px;
+    top: 68px;
+    bottom: -20px;
+    width: 2px;
+    background: linear-gradient(180deg, #D1D1D6, #E5E5EA);
+    z-index: 1;
+  }
+
+  .step-row:last-child .step-connector { display: none; }
+
+  .step-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--card-shadow);
+    padding: 24px 28px;
+    margin-bottom: 16px;
+    position: relative;
+  }
+
+  .step-card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .step-card-title {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .step-card-subtitle {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .step-card-where {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 100px;
+    white-space: nowrap;
+  }
+
+  .step-body {
+    display: grid;
+    gap: 12px;
+  }
+
+  .step-body-row {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .detail-card {
+    flex: 1;
+    border-radius: var(--radius-xs);
+    padding: 16px 18px;
+    border: 1px solid var(--card-border);
+  }
+
+  .detail-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .detail-card-title .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .detail-card p, .detail-card ul {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.7;
+  }
+
+  .detail-card ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .detail-card ul li::before {
+    content: '›';
+    font-weight: 600;
+    opacity: 0.35;
+    margin-right: 6px;
+  }
+
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    color: var(--text-tertiary);
+    min-width: 24px;
+  }
+
+  .dc-dashboard { background: #EFF6FF; }
+  .dc-dashboard .detail-card-title { color: #1D4ED8; }
+  .dc-backend { background: #F3F8FF; }
+  .dc-backend .detail-card-title { color: #1E40AF; }
+  .dc-worker { background: #F0FDF4; }
+  .dc-worker .detail-card-title { color: #166534; }
+  .dc-vault { background: #FAF5FF; }
+  .dc-vault .detail-card-title { color: #7C3AED; }
+  .dc-approval { background: #FFF7ED; }
+  .dc-approval .detail-card-title { color: #C2410C; }
+  .dc-socket { background: #F0FDFA; }
+  .dc-socket .detail-card-title { color: #0F766E; }
+  .dc-aws { background: #FFFBEB; }
+  .dc-aws .detail-card-title { color: #92400E; }
+
+  .where-dashboard { background: #DBEAFE; color: #1D4ED8; }
+  .where-backend { background: #E0F2FE; color: #0369A1; }
+  .where-worker { background: #DCFCE7; color: #166534; }
+  .where-vault { background: #F3E8FF; color: #6B21A8; }
+  .where-approval { background: #FFEDD5; color: #9A3412; }
+  .where-aws { background: #FEF3C7; color: #92400E; }
+
+  .mono {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+    font-size: 11px;
+    background: rgba(255,255,255,0.72);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 1px 7px;
+    color: #374151;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div class="export-bar">
+  <button class="export-btn" onclick="exportSVG()">Export SVG (for Figma)</button>
+  <button class="export-btn secondary" onclick="exportPNG()">Export PNG</button>
+</div>
+
+<h1>AgentTrust Dashboard</h1>
+<p class="subtitle">End-to-End Flow - From Operator Launch to Audited Completion</p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--dashboard)"></div>Dashboard UI</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--backend)"></div>Backend API</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--worker)"></div>Python Worker</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--socket)"></div>Socket.IO</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--vault)"></div>Sensitive Data</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--approval)"></div>Approval Flow</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--aws)"></div>Postgres</div>
+</div>
+
+<div class="flow">
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--dashboard), #1D4ED8);">1</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">Operator Prepares a Run</div>
+      <div class="step-card-where where-dashboard">Dashboard</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Configurations Tab</div>
+          <p>The operator selects a reusable configuration, reviews task intent, start URL, verify text, high-risk keywords, and runtime notes.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-vault">
+          <div class="detail-card-title"><div class="dot" style="background:var(--vault)"></div>Sensitive Data Tab</div>
+          <p>Customer profile JSON is already stored as encrypted records with generated <span class="mono">vault://...</span> references.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Per-Run Profile Selection</div>
+          <p>The operator checks the specific customer profiles this operation is allowed to use. This becomes the run's explicit permission set.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--backend), #0058B0);">2</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">Dashboard Launches the Job</div>
+      <div class="step-card-where where-backend">Backend</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Launch Request</div>
+          <p>The dashboard calls <span class="mono">POST /api/configurations/:id/launch</span> with runtime notes and selected <span class="mono">sensitiveDataGrants</span>.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-backend">
+          <div class="detail-card-title"><div class="dot" style="background:var(--backend)"></div>Create Job</div>
+          <ul>
+            <li>normalizes configuration details</li>
+            <li>persists runtime metadata</li>
+            <li>stores attached customer profile grants</li>
+            <li>returns the new <span class="mono">job.id</span></li>
+          </ul>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-aws">
+          <div class="detail-card-title"><div class="dot" style="background:var(--aws)"></div>agent_jobs + agent_steps</div>
+          <p>Job, goals, metadata, replay timeline, and future operator prompts are all anchored to persistent rows in Postgres.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--worker), #15803D);">3</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">Backend Spawns a Local Worker</div>
+      <div class="step-card-where where-worker">Worker Manager</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-backend">
+          <div class="detail-card-title"><div class="dot" style="background:var(--backend)"></div>spawnWorkerForJob()</div>
+          <p>The backend-managed worker process model starts a Python worker bridge for the selected job instead of relying on BullMQ / Redis.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-worker">
+          <div class="detail-card-title"><div class="dot" style="background:var(--worker)"></div>Platform Worker</div>
+          <p>The worker loads job input and metadata, including attached customer profiles, high-risk keywords, and any saved operator context.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-socket">
+          <div class="detail-card-title"><div class="dot" style="background:var(--socket)"></div>Live Status Event</div>
+          <p>The dashboard receives <span class="mono">job.created</span> and <span class="mono">job.updated</span> over Socket.IO and auto-selects the new process.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--worker), #15803D);">4</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">LangGraph Plans and Starts Executing</div>
+      <div class="step-card-subtitle">observe -> act -> verify</div>
+      <div class="step-card-where where-worker">Python Worker</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-worker">
+          <div class="detail-card-title"><div class="dot" style="background:var(--worker)"></div>Planner Context</div>
+          <p>The worker includes allowed domains, completion criteria, operator prompts, and attached customer profile labels in the planning prompt.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-worker">
+          <div class="detail-card-title"><div class="dot" style="background:var(--worker)"></div>Execution Loop</div>
+          <ul>
+            <li>observe current page state</li>
+            <li>choose next action</li>
+            <li>validate via backend policy</li>
+            <li>verify page change and goal status</li>
+          </ul>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-socket">
+          <div class="detail-card-title"><div class="dot" style="background:var(--socket)"></div>Dashboard Updates</div>
+          <p>Process progress, replay events, and goal timeline updates stream back to the selected process view.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--vault), #9333EA);">5</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">A Form Needs Customer-Specific Sensitive Data</div>
+      <div class="step-card-where where-vault">Vault Flow</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-worker">
+          <div class="detail-card-title"><div class="dot" style="background:var(--worker)"></div>Runtime Resolution</div>
+          <p>The worker reaches a field that uses a <span class="mono">vault://customer_a/ssn</span> style reference and requests the backend to resolve it at execution time.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-backend">
+          <div class="detail-card-title"><div class="dot" style="background:var(--backend)"></div>Grant Enforcement</div>
+          <ul>
+            <li>checks the current job id</li>
+            <li>loads <span class="mono">sensitiveDataGrants</span></li>
+            <li>blocks ungranted customer profiles</li>
+            <li>limits access to granted fields only</li>
+          </ul>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-aws">
+          <div class="detail-card-title"><div class="dot" style="background:var(--aws)"></div>Encrypted Record</div>
+          <p>If allowed, the backend decrypts only the requested field from <span class="mono">sensitive_records</span>; raw PII never needs to live in the planning prompt.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--approval), #D97706);">6</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">High-Risk Action or Sensitive Reveal Requires Approval</div>
+      <div class="step-card-where where-approval">Approval Inbox</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-backend">
+          <div class="detail-card-title"><div class="dot" style="background:var(--backend)"></div>Create Approval</div>
+          <p>The backend creates an approval request for risky browser actions or sensitive record access and marks the job as waiting when needed.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Approvals Tab</div>
+          <p>The operator sees the pending approval, policy reason, and target context inside the dashboard approval inbox.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-approval">
+          <div class="detail-card-title"><div class="dot" style="background:var(--approval)"></div>Approve or Reject</div>
+          <p>The operator decides in real time. The worker retries the action or data request only after the approval is recorded.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--socket), #0F766E);">7</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">Dashboard Audits the Run in Real Time</div>
+      <div class="step-card-where where-dashboard">Monitor + Jobs</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-socket">
+          <div class="detail-card-title"><div class="dot" style="background:var(--socket)"></div>Replay Stream</div>
+          <p>Mutating actions produce screenshot-based replay cards. Non-mutating events appear in the background event list.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Step Timeline</div>
+          <p>The vertical goal tracker shows completed goals, current work, and clear failure reasons for unfinished steps.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Process Context</div>
+          <p>Recent operator prompts, screenshots, and action summaries stay attached to the selected process for auditing.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--dashboard), #1D4ED8);">8</div>
+  <div class="step-connector"></div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">Operator Corrects or Extends the Run</div>
+      <div class="step-card-where where-dashboard">Correct + Resume</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Prompt Selected Process</div>
+          <p>The operator can send a new prompt, append steps, or use <span class="mono">Correct + Resume</span> to recover from failure.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-vault">
+          <div class="detail-card-title"><div class="dot" style="background:var(--vault)"></div>Update Profile Grants</div>
+          <p>The operator can also attach a different customer profile to this specific process if the correction requires a new customer dataset.</p>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-backend">
+          <div class="detail-card-title"><div class="dot" style="background:var(--backend)"></div>Append Context + Resume Worker</div>
+          <p>The backend persists the new operator prompt and merged grants, then re-spawns or resumes the worker with the updated state.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="step-row">
+  <div class="step-num" style="background:linear-gradient(145deg, var(--aws), #B45309);">9</div>
+  <div class="step-card">
+    <div class="step-card-header">
+      <div class="step-card-title">Run Completes with Auditable State</div>
+      <div class="step-card-where where-aws">Persisted Outcome</div>
+    </div>
+    <div class="step-body">
+      <div class="step-body-row">
+        <div class="detail-card dc-worker">
+          <div class="detail-card-title"><div class="dot" style="background:var(--worker)"></div>Worker Final State</div>
+          <ul>
+            <li>completed, failed, paused, or cancelled</li>
+            <li>goal completion and failure reason</li>
+            <li>final response / result payload</li>
+          </ul>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-aws">
+          <div class="detail-card-title"><div class="dot" style="background:var(--aws)"></div>Stored Audit Trail</div>
+          <ul>
+            <li><span class="mono">agent_jobs</span> metadata</li>
+            <li><span class="mono">agent_steps</span> timeline</li>
+            <li><span class="mono">replay_chunks</span> screenshots</li>
+            <li>attached customer-profile grants</li>
+          </ul>
+        </div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="detail-card dc-dashboard">
+          <div class="detail-card-title"><div class="dot" style="background:var(--dashboard)"></div>Operator Review</div>
+          <p>The operator can now inspect the completed process, replay evidence, customer-profile usage, and any approvals that were required.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script>
+async function capture() {
+  const btns = document.querySelector('.export-bar');
+  btns.style.display = 'none';
+
+  const canvas = await html2canvas(document.body, {
+    scale: 3,
+    useCORS: true,
+    backgroundColor: '#FFFFFF',
+    logging: false,
+    windowWidth: document.body.scrollWidth,
+    windowHeight: document.body.scrollHeight,
+  });
+
+  btns.style.display = 'flex';
+  return canvas;
+}
+
+async function exportPNG() {
+  const canvas = await capture();
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = 'agenttrust-dashboard-end-to-end.png';
+  a.click();
+}
+
+async function exportSVG() {
+  const canvas = await capture();
+  const w = canvas.width / 3;
+  const h = canvas.height / 3;
+  const dataUrl = canvas.toDataURL('image/png');
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <image width="${w}" height="${h}" xlink:href="${dataUrl}" />
+</svg>`;
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'agenttrust-dashboard-end-to-end.svg';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+
+</body>
+</html>

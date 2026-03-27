@@ -6,10 +6,41 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+function hasValidDatabaseUrl(value) {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === 'postgresql:' || parsed.protocol === 'postgres:') &&
+      !!parsed.hostname &&
+      parsed.pathname &&
+      parsed.pathname !== '/' &&
+      !parsed.pathname.includes('=require')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function buildDatabaseConfigFromParts() {
+  const host = process.env.DB_HOST || '';
+  const user = process.env.DB_USER || 'postgres';
+  const password = process.env.DB_PASSWORD || '';
+  if (!host) return null;
+  return {
+    host,
+    port: parseInt(process.env.DB_PORT) || 5432,
+    user,
+    password,
+    database: process.env.DB_NAME || process.env.POSTGRES_DB || user || 'postgres'
+  };
+}
+
 // Build connection config with SSL support
 function getPoolConfig() {
   // If DATABASE_URL is provided, use it (with SSL parsing)
-  if (process.env.DATABASE_URL) {
+  const derivedConfig = buildDatabaseConfigFromParts();
+  if (hasValidDatabaseUrl(process.env.DATABASE_URL)) {
     const url = new URL(process.env.DATABASE_URL);
     const config = {
       connectionString: process.env.DATABASE_URL
@@ -22,9 +53,9 @@ function getPoolConfig() {
     
     return config;
   }
-  
+
   // Otherwise, use individual connection parameters
-  const config = {
+  const config = derivedConfig || {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT) || 5432,
     user: process.env.DB_USER || 'postgres',
@@ -61,3 +92,4 @@ pool.on('error', (err) => {
 });
 
 module.exports = pool;
+module.exports.getPoolConfig = getPoolConfig;

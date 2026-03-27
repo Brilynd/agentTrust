@@ -1,0 +1,59 @@
+[
+  {
+    "id": "cfg_1774572973496",
+    "name": "YouTube Cat Video Engagement Bot",
+    "description": "Navigates to YouTube, searches for funny cat videos, selects the first video, and if the user is not subscribed, likes the video and subscribes to the channel.",
+    "task": "Search for 'funny cat videos' on YouTube, play the first video, check subscription status, and perform like and subscribe actions if not already subscribed.",
+    "details": {
+      "agentId": "dashboard-operator",
+      "allowedDomains": [
+        "youtube.com",
+        "www.youtube.com"
+      ],
+      "metadata": {
+        "notes": "Bot performs engagement actions on YouTube videos related to funny cat videos. Requires user to be logged in.",
+        "version": "1.0",
+        "author": "AgentTrust",
+        "generatedFromPrompt": true,
+        "sourcePrompt": "Go onto youtube and look up funny cat videos choose the first one and if im not subscribed please like and subscribe"
+      },
+      "steps": [
+        {
+          "action": "navigate",
+          "target": "https://www.youtube.com"
+        },
+        {
+          "action": "search",
+          "query": "funny cat videos"
+        },
+        {
+          "action": "waitForResults",
+          "timeoutSeconds": 10
+        },
+        {
+          "action": "clickFirstVideo"
+        },
+        {
+          "action": "waitForVideoLoad",
+          "timeoutSeconds": 10
+        },
+        {
+          "action": "checkSubscriptionStatus"
+        },
+        {
+          "action": "ifNotSubscribed",
+          "steps": [
+            {
+              "action": "clickLikeButton"
+            },
+            {
+              "action": "clickSubscribeButton"
+            }
+          ]
+        }
+      ]
+    },
+    "createdAt": "2026-03-27T00:56:13.496Z",
+    "updatedAt": "2026-03-27T00:56:13.496Z"
+  }
+]

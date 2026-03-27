@@ -286,7 +286,8 @@ router.post('/call', validateAction, async (req, res) => {
       reason: `${method.toUpperCase()} ${apiUrl} — requires approval`,
       target: { provider, method: method.toUpperCase() },
       preview: bodyPreview ? { method: method.toUpperCase(), url: apiUrl, body: bodyPreview } : { method: method.toUpperCase(), url: apiUrl },
-      impactSummary
+      impactSummary,
+      promptId: promptId || null
     });
 
     return res.status(403).json({

@@ -214,7 +214,8 @@ async function enforcePolicy(req, res, next) {
           reason: policyCheck.reason || 'Action requires approval',
           target: actionData.target || null,
           preview,
-          impactSummary
+          impactSummary,
+          promptId: actionData.promptId || null
         });
 
         return res.status(403).json({

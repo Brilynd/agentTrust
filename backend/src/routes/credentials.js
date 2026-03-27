@@ -185,7 +185,8 @@ router.get('/lookup', validateAction, async (req, res) => {
         riskLevel: 'high',
         reason: `Reveal saved credentials for ${normalized} — requires user approval`,
         preview: { domain: normalized, username: '(hidden until approved)' },
-        impactSummary: `Reveal saved login credentials for ${normalized}`
+        impactSummary: `Reveal saved login credentials for ${normalized}`,
+        promptId: req.query.promptId || null
       });
       return res.status(403).json({
         success: false,

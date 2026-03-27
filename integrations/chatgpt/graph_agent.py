@@ -21,6 +21,7 @@ Usage:
 import json
 import re
 import time
+import hashlib
 from typing import TypedDict, List, Any, Optional
 from langgraph.graph import StateGraph, END
 
@@ -47,16 +48,32 @@ class AgentState(TypedDict, total=False):
     page_text: str                    # Truncated visible text
     security_flags: list              # Prompt-injection/malicious matches from page text
     visible_elements: list            # Interactive elements on page
+    page_interactive_ready: bool      # True when the page appears meaningfully interactive
+    page_readiness_reason: str        # Why the page is or is not ready for interaction
     page_vision: str                  # Vision LLM classification of the page
     has_overlay: bool                 # Whether an overlay/popup was detected
     login_state: str                  # "ALREADY LOGGED IN (...)" or ""
+    login_form_visible: bool          # True when visible login fields are present
+    login_form_hints: list            # Visible labels for login form fields
+    task_form_visible: bool           # True when a non-login task form is visible on the page
+    task_form_hints: list             # Visible field identifiers for the active task form
+    continuation_action_available: bool  # True when a Next/Continue-style action is visible
+    continuation_action_label: str    # Human-readable label for the visible continuation action
+    homepage_navigation_goal_satisfied: bool  # True when a homepage-load goal is already satisfied
+    homepage_highlight_goal_satisfied: bool  # True when a homepage highlight goal is already satisfied
+    homepage_search_goal_satisfied: bool  # True when a homepage search-submit goal is already satisfied
     login_goal_satisfied: bool        # True when current goal is login-related and page is already authenticated
     product_search_goal_satisfied: bool  # True when a product-search goal has already landed on a matching product page
+    search_results_goal_satisfied: bool  # True when a results-page goal is already satisfied on the current page
+    highlight_overlay_active: bool    # True when interactive highlight overlay is visible on the page
     google_account_options: list      # Visible Google account choices on the account chooser page
     google_single_account_target: dict  # Sole visible Google account target to auto-select
     google_account_choice_needed: bool  # True when multiple Google accounts are visible and the user must choose
     form_dialog_visible: bool         # True when a modal/dialog form appears on top of the page
     form_field_hints: list            # Visible field identifiers for the active modal/dialog form
+    search_input_visible: bool        # True when a likely visible search input is present
+    search_input_target: dict         # Locator for the best visible search input
+    search_input_label: str           # Human-readable label for the visible search input
     jira_quick_add_visible: bool      # True when Jira board quick-add input is available
     jira_quick_add_target: dict       # Locator for Jira board quick-add input
     jira_quick_add_label: str         # Human-readable label for the Jira quick-add input
@@ -70,6 +87,7 @@ class AgentState(TypedDict, total=False):
     # --- Action tracking ---
     last_action_result: dict
     last_action_name: str
+    last_action_args: dict
     action_category: str              # "mutating" | "read_only" | "none"
     consecutive_failures: int
     total_actions: int
@@ -92,6 +110,10 @@ class AgentState(TypedDict, total=False):
 
     # --- Progress tracking (live UI in extension) ---
     progress_lines: list              # Accumulated step descriptions
+    page_fingerprint: str             # Lightweight current-page fingerprint
+    last_action_requires_reobserve: bool  # Whether the next step should re-observe page state
+    last_action_reobserve_reason: str     # Why re-observation is or is not needed
+    last_action_page_change: dict         # Before/after page-change metadata from the browser layer
 
     # --- Auditor context ---
     auditor_high_risk_keywords: list  # Extra operator-defined keywords that force escalation
@@ -134,6 +156,22 @@ READ_ONLY_ACTIONS = {
     "wait_for_element",
     "call_external_api",
     "list_tabs",
+}
+
+REOBSERVE_CANDIDATE_ACTIONS = {
+    "agenttrust_browser_action",
+    "open_link",
+    "type_text",
+    "auto_login",
+    "go_back",
+    "go_forward",
+    "scroll_page",
+    "dismiss_overlays",
+    "select_option",
+    "wait_for_element",
+    "open_new_tab",
+    "switch_to_tab",
+    "close_tab",
 }
 
 MAX_ACTIONS = 20
@@ -189,6 +227,61 @@ def _extract_json_object(text: str) -> Optional[dict]:
         return None
 
 
+def _extract_json_array_of_strings(text: str) -> Optional[list[str]]:
+    """Parse a JSON array of non-empty strings from raw model text."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    candidates = [raw]
+    if "```" in raw:
+        parts = [part.strip() for part in raw.split("```") if part.strip()]
+        candidates.extend(part[4:].strip() if part.startswith("json") else part for part in parts)
+
+    match = re.search(r"\[[\s\S]*\]", raw)
+    if match:
+        candidates.append(match.group(0).strip())
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(parsed, list):
+            continue
+        cleaned = [str(item).strip() for item in parsed if str(item).strip()]
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _fallback_browser_sub_goals(user_request: str) -> list[str]:
+    """Deterministic fallback plan when planner JSON is malformed."""
+    req = (user_request or "").strip()
+    req_lower = req.lower()
+
+    if "wikipedia" in req_lower and "highlight" in req_lower and "search" in req_lower:
+        return [
+            "Navigate to https://www.wikipedia.org and verify visible 'Wikipedia' text.",
+            "Highlight interactive elements on the Wikipedia homepage.",
+            "Use the main search input box on the Wikipedia homepage to enter a search term and submit with Enter.",
+            "Wait for a Wikipedia search results page to load, verify visible 'Wikipedia' text, and highlight the interactive elements on that results page.",
+        ]
+
+    if any(term in req_lower for term in ("search", "look up", "lookup", "find")):
+        return [
+            "Navigate to the target site or starting page needed for the task.",
+            "Use the relevant on-page search or navigation controls to perform the requested lookup.",
+            "Verify the expected result is visible on the destination page before finishing.",
+        ]
+
+    return [
+        "Open the site or page needed for the task.",
+        "Perform the main browser action required by the user.",
+        "Verify the visible end state before finishing.",
+    ]
+
+
 def _collect_auditor_high_risk_keywords(state: AgentState) -> list[str]:
     keywords = {term.lower() for term in DEFAULT_AUDITOR_HIGH_RISK_KEYWORDS}
     for term in state.get("auditor_high_risk_keywords") or []:
@@ -228,6 +321,181 @@ def sanitize_untrusted_page_text(text: str, max_chars: int = 3000):
             safe_lines.append(line)
 
     return "\n".join(safe_lines).strip(), list(dict.fromkeys(matches))
+
+
+def _stable_digest(value: Any) -> str:
+    try:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        payload = str(value)
+    return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _compact_elements_signature(elements: list[dict]) -> list[dict]:
+    compact = []
+    for el in (elements or [])[:20]:
+        if not isinstance(el, dict):
+            continue
+        compact.append(
+            {
+                "t": el.get("t") or "",
+                "id": el.get("id") or "",
+                "name": el.get("name") or "",
+                "href": el.get("href") or "",
+                "role": el.get("role") or "",
+                "aria": el.get("aria_label") or el.get("aria-label") or "",
+                "placeholder": el.get("placeholder") or "",
+                "text": el.get("text") or "",
+                "type": el.get("input_type") or "",
+            }
+        )
+    return compact
+
+
+def _build_page_fingerprint(url: str, title: str, text: str, elements: list[dict], active_tab: str = "", open_tabs: Optional[list] = None) -> str:
+    payload = {
+        "url": url or "",
+        "title": title or "",
+        "textHash": _stable_digest((text or "")[:2000]),
+        "elementsHash": _stable_digest(_compact_elements_signature(elements)),
+        "activeTab": active_tab or "",
+        "tabCount": len(open_tabs or []),
+    }
+    return _stable_digest(payload)
+
+
+def _human_action_name(name: str) -> str:
+    mapping = {
+        "agenttrust_browser_action": "browser action",
+        "open_link": "opening a link",
+        "type_text": "typing",
+        "auto_login": "login flow",
+        "go_back": "going back",
+        "go_forward": "going forward",
+        "scroll_page": "scrolling",
+        "dismiss_overlays": "dismiss overlay",
+        "select_option": "select option",
+        "wait_for_element": "waiting for an element",
+        "open_new_tab": "opening a tab",
+        "switch_to_tab": "switching tabs",
+        "close_tab": "closing a tab",
+    }
+    return mapping.get(name or "", (name or "action").replace("_", " "))
+
+
+def _reobserve_decision(state: AgentState, result: dict) -> tuple[bool, str, dict]:
+    action_name = state.get("last_action_name", "") or ""
+    browser_result = result.get("browser_result") if isinstance(result.get("browser_result"), dict) else {}
+    page_change = result.get("page_change") if isinstance(result.get("page_change"), dict) else {}
+    if not page_change and isinstance(browser_result.get("page_change"), dict):
+        page_change = browser_result.get("page_change") or {}
+
+    if not isinstance(page_change, dict):
+        page_change = {}
+
+    changed = bool(page_change.get("changed"))
+    changed_fields = [str(field) for field in (page_change.get("changedFields") or []) if str(field).strip()]
+    field_desc = ", ".join(changed_fields[:3]) if changed_fields else "page state"
+    readable_action = _human_action_name(action_name)
+
+    if action_name == "scroll_page":
+        if page_change.get("discoveredNewContent") or changed:
+            return True, f"scrolling revealed more details ({field_desc})", page_change
+        return False, "scrolling did not reveal meaningful new details", page_change
+
+    if action_name == "agenttrust_browser_action":
+        target = result.get("target") if isinstance(result.get("target"), dict) else {}
+        target_blob = " ".join(
+            str(target.get(key) or "")
+            for key in ("text", "aria-label", "aria_label", "name", "id", "selector")
+        ).lower()
+        if any(token in target_blob for token in ("sign in", "signin", "log in", "login", "account", "continue with", "use another account")):
+            if result.get("clicked") or browser_result.get("success", False):
+                return True, "sign-in click may have opened the login flow", page_change
+
+    if action_name in REOBSERVE_CANDIDATE_ACTIONS:
+        if changed:
+            return True, f"{readable_action} changed {field_desc}", page_change
+        return False, f"{readable_action} did not materially change the page", page_change
+
+    if changed:
+        return True, f"{readable_action} changed {field_desc}", page_change
+    return False, f"no meaningful page change after {readable_action}", page_change
+
+
+def _requires_search_submit_transition(state: AgentState) -> bool:
+    """Detect search submissions that must prove the page actually changed."""
+    if (state.get("last_action_name") or "") != "type_text":
+        return False
+
+    args = state.get("last_action_args") or {}
+    if not isinstance(args, dict) or not args.get("press_enter"):
+        return False
+
+    target = args.get("target") or {}
+    target_blob = " ".join(
+        str(target.get(key) or "")
+        for key in ("id", "name", "placeholder", "aria-label", "aria_label", "role", "selector", "type", "input_type", "text")
+    ).lower()
+    goal_idx = state.get("current_goal_index", 0)
+    goals = state.get("sub_goals") or []
+    current_goal = (goals[goal_idx] if goal_idx < len(goals) else "").lower()
+    user_request = (state.get("user_request") or "").lower()
+    combined_goal_text = f"{current_goal} {user_request}"
+
+    goal_looks_searchy = any(
+        phrase in combined_goal_text
+        for phrase in ("search", "search results", "find ", "look up", "lookup", "query")
+    )
+    target_looks_searchy = any(
+        token in target_blob
+        for token in ("search", "searchbox", "query", "find")
+    )
+    return goal_looks_searchy or target_looks_searchy
+
+
+def _search_submit_changed_page(page_change: dict) -> bool:
+    """Require a real page transition, not just a successful keypress."""
+    if not isinstance(page_change, dict):
+        return False
+    return any(
+        bool(page_change.get(key))
+        for key in ("urlChanged", "titleChanged", "textChanged", "elementsChanged")
+    )
+
+
+def _goal_requires_search_results_page(goal_text: str) -> bool:
+    lowered = (goal_text or "").lower()
+    return "search results page" in lowered or "results page" in lowered
+
+
+def _looks_like_search_results_page(url: str, page_title: str, page_text: str) -> bool:
+    """Best-effort detection for result-list pages across common sites."""
+    url_lower = (url or "").lower()
+    title_lower = (page_title or "").lower()
+    text_lower = (page_text or "").lower()
+
+    generic_signals = (
+        "search results",
+        "results for",
+        "showing results",
+        "found results",
+        "result page",
+    )
+    if any(signal in title_lower or signal in text_lower for signal in generic_signals):
+        return True
+
+    if any(token in url_lower for token in ("/search", "search?", "query=", "results?", "/results")):
+        return True
+
+    # Wikipedia direct article hits should not count as search results.
+    if "wikipedia.org" in url_lower:
+        if "special:search" in url_lower or "search=" in url_lower:
+            return True
+        if "/wiki/" in url_lower and "/wiki/main_page" not in url_lower:
+            return False
+
+    return False
 
 
 _QUERY_STOPWORDS = {
@@ -300,6 +568,89 @@ def _product_search_goal_satisfied(
     if len(keywords) <= 2:
         return keyword_matches >= len(keywords)
     return (phrase_matches >= 1 and keyword_matches >= 2) or keyword_matches >= 3
+
+
+def _search_results_goal_satisfied(
+    goal_text: str,
+    url: str,
+    page_title: str,
+    page_text: str,
+    highlight_overlay_active: bool,
+) -> bool:
+    """Detect when a results-page goal is already satisfied on the current page."""
+    goal_lower = (goal_text or "").lower()
+    if not _goal_requires_search_results_page(goal_lower):
+        return False
+    if not _looks_like_search_results_page(url, page_title, page_text):
+        return False
+
+    title_lower = (page_title or "").lower()
+    text_lower = (page_text or "").lower()
+    combined = f"{title_lower} {text_lower}"
+
+    if "wikipedia" in goal_lower and "wikipedia" not in combined:
+        return False
+    if ("highlight" in goal_lower or "interactive element" in goal_lower) and not highlight_overlay_active:
+        return False
+    return True
+
+
+def _is_homepage_like(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse as _urlparse
+        parsed = _urlparse(url or "")
+        path = ((parsed.path or "").strip().lower()).rstrip("/")
+    except Exception:
+        return False
+    return path in ("", "/", "/home", "/index.html", "/wiki/main_page")
+
+
+def _homepage_navigation_goal_satisfied(goal_text: str, url: str, page_title: str, page_text: str) -> bool:
+    goal_lower = (goal_text or "").lower()
+    if not any(token in goal_lower for token in ("navigate", "open", "load")):
+        return False
+    if "homepage" not in goal_lower and "wikipedia.org" not in goal_lower:
+        return False
+    if not _is_homepage_like(url):
+        return False
+    combined = f"{(page_title or '').lower()} {(page_text or '').lower()}"
+    if "wikipedia" in goal_lower and "wikipedia" not in combined:
+        return False
+    return True
+
+
+def _homepage_highlight_goal_satisfied(
+    goal_text: str,
+    url: str,
+    page_title: str,
+    page_text: str,
+    highlight_overlay_active: bool,
+) -> bool:
+    goal_lower = (goal_text or "").lower()
+    if "highlight" not in goal_lower or "interactive" not in goal_lower:
+        return False
+    if "homepage" not in goal_lower:
+        return False
+    if not highlight_overlay_active or not _is_homepage_like(url):
+        return False
+    combined = f"{(page_title or '').lower()} {(page_text or '').lower()}"
+    if "wikipedia" in goal_lower and "wikipedia" not in combined:
+        return False
+    return True
+
+
+def _homepage_search_goal_satisfied(goal_text: str, url: str, page_title: str, page_text: str) -> bool:
+    goal_lower = (goal_text or "").lower()
+    if "homepage" not in goal_lower:
+        return False
+    if not any(token in goal_lower for token in ("search", "search box", "search input", "submit")):
+        return False
+    if _is_homepage_like(url):
+        return False
+    combined = f"{(page_title or '').lower()} {(page_text or '').lower()}"
+    if "wikipedia" in goal_lower and "wikipedia" not in combined and "wikipedia.org" not in (url or "").lower():
+        return False
+    return True
 
 
 def _detect_google_account_choices(url: str, page_text: str, elements: list[dict]) -> list[dict]:
@@ -377,6 +728,169 @@ def _detect_form_dialog(elements: list[dict]) -> tuple[bool, list[str]]:
 
     deduped = list(dict.fromkeys(overlay_inputs))
     return (len(deduped) > 0, deduped[:8])
+
+
+def _detect_task_form(elements: list[dict]) -> tuple[bool, list[str]]:
+    """Detect a visible multi-field task form on the page (not necessarily modal)."""
+    field_hints: list[str] = []
+    for el in elements or []:
+        if el.get("t") != "in":
+            continue
+        if el.get("is_search"):
+            continue
+        input_type = str(el.get("input_type") or el.get("type") or "").lower()
+        if input_type in ("hidden", "submit", "button", "checkbox", "radio", "range", "file"):
+            continue
+        label = (
+            el.get("placeholder")
+            or el.get("aria_label")
+            or el.get("name")
+            or el.get("id")
+            or el.get("text")
+            or el.get("role")
+            or "input"
+        )
+        cleaned = re.sub(r"\s+", " ", str(label)).strip()
+        if cleaned:
+            field_hints.append(cleaned[:80])
+
+    deduped = list(dict.fromkeys(field_hints))
+    return (len(deduped) >= 2, deduped[:8])
+
+
+def _detect_continuation_action(elements: list[dict]) -> tuple[bool, str]:
+    """Detect a visible Next/Continue/Create-account style continuation control."""
+    continuation_terms = (
+        "next", "continue", "continue to", "continue with", "create account",
+        "submit", "review", "proceed",
+    )
+    for el in elements or []:
+        if el.get("t") not in ("btn", "link"):
+            continue
+        label = re.sub(
+            r"\s+",
+            " ",
+            str(el.get("text") or el.get("aria_label") or el.get("name") or "").strip(),
+        )
+        if not label:
+            continue
+        label_lower = label.lower()
+        if any(term == label_lower or term in label_lower for term in continuation_terms):
+            return True, label[:80]
+    return False, ""
+
+
+def _detect_login_form(url: str, elements: list[dict]) -> tuple[bool, list[str]]:
+    """Detect a visible login form using observed input metadata."""
+    has_password = False
+    has_identity = False
+    hints: list[str] = []
+    url_lower = (url or "").lower()
+    for el in elements or []:
+        if el.get("t") != "in":
+            continue
+        input_type = str(el.get("input_type") or el.get("type") or "").lower()
+        name = str(el.get("name") or "").lower()
+        placeholder = str(el.get("placeholder") or "")
+        aria = str(el.get("aria_label") or el.get("aria-label") or "")
+        role = str(el.get("role") or "").lower()
+        lowered = " ".join([input_type, name, placeholder.lower(), aria.lower(), role]).strip()
+        label = (placeholder or aria or name or str(el.get("id") or "") or role or "input").strip()
+        if input_type == "password" or "password" in lowered or "passwd" in lowered:
+            has_password = True
+            hints.append(label[:80])
+            continue
+        if input_type in ("email", "tel") or any(token in lowered for token in ("email", "username", "user id", "userid", "identifier", "phone")):
+            has_identity = True
+            hints.append(label[:80])
+
+    deduped = list(dict.fromkeys(hints))
+    loginish_url = (
+        any(fragment in url_lower for fragment in ("/signin", "/sign-in", "/sign_in", "/login", "/log-in", "/log_in", "/accounts/", "/challenge/", "/identifier"))
+        or "accounts.google.com" in url_lower
+        or "login." in url_lower
+        or "signin." in url_lower
+        or "auth." in url_lower
+    )
+    return (has_password or (has_identity and (len(deduped) >= 2 or loginish_url)), deduped[:8])
+
+
+def _visible_element_target(el: dict) -> dict:
+    """Build a tool target from a visible element snapshot."""
+    target = {}
+    if el.get("id"):
+        target["id"] = el["id"]
+    if el.get("name"):
+        target["name"] = el["name"]
+    if el.get("placeholder"):
+        target["placeholder"] = el["placeholder"]
+    if el.get("aria_label"):
+        target["aria-label"] = el["aria_label"]
+    if el.get("role"):
+        target["role"] = el["role"]
+    if el.get("input_type"):
+        target["type"] = el["input_type"]
+    if el.get("selector"):
+        target["selector"] = el["selector"]
+    if el.get("tag"):
+        target["tag"] = el["tag"]
+    if el.get("is_search"):
+        target["is_search"] = True
+    return target
+
+
+def _detect_search_input(elements: list[dict]) -> tuple[bool, dict, str]:
+    """Detect the best visible search-like input from the current page state."""
+    best_score = 0
+    best_target: dict = {}
+    best_label = ""
+
+    for el in elements or []:
+        if el.get("t") != "in":
+            continue
+
+        role = str(el.get("role") or "").strip().lower()
+        input_type = str(el.get("input_type") or el.get("type") or "").strip().lower()
+        name = str(el.get("name") or "").strip().lower()
+        placeholder = str(el.get("placeholder") or "").strip()
+        aria = str(el.get("aria_label") or el.get("aria-label") or "").strip()
+        text = str(el.get("text") or "").strip()
+        selector = str(el.get("selector") or "").strip().lower()
+        tag = str(el.get("tag") or "").strip().lower()
+        blob = " ".join(part for part in [placeholder, aria, name, text, selector, role, input_type] if part).lower()
+
+        score = 0
+        if el.get("is_search"):
+            score += 140
+        if input_type == "search":
+            score += 100
+        if role in ("searchbox", "combobox", "search"):
+            score += 90
+        if name in ("q", "s", "query", "search", "search_query", "searchquery"):
+            score += 85
+        elif any(token in name for token in ("search", "query", "keyword", "term")):
+            score += 70
+        if any(token in blob for token in ("search", "find", "query", "results")):
+            score += 65
+        if selector and any(token in selector for token in ("search", "query", "results")):
+            score += 40
+        if tag == "input":
+            score += 15
+        if el.get("in_overlay"):
+            score -= 10
+
+        if score <= best_score:
+            continue
+
+        target = _visible_element_target(el)
+        if not target:
+            continue
+
+        best_score = score
+        best_target = target
+        best_label = placeholder or aria or name or text or str(el.get("id") or "").strip() or "search"
+
+    return best_score >= 80, best_target, best_label[:120]
 
 
 def _detect_jira_quick_add(url: str, elements: list[dict]) -> tuple[bool, dict, str]:
@@ -531,6 +1045,12 @@ def build_graph(agent):
                 agent.agenttrust.update_prompt_progress(pid, "\n".join(_progress_lines))
             else:
                 print(f"  [progress] skipped — no prompt_id (line: {line[:60]})")
+        callback = getattr(agent, "on_platform_progress", None)
+        if callback:
+            try:
+                callback(line, list(_progress_lines), dict(state))
+            except Exception as exc:
+                print(f"  [progress] platform callback failed: {exc}")
         return list(_progress_lines)
 
     # ================================================================== #
@@ -862,21 +1382,29 @@ def build_graph(agent):
                 temperature=0.2,
             )
             text = (response.choices[0].message.content or "").strip()
-
-            # Strip markdown code fences if present
-            if "```" in text:
-                parts = text.split("```")
-                text = parts[1] if len(parts) > 1 else parts[0]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
-
-            sub_goals = json.loads(text)
-            if not isinstance(sub_goals, list) or not sub_goals:
-                sub_goals = [state["user_request"]]
+            sub_goals = _extract_json_array_of_strings(text)
+            if not sub_goals:
+                repair = agent._chat_completion(
+                    model=agent.model_fast,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Repair malformed planner output. Return ONLY a JSON array of non-empty strings.",
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Convert this into a strict JSON array of strings only:\n\n{text}",
+                        },
+                    ],
+                    temperature=0,
+                )
+                repaired_text = (repair.choices[0].message.content or "").strip()
+                sub_goals = _extract_json_array_of_strings(repaired_text)
+            if not sub_goals:
+                raise ValueError("planner did not return a valid JSON array of strings")
         except Exception as e:
-            print(f"   Plan parsing failed ({e}), using single goal")
-            sub_goals = [state["user_request"]]
+            print(f"   Plan parsing failed ({e}), using deterministic browser fallback")
+            sub_goals = _fallback_browser_sub_goals(state["user_request"])
 
         plan_text = "\n".join(f"  {i + 1}. {g}" for i, g in enumerate(sub_goals))
         print(f"\n{'='*50}")
@@ -886,6 +1414,12 @@ def build_graph(agent):
 
         steps_summary = "; ".join(g[:60] for g in sub_goals)
         progress = _emit_progress(state, f"PLAN|Planning {len(sub_goals)} steps: {steps_summary}")
+        callback = getattr(agent, "on_platform_plan", None)
+        if callback:
+            try:
+                callback(sub_goals, plan_text, dict(state))
+            except Exception as exc:
+                print(f"  PLAN callback failed: {exc}")
 
         return {
             "sub_goals": sub_goals,
@@ -916,8 +1450,11 @@ def build_graph(agent):
         text = ""
         security_flags = []
         elements = []
+        page_interactive_ready = True
+        page_readiness_reason = ""
         page_vision = ""
         has_overlay = False
+        highlight_overlay_active = False
 
         if executor.browser:
             try:
@@ -941,6 +1478,37 @@ def build_graph(agent):
                 pass
             try:
                 elements = executor.get_visible_elements() or []
+            except Exception:
+                pass
+            try:
+                if executor.browser and hasattr(executor.browser, "_actual_driver"):
+                    highlight_overlay_active = bool(
+                        executor.browser._actual_driver.execute_script(
+                            "return Boolean(document.getElementById('__agenttrust-highlight-overlay__'));"
+                        )
+                    )
+            except Exception:
+                pass
+            try:
+                readiness = executor.get_interactive_readiness() or {}
+                page_interactive_ready = bool(readiness.get("ready", True))
+                page_readiness_reason = str(readiness.get("reason") or "").strip()
+                if not page_interactive_ready:
+                    waited = executor.wait_for_interactive_page(timeout=2.5) or readiness
+                    page_interactive_ready = bool(waited.get("ready", False))
+                    page_readiness_reason = str(waited.get("reason") or page_readiness_reason).strip()
+                    if page_interactive_ready:
+                        try:
+                            content = executor.get_page_content()
+                            title = content.get("title", "")
+                            raw_text = content.get("text", "")[:3000]
+                            text, security_flags = sanitize_untrusted_page_text(raw_text, max_chars=3000)
+                        except Exception:
+                            pass
+                        try:
+                            elements = executor.get_visible_elements() or []
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -1037,16 +1605,28 @@ def build_graph(agent):
 
         # --- Login state detection ---
         login_state = ""
+        login_form_visible = False
+        login_form_hints: list[str] = []
         if url and elements:
             logged_in_signals = []
             url_lower = url.lower()
             _google_account_chooser = (
                 "accounts.google.com" in url_lower and "accountchooser" in url_lower
             )
-            if any(frag in url_lower for frag in ("/inbox", "/#inbox", "/mail/u/",
-                                                   "/feed", "/home", "/dashboard",
-                                                   "/my-account")) or (
-                "/account" in url_lower and not _google_account_chooser
+            try:
+                from urllib.parse import urlparse as _login_parse
+                _parsed_login_url = _login_parse(url)
+                _login_path = (_parsed_login_url.path or "").lower()
+            except Exception:
+                _login_path = url_lower
+            _google_signup_flow = (
+                "accounts.google.com" in url_lower
+                and any(token in _login_path for token in ("/signup", "/lifecycle/steps/signup", "/register"))
+            )
+            if (
+                any(frag in _login_path for frag in ("/inbox", "/feed", "/home", "/dashboard", "/my-account"))
+                or (_login_path.startswith("/manageaccount") and not _google_account_chooser and not _google_signup_flow)
+                or (_login_path.startswith("/account") and not _google_account_chooser and not _google_signup_flow)
             ):
                 logged_in_signals.append("authenticated page loaded")
             for el in elements:
@@ -1068,6 +1648,7 @@ def build_graph(agent):
                     break
             if logged_in_signals:
                 login_state = f"ALREADY LOGGED IN ({', '.join(logged_in_signals)})"
+        login_form_visible, login_form_hints = _detect_login_form(url, elements)
 
         # --- Tab info ---
         active_tab = ""
@@ -1079,12 +1660,15 @@ def build_graph(agent):
                 active_tab = active_info.get("label", "main")
             except Exception:
                 pass
+        page_fingerprint = _build_page_fingerprint(url, title, text, elements, active_tab, open_tabs)
 
         label = url[:80] if url else "(no page loaded)"
         tab_count = len(open_tabs) if open_tabs else 1
         print(f"  OBSERVE: {label}  [{active_tab}] ({tab_count} tab{'s' if tab_count != 1 else ''})")
         if login_state:
             print(f"  LOGIN: {login_state}")
+        if not page_interactive_ready and page_readiness_reason:
+            print(f"  WAIT: {page_readiness_reason}")
         if page_vision:
             print(f"  VISION: {page_vision}")
         if security_flags:
@@ -1110,6 +1694,25 @@ def build_graph(agent):
                              if (state.get("sub_goals") or []) and state.get("current_goal_index", 0) < len(state.get("sub_goals") or [])
                              else "")
         google_account_choices = _detect_google_account_choices(url, text, elements)
+        homepage_navigation_goal_satisfied = _homepage_navigation_goal_satisfied(
+            current_goal_text,
+            url,
+            title,
+            text,
+        )
+        homepage_highlight_goal_satisfied = _homepage_highlight_goal_satisfied(
+            current_goal_text,
+            url,
+            title,
+            text,
+            highlight_overlay_active,
+        )
+        homepage_search_goal_satisfied = _homepage_search_goal_satisfied(
+            current_goal_text,
+            url,
+            title,
+            text,
+        )
         login_goal_satisfied = bool(login_state) and any(
             kw in current_goal_lower for kw in ("sign in", "signin", "log in", "login", "authenticate", "use my account")
         )
@@ -1120,7 +1723,17 @@ def build_graph(agent):
             title,
             text,
         )
+        search_results_goal_satisfied = _search_results_goal_satisfied(
+            current_goal_text,
+            url,
+            title,
+            text,
+            highlight_overlay_active,
+        )
         form_dialog_visible, form_field_hints = _detect_form_dialog(elements)
+        task_form_visible, task_form_hints = _detect_task_form(elements)
+        continuation_action_available, continuation_action_label = _detect_continuation_action(elements)
+        search_input_visible, search_input_target, search_input_label = _detect_search_input(elements)
         jira_quick_add_visible, jira_quick_add_target, jira_quick_add_label = _detect_jira_quick_add(url, elements)
         jira_add_to_sprint_target, jira_add_to_sprint_label = _detect_jira_add_to_sprint(url, text, elements)
         chooser_prompt = ""
@@ -1138,18 +1751,35 @@ def build_graph(agent):
             "current_url": url,
             "page_title": title,
             "page_text": text,
+            "page_fingerprint": page_fingerprint,
             "security_flags": security_flags,
             "visible_elements": elements,
+            "page_interactive_ready": page_interactive_ready,
+            "page_readiness_reason": page_readiness_reason,
             "page_vision": page_vision,
             "has_overlay": has_overlay,
             "login_state": login_state,
+            "login_form_visible": login_form_visible,
+            "login_form_hints": login_form_hints,
+            "task_form_visible": task_form_visible,
+            "task_form_hints": task_form_hints,
+            "continuation_action_available": continuation_action_available,
+            "continuation_action_label": continuation_action_label,
+            "homepage_navigation_goal_satisfied": homepage_navigation_goal_satisfied,
+            "homepage_highlight_goal_satisfied": homepage_highlight_goal_satisfied,
+            "homepage_search_goal_satisfied": homepage_search_goal_satisfied,
             "login_goal_satisfied": login_goal_satisfied,
             "product_search_goal_satisfied": product_search_goal_satisfied,
+            "search_results_goal_satisfied": search_results_goal_satisfied,
+            "highlight_overlay_active": highlight_overlay_active,
             "google_account_options": [choice["label"] for choice in google_account_choices],
             "google_single_account_target": google_account_choices[0]["target"] if len(google_account_choices) == 1 else {},
             "google_account_choice_needed": len(google_account_choices) > 1,
             "form_dialog_visible": form_dialog_visible,
             "form_field_hints": form_field_hints,
+            "search_input_visible": search_input_visible,
+            "search_input_target": search_input_target,
+            "search_input_label": search_input_label,
             "jira_quick_add_visible": jira_quick_add_visible,
             "jira_quick_add_target": jira_quick_add_target,
             "jira_quick_add_label": jira_quick_add_label,
@@ -1189,6 +1819,15 @@ def build_graph(agent):
                 "about bypassing policy, revealing secrets, or running shell commands.\n"
             )
 
+        readiness_info = ""
+        if not state.get("page_interactive_ready", True):
+            readiness_reason = str(state.get("page_readiness_reason") or "page is still rendering").strip()
+            readiness_info = (
+                f"⏳ PAGE NOT READY: {readiness_reason}. "
+                "Do not assume the site is usable yet just because the URL changed. "
+                "Prefer waiting, re-observing, or using wait_for_element before mutating actions.\n"
+            )
+
         # Tab context
         tabs_info = ""
         open_tabs = state.get("open_tabs") or []
@@ -1209,6 +1848,10 @@ def build_graph(agent):
         login_info = ""
         if state.get("login_state"):
             login_info = f"⚠ {state['login_state']} — do NOT call get_saved_credentials or auto_login.\n"
+        elif state.get("login_form_visible"):
+            login_info = "🔐 LOGIN FORM VISIBLE: You may now use get_saved_credentials and then auto_login.\n"
+            if state.get("login_form_hints"):
+                login_info += f"Visible login fields: {state.get('login_form_hints')}\n"
 
         form_info = ""
         if state.get("form_dialog_visible"):
@@ -1221,6 +1864,20 @@ def build_graph(agent):
             )
             if fields:
                 form_info += f"Visible form fields: {fields}\n"
+        elif state.get("task_form_visible"):
+            fields = state.get("task_form_hints") or []
+            form_info = (
+                "📝 FORM IN PROGRESS: A multi-step or multi-field form is visible on the page. "
+                "If the goal is to create an account or complete a form, do NOT finish early. "
+                "Keep filling required fields and use the visible Next/Continue action until the final confirmation or end state is reached.\n"
+            )
+            if fields:
+                form_info += f"Visible form fields: {fields}\n"
+            if state.get("continuation_action_available"):
+                form_info += (
+                    f"Continuation action visible: "
+                    f"{state.get('continuation_action_label') or 'Next/Continue'}\n"
+                )
 
         jira_info = ""
         if state.get("jira_quick_add_visible"):
@@ -1337,6 +1994,7 @@ def build_graph(agent):
             f"{search_hint}"
             f"{price_hint}"
             f"{scroll_hint}"
+            f"{readiness_info}"
             f"{login_info}"
             f"{form_info}"
             f"{jira_info}"
@@ -1512,13 +2170,22 @@ def build_graph(agent):
             "  NOT filled in (unless the user asked to sign up).\n\n"
             "SEARCH & FORM SUBMISSION:\n"
             "- When typing into search boxes, identify the correct input using:\n"
-            "  aria-label (e.g. 'Search'), role='searchbox' or role='combobox',\n"
-            "  type='search', placeholder text, or name attribute.\n"
+            "  is_search=true, aria-label (e.g. 'Search'), role='searchbox' or role='combobox',\n"
+            "  type='search', placeholder text, name values like q/search/query/search_query,\n"
+            "  or form/container hints that clearly indicate search/results behavior.\n"
+            "- If the current goal explicitly says 'homepage' and you are on a deeper page/article,\n"
+            "  do NOT use the local page search box. Navigate back to the site's homepage first,\n"
+            "  then use the homepage search box there.\n"
             "- AFTER typing in a search box, use type_text with press_enter=true\n"
             "  to submit the search. Do NOT try to find and click a 'Search'\n"
             "  button — just press Enter. This is MORE RELIABLE.\n"
             "- For any form with a single input (search, verification code, etc.),\n"
-            "  prefer pressing Enter over finding and clicking a submit button.\n\n"
+            "  prefer pressing Enter over finding and clicking a submit button.\n"
+            "- For multi-step forms such as account creation, keep filling the form\n"
+            "  until the requested end state is reached. If Next/Continue is visible,\n"
+            "  use it and continue the flow instead of marking the goal complete early.\n"
+            "- For dropdowns rendered as custom comboboxes/listboxes (not native HTML\n"
+            "  select elements), you may still use select_option with the visible label/value.\n\n"
             "INFORMATION EXTRACTION — READ BEFORE ACTING:\n"
             "- The Content section in [PAGE STATE] contains the visible text on\n"
             "  the current page. READ IT before deciding your next action.\n"
@@ -1769,7 +2436,6 @@ def build_graph(agent):
             response = agent._chat_completion(
                 model=getattr(agent, "model_fast", agent.model),
                 messages=messages,
-                tool_choice="none",
             )
             audit = _extract_json_object(response.choices[0].message.content or "") or {}
         except Exception as exc:
@@ -1851,9 +2517,12 @@ def build_graph(agent):
         """Execute pending tool calls through the parent agent's handler."""
 
         pending = state.get("pending_tool_calls") or []
+        if not pending:
+            return {"pending_tool_calls": [], "last_action_args": {}}
         new_turn = list(state.get("turn_messages") or [])
         last_result = {}
         last_name = ""
+        last_args = {}
         category = "none"
         _gh_repos_update = None
         _gh_issues_update = None
@@ -1861,6 +2530,11 @@ def build_graph(agent):
         for tc in pending:
             name = tc["name"]
             last_name = name
+            _homepage_search_block = ""
+            try:
+                last_args = json.loads(tc["arguments"]) if tc.get("arguments") else {}
+            except Exception:
+                last_args = {}
             _goal_idx = state.get("current_goal_index", 0)
             _goals = state.get("sub_goals") or []
             _current_goal = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
@@ -2057,25 +2731,13 @@ def build_graph(agent):
                     last_result = {"success": False, "error": msg}
                     category = "read_only"
                     continue
-                if name == "get_saved_credentials":
+                if name in ("get_saved_credentials", "auto_login"):
                     _cur_url = (state.get("current_url") or "").lower()
-                    _elements = state.get("visible_elements") or []
-                    _has_login_fields = False
-                    for _el in (_elements or []):
-                        _itype = (_el.get("input_type") or _el.get("type") or "").lower()
-                        _ename = (_el.get("name") or "").lower()
-                        _placeholder = (_el.get("placeholder") or "").lower()
-                        if _itype in ("email", "password") or _ename in ("email", "username", "password", "login_email", "userid"):
-                            _has_login_fields = True
-                            break
-                        if any(kw in _placeholder for kw in ("email", "password", "username", "user id", "sign in")):
-                            _has_login_fields = True
-                            break
-                    if not _has_login_fields:
+                    if not state.get("login_form_visible"):
                         msg = (
-                            "Do not fetch credentials yet. Start from the site's homepage, "
+                            "Do not use login credentials yet. Start from the site's homepage, "
                             "click a visible Sign in / Log in / Account control, and only "
-                            "call get_saved_credentials after the login form is visible."
+                            f"call {name} after the login form is visible."
                         )
                         print(f"  BLOCKED: {name} — login form not visible on current page")
                         new_turn.append({
@@ -2293,9 +2955,40 @@ def build_graph(agent):
                 try:
                     _parsed = json.loads(_tc_args) if _tc_args else {}
                     _cur_url = (state.get("current_url") or "").lower()
+                    _current_url_raw = state.get("current_url") or ""
                     _goal_idx = state.get("current_goal_index", 0)
                     _goals = state.get("sub_goals") or []
                     _goal_lower = (_goals[_goal_idx] if _goal_idx < len(_goals) else "").lower()
+                    _search_target = state.get("search_input_target") or {}
+                    _target = _parsed.get("target") or {}
+                    _target_hint = " ".join(
+                        str(_target.get(k) or "")
+                        for k in ("id", "name", "placeholder", "aria-label", "aria_label", "role", "selector", "type", "input_type", "is_search", "text")
+                    ).lower()
+                    _search_goal = any(
+                        phrase in _goal_lower
+                        for phrase in ("search", "find ", "look up", "lookup", "query")
+                    )
+                    _homepage_search_goal = _search_goal and "homepage" in _goal_lower
+                    _weak_target = not any(
+                        str(_target.get(k) or "").strip()
+                        for k in ("id", "name", "placeholder", "aria-label", "aria_label", "selector")
+                    )
+                    _generic_search_target = any(
+                        token in _target_hint for token in ("search", "searchbox", "query", "find")
+                    ) or str(_target.get("role") or "").lower() in ("searchbox", "combobox", "search")
+                    if _homepage_search_goal:
+                        from urllib.parse import urlparse as _urlparse
+                        _parsed_url = _urlparse(_current_url_raw)
+                        _normalized_path = ((_parsed_url.path or "").strip().lower()).rstrip("/")
+                        _homepage_like = _normalized_path in ("", "/", "/home", "/index.html", "/wiki/main_page")
+                        if not _homepage_like:
+                            _home_url = f"{_parsed_url.scheme}://{_parsed_url.netloc}/" if _parsed_url.scheme and _parsed_url.netloc else ""
+                            _homepage_search_block = (
+                                "Current goal requires using the main search box on the site's homepage, "
+                                f"but the browser is currently on a deeper page: {_current_url_raw}. "
+                                + (f"Navigate back to {_home_url} first, then use the homepage search box." if _home_url else "Navigate back to the site's homepage first, then use the homepage search box.")
+                            )
                     if (
                         "atlassian.net" in _cur_url
                         and "/boards/" in _cur_url
@@ -2330,8 +3023,37 @@ def build_graph(agent):
                         elif _mentions_summary or _text.strip():
                             _parsed["target"] = {"aria-label": "Summary"}
                         _tc_args = json.dumps(_parsed)
+                    elif _search_goal and _search_target and (_weak_target or _generic_search_target):
+                        _parsed["target"] = _search_target
+                        if "press_enter" not in _parsed:
+                            _parsed["press_enter"] = True
+                        _tc_args = json.dumps(_parsed)
                 except Exception:
                     pass
+
+            if _homepage_search_block:
+                print("  BLOCKED: homepage search attempted from non-homepage context")
+                new_turn.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "name": name,
+                        "content": json.dumps(
+                            {
+                                "success": False,
+                                "error": "homepage_search_context_mismatch",
+                                "message": _homepage_search_block,
+                            }
+                        ),
+                    }
+                )
+                last_result = {
+                    "status": "error",
+                    "message": _homepage_search_block,
+                    "browser_result": {"success": False, "message": _homepage_search_block},
+                }
+                category = "read_only"
+                continue
 
             # ── GitHub repo auto-fix for call_external_api ──
             # If the agent is about to POST to /repos/{owner}/{repo}/issues
@@ -2493,6 +3215,7 @@ def build_graph(agent):
             "pending_tool_calls": [],
             "last_action_result": last_result,
             "last_action_name": last_name,
+            "last_action_args": last_args,
             "action_category": category,
             "total_actions": total,
             "recent_actions": recent,
@@ -2575,6 +3298,21 @@ def build_graph(agent):
 
         consecutive = state.get("consecutive_failures", 0)
         _verify_progress = {}
+        requires_reobserve = False
+        reobserve_reason = ""
+        page_change = {}
+        page_change = result.get("page_change") if isinstance(result.get("page_change"), dict) else {}
+        if not page_change and isinstance(browser_result.get("page_change"), dict):
+            page_change = browser_result.get("page_change") or {}
+
+        if not failed and _requires_search_submit_transition(state):
+            if not _search_submit_changed_page(page_change):
+                failed = True
+                fail_reason = (
+                    "Search submit did not change the page after Enter. "
+                    "Do not treat this search as complete until the page, title, or visible content changes."
+                )
+
         if failed:
             consecutive += 1
             print(
@@ -2588,8 +3326,21 @@ def build_graph(agent):
                 consecutive = 0
             print(f"  VERIFY: OK ({name})")
 
+        action_name = state.get("last_action_name", "") or "action"
+        if not failed:
+            requires_reobserve, reobserve_reason, page_change = _reobserve_decision(state, result)
+            if requires_reobserve:
+                progress = _emit_progress(state, f"OBSERVE|Reassessing after {reobserve_reason[:90]}")
+                _verify_progress["progress_lines"] = progress
+            elif action_name in REOBSERVE_CANDIDATE_ACTIONS:
+                progress = _emit_progress(state, f"VERIFY|Skipped reassessment: {reobserve_reason[:90]}")
+                _verify_progress["progress_lines"] = progress
+
         return {
             "consecutive_failures": consecutive,
+            "last_action_requires_reobserve": requires_reobserve,
+            "last_action_reobserve_reason": reobserve_reason,
+            "last_action_page_change": page_change,
             **_verify_progress,
         }
 
@@ -2655,9 +3406,89 @@ def build_graph(agent):
                     "final_response": "",
                 }
 
-        done_goal = sub_goals[min(goal_idx, len(sub_goals) - 1)]
+        current_goal = sub_goals[min(goal_idx, len(sub_goals) - 1)] if sub_goals else ""
+        current_goal_lower = current_goal.lower()
+        form_completion_goal = any(
+            kw in current_goal_lower
+            for kw in (
+                "create account",
+                "sign up",
+                "signup",
+                "register",
+                "fill out",
+                "complete the form",
+                "complete form",
+                "application form",
+            )
+        )
+        if (
+            form_completion_goal
+            and (
+                state.get("task_form_visible")
+                or state.get("form_dialog_visible")
+                or state.get("continuation_action_available")
+            )
+        ):
+            print(
+                "  FORM-CONTINUE GUARD: form-related goal still has visible fields "
+                "or a Next/Continue action; do not advance yet"
+            )
+            new_turn = list(state.get("turn_messages") or [])
+            continuation_label = state.get("continuation_action_label") or "Next/Continue"
+            new_turn.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Do not mark this goal complete yet. A form flow is still active on the page. "
+                        "If the task is to complete the form or create the account, keep filling the required fields "
+                        f"and use the visible continuation action ({continuation_label}) until the full form flow is finished "
+                        "or the requested end state is visibly confirmed."
+                    ),
+                }
+            )
+            return {
+                "turn_messages": new_turn,
+                "consecutive_failures": 0,
+                "final_response": "",
+            }
+
         next_idx = goal_idx + 1
         next_goal = sub_goals[min(next_idx, len(sub_goals) - 1)]
+        if (
+            next_idx < len(sub_goals)
+            and _goal_requires_search_results_page(next_goal)
+            and not _looks_like_search_results_page(
+                state.get("current_url", ""),
+                state.get("page_title", ""),
+                state.get("page_text", ""),
+            )
+        ):
+            current_goal = sub_goals[goal_idx]
+            print(
+                "  RESULTS-PAGE GUARD: search landed on a non-results page; "
+                "do not advance yet"
+            )
+            new_turn = list(state.get("turn_messages") or [])
+            new_turn.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Do not mark the current goal complete yet. The next goal requires a search results page, "
+                        "but the current page does not look like a results list. "
+                        "You likely landed on a direct-hit article/detail page instead. "
+                        "Recover by navigating back to the site's homepage or explicit search-results view, "
+                        "then perform a search that leads to a visible search results page before completing the goal. "
+                        f"Current goal: {current_goal}. Next goal: {next_goal}."
+                    ),
+                }
+            )
+            return {
+                "turn_messages": new_turn,
+                "consecutive_failures": 0,
+                "final_response": "",
+            }
+
+        done_goal = sub_goals[min(goal_idx, len(sub_goals) - 1)]
         print(f"  GOAL {goal_idx + 1} DONE: '{done_goal[:60]}'")
         print(f"  NEXT GOAL {next_idx + 1}: '{next_goal[:60]}'")
 
@@ -2769,8 +3600,22 @@ def build_graph(agent):
     def respond_node(state: AgentState) -> dict:
         """Generate or pass through the final response."""
 
-        # Emit a final "Done" progress line
-        _emit_progress(state, "DONE|Done")
+        sub_goals = state.get("sub_goals") or []
+        goal_idx = state.get("current_goal_index", 0)
+
+        # If the final goal is already satisfied and the agent has produced a
+        # closing text response, emit the GOAL completion marker here so the
+        # platform worker records the last goal as completed before DONE.
+        if (
+            state.get("final_response")
+            and not state.get("needs_step_up")
+            and state.get("consecutive_failures", 0) <= 0
+            and goal_idx < len(sub_goals)
+        ):
+            _emit_progress(state, f"GOAL|Step {goal_idx + 1} of {len(sub_goals)} complete")
+
+        # Emit a final progress line without redundant wording.
+        _emit_progress(state, "DONE|Run finished")
 
         # If agent_node already produced a text response, use it
         if state.get("final_response"):
@@ -2838,7 +3683,7 @@ def build_graph(agent):
         if state.get("total_actions", 0) >= MAX_ACTIONS:
             return "respond"
 
-        if state.get("action_category") == "mutating":
+        if state.get("last_action_requires_reobserve"):
             return "observe"
 
         return "agent"
@@ -2857,7 +3702,14 @@ def build_graph(agent):
             return "jira_add_to_sprint"
         if state.get("google_single_account_target"):
             return "google_account_chooser"
-        if state.get("login_goal_satisfied") or state.get("product_search_goal_satisfied"):
+        if (
+            state.get("homepage_navigation_goal_satisfied")
+            or state.get("homepage_highlight_goal_satisfied")
+            or state.get("homepage_search_goal_satisfied")
+            or state.get("login_goal_satisfied")
+            or state.get("product_search_goal_satisfied")
+            or state.get("search_results_goal_satisfied")
+        ):
             return "advance_goal"
         return "agent"
 

@@ -4,6 +4,7 @@ export type FailureType =
   | "TIMEOUT"
   | "NOT_INTERACTABLE"
   | "NAVIGATION_ERROR"
+  | "GOAL_NOT_ACHIEVED"
   | "POLICY_DENIED"
   | "VERIFICATION_FAILED"
   | "UNKNOWN";
@@ -31,6 +32,8 @@ export interface BrowserStep {
   id: string;
   name: string;
   action: "goto" | "click" | "type" | "press" | "extract";
+  goal?: string;
+  optional?: boolean;
   url?: string;
   target?: SelectorDescriptor;
   value?: string;
@@ -39,6 +42,7 @@ export interface BrowserStep {
     urlIncludes?: string;
     textVisible?: string;
     selectorExists?: SelectorDescriptor;
+    strict?: boolean;
   };
 }
 

@@ -1,4 +1,4 @@
-export type FailureType = "NONE" | "ELEMENT_NOT_FOUND" | "TIMEOUT" | "NOT_INTERACTABLE" | "NAVIGATION_ERROR" | "POLICY_DENIED" | "VERIFICATION_FAILED" | "UNKNOWN";
+export type FailureType = "NONE" | "ELEMENT_NOT_FOUND" | "TIMEOUT" | "NOT_INTERACTABLE" | "NAVIGATION_ERROR" | "GOAL_NOT_ACHIEVED" | "POLICY_DENIED" | "VERIFICATION_FAILED" | "UNKNOWN";
 export type PolicyDecision = "allow" | "deny" | "require_approval";
 export type AgentJobStatus = "queued" | "running" | "waiting_approval" | "paused" | "completed" | "failed" | "cancelled";
 export interface SelectorDescriptor {
@@ -13,6 +13,8 @@ export interface BrowserStep {
     id: string;
     name: string;
     action: "goto" | "click" | "type" | "press" | "extract";
+    goal?: string;
+    optional?: boolean;
     url?: string;
     target?: SelectorDescriptor;
     value?: string;
@@ -21,6 +23,7 @@ export interface BrowserStep {
         urlIncludes?: string;
         textVisible?: string;
         selectorExists?: SelectorDescriptor;
+        strict?: boolean;
     };
 }
 export interface AgentTaskInput {

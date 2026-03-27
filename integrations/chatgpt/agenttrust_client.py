@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from typing import Dict, Optional, Any
 import os
+from urllib.parse import urlparse
 
 # Load .env file if python-dotenv is available
 try:
@@ -718,6 +719,8 @@ class AgentTrustClient:
             try:
                 token = self._get_token()
                 params = {"domain": candidate}
+                if self.current_prompt_id:
+                    params["promptId"] = self.current_prompt_id
                 response = requests.get(
                     f"{self.api_url}/credentials/lookup",
                     headers={"Authorization": f"Bearer {token}"},
@@ -757,6 +760,92 @@ class AgentTrustClient:
                 break  # network error — no point trying more variations
 
         return None
+
+    def get_sensitive_record(self, reference_key: str, fields: Optional[list] = None, domain: Optional[str] = None) -> Optional[Dict]:
+        """Look up protected PII/sensitive fields from the backend vault."""
+        if self.dev_mode:
+            return None
+
+        ref = str(reference_key or "").strip()
+        requested_fields = [str(field).strip() for field in (fields or []) if str(field).strip()]
+        if not ref or not requested_fields:
+            return None
+
+        try:
+            token = self._get_token()
+            params = {
+                "ref": ref,
+                "fields": ",".join(requested_fields),
+            }
+            if domain:
+                params["domain"] = self._normalize_domain(domain)
+            if self.current_prompt_id:
+                params["promptId"] = self.current_prompt_id
+
+            response = requests.get(
+                f"{self.api_url}/sensitive-data/lookup/by-reference",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=5,
+            )
+            if response.status_code == 403:
+                data = response.json()
+                if data.get("requiresStepUp") and data.get("approvalId"):
+                    approval_id = data["approvalId"]
+                    print(f"🔐 Sensitive record access requires user approval (approvalId={approval_id}). Waiting...")
+                    approval_result = self.wait_for_approval(approval_id, timeout=60)
+                    if approval_result.get("approved"):
+                        print("✅ Sensitive record access approved by user. Retrying...")
+                        retry_response = requests.get(
+                            f"{self.api_url}/sensitive-data/lookup/by-reference",
+                            headers={"Authorization": f"Bearer {token}"},
+                            params={**params, "approvalId": approval_id},
+                            timeout=5,
+                        )
+                        if retry_response.status_code == 200:
+                            retry_data = retry_response.json()
+                            record = retry_data.get("record")
+                            if record:
+                                return record.get("fields") or {}
+                        return None
+                    reason = approval_result.get("reason", "User denied the action")
+                    print(f"❌ Sensitive record access denied by user: {reason}")
+                    return None
+            if response.status_code == 200:
+                data = response.json()
+                record = data.get("record")
+                if record:
+                    return record.get("fields") or {}
+        except Exception as e:
+            print(f"⚠️  Sensitive record lookup error for {ref}: {e}")
+
+        return None
+
+    def resolve_sensitive_reference(self, reference: str, domain: Optional[str] = None) -> Optional[str]:
+        """Resolve a vault:// reference to a plaintext value at execution time."""
+        parsed = urlparse(str(reference or "").strip())
+        if parsed.scheme != "vault":
+            return None
+
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if parsed.netloc == "record":
+            if len(path_parts) < 2:
+                return None
+            reference_key = path_parts[0]
+            field_name = ".".join(path_parts[1:])
+        else:
+            if not parsed.netloc or not path_parts:
+                return None
+            reference_key = parsed.netloc
+            field_name = ".".join(path_parts)
+
+        record = self.get_sensitive_record(reference_key, fields=[field_name], domain=domain)
+        if not record:
+            return None
+        value = record.get(field_name)
+        if value is None:
+            return None
+        return value if isinstance(value, str) else json.dumps(value)
 
     def call_external_api(
         self,

@@ -11,7 +11,7 @@ import type { AgentTaskInput, BotConfiguration, BrowserStep } from "@agenttrust/
 
 import { logger } from "./lib/logger";
 import { prisma } from "./lib/prisma";
-import { agentQueue } from "./queue";
+import { enqueueAgentJob, getAgentQueueJob } from "./queue";
 import { emitPlatformEvent } from "./socket";
 
 type JobContextMessage = {
@@ -21,6 +21,42 @@ type JobContextMessage = {
 };
 
 const CONFIG_STORE_PATH = path.join(process.cwd(), "apps", "api", "data", "bot-configurations.json");
+const DEFAULT_CONFIG_HIGH_RISK_KEYWORDS = [
+  "payment",
+  "billing",
+  "submit",
+  "delete",
+  "refund",
+  "transfer",
+  "wire",
+  "bank",
+  "ssn",
+  "password"
+];
+const DEFAULT_CONFIG_AUDITOR_KEYWORDS = [
+  "login",
+  "log in",
+  "sign in",
+  "form",
+  "account",
+  "summary",
+  "description",
+  "search",
+  "navigate",
+  "upload"
+];
+
+type GeneratedConfigurationDraft = {
+  name: string;
+  description: string;
+  task: string;
+  allowedDomains: string[];
+  startUrl: string;
+  verifyText: string;
+  highRiskKeywords: string[];
+  auditorKeywords: string[];
+  advancedJson: Record<string, unknown>;
+};
 
 function createStepHashes(steps: BrowserStep[]) {
   let previousHash = "0";
@@ -137,6 +173,210 @@ async function writeConfigurations(configs: BotConfiguration[]) {
   await fs.writeFile(CONFIG_STORE_PATH, JSON.stringify(configs, null, 2), "utf8");
 }
 
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function extractPromptUrls(prompt: string) {
+  return uniqueStrings(prompt.match(/https?:\/\/[^\s"')\]}]+/gi) || []);
+}
+
+function extractPromptDomains(prompt: string, urls: string[]) {
+  const domains = urls
+    .map((value) => {
+      try {
+        return new URL(value).hostname.replace(/^www\./, "");
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean);
+
+  const inlineDomains = prompt.match(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi) || [];
+  return uniqueStrings([...domains, ...inlineDomains.map((value) => value.replace(/^www\./, "").toLowerCase())]);
+}
+
+function extractPromptVerifyText(prompt: string) {
+  const lower = prompt.toLowerCase();
+  const verifyCue =
+    lower.includes("verify") ||
+    lower.includes("confirm") ||
+    lower.includes("ensure") ||
+    lower.includes("look for") ||
+    lower.includes("check for");
+  const quoted = prompt.match(/"([^"]+)"|'([^']+)'/);
+  if (verifyCue && quoted) {
+    return (quoted[1] || quoted[2] || "").trim();
+  }
+  return "";
+}
+
+function buildConfigurationName(prompt: string, domains: string[]) {
+  const subject = domains[0]
+    ? domains[0].split(".")[0]
+    : prompt
+        .replace(/[^a-z0-9 ]/gi, " ")
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 4)
+        .join(" ");
+  const title = subject
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((value) => value.charAt(0).toUpperCase() + value.slice(1))
+    .join(" ");
+  return `${title || "Generated"} Bot`;
+}
+
+function generateConfigurationDraftFallback(prompt: string): GeneratedConfigurationDraft {
+  const trimmed = prompt.trim();
+  const urls = extractPromptUrls(trimmed);
+  const domains = extractPromptDomains(trimmed, urls);
+  const promptLower = trimmed.toLowerCase();
+  const highRiskKeywords = DEFAULT_CONFIG_HIGH_RISK_KEYWORDS.filter((keyword) => promptLower.includes(keyword));
+  const auditorKeywords = DEFAULT_CONFIG_AUDITOR_KEYWORDS.filter((keyword) => promptLower.includes(keyword));
+
+  return {
+    name: buildConfigurationName(trimmed, domains),
+    description: trimmed,
+    task: trimmed,
+    allowedDomains: domains,
+    startUrl: urls[0] || "",
+    verifyText: extractPromptVerifyText(trimmed),
+    highRiskKeywords,
+    auditorKeywords,
+    advancedJson: {
+      metadata: {
+        generatedFromPrompt: true,
+        sourcePrompt: trimmed
+      }
+    }
+  };
+}
+
+function parseJsonObject(text: string) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(match[0]);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeGeneratedDraft(prompt: string, draft: Record<string, unknown> | null): GeneratedConfigurationDraft {
+  const fallback = generateConfigurationDraftFallback(prompt);
+  const candidate = draft || {};
+  const advancedJson =
+    candidate.advancedJson && typeof candidate.advancedJson === "object" && !Array.isArray(candidate.advancedJson)
+      ? (candidate.advancedJson as Record<string, unknown>)
+      : fallback.advancedJson;
+
+  return {
+    name: String(candidate.name || fallback.name).trim() || fallback.name,
+    description: String(candidate.description || fallback.description).trim() || fallback.description,
+    task: String(candidate.task || fallback.task).trim() || fallback.task,
+    allowedDomains: Array.isArray(candidate.allowedDomains)
+      ? uniqueStrings(candidate.allowedDomains.map((value) => String(value)))
+      : fallback.allowedDomains,
+    startUrl: String(candidate.startUrl || fallback.startUrl).trim(),
+    verifyText: String(candidate.verifyText || fallback.verifyText).trim(),
+    highRiskKeywords: Array.isArray(candidate.highRiskKeywords)
+      ? uniqueStrings(candidate.highRiskKeywords.map((value) => String(value)))
+      : fallback.highRiskKeywords,
+    auditorKeywords: Array.isArray(candidate.auditorKeywords)
+      ? uniqueStrings(candidate.auditorKeywords.map((value) => String(value)))
+      : fallback.auditorKeywords,
+    advancedJson: {
+      ...advancedJson,
+      metadata: {
+        ...(advancedJson.metadata && typeof advancedJson.metadata === "object" && !Array.isArray(advancedJson.metadata)
+          ? (advancedJson.metadata as Record<string, unknown>)
+          : {}),
+        generatedFromPrompt: true,
+        sourcePrompt: prompt.trim()
+      }
+    }
+  };
+}
+
+async function generateConfigurationDraft(prompt: string): Promise<GeneratedConfigurationDraft> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    logger.warn("OPENAI_API_KEY not set; using fallback configuration generation");
+    return generateConfigurationDraftFallback(prompt);
+  }
+
+  const model = process.env.OPENAI_MODEL_FAST || process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You generate reusable browser-bot configurations for AgentTrust. " +
+            "Infer all fields from the user's prompt. Return strict JSON only with keys: " +
+            "name, description, task, allowedDomains, startUrl, verifyText, highRiskKeywords, auditorKeywords, advancedJson. " +
+            "Rules: " +
+            "1) Fill every field thoughtfully. " +
+            "2) If the prompt implies a website, infer the best start URL and domain. " +
+            "3) highRiskKeywords should include terms that should force human escalation. " +
+            "4) auditorKeywords should include lower-risk workflow terms the auditor agent should watch closely. " +
+            "5) advancedJson should be a valid object and may include metadata and steps. " +
+            "6) If exact values are unknown, choose the safest reasonable defaults instead of leaving fields blank."
+        },
+        {
+          role: "user",
+          content:
+            `Generate a full bot configuration draft for this prompt:\n\n${prompt}\n\n` +
+            `Return JSON only. Example shape:\n` +
+            `{"name":"Jira Intake Bot","description":"...","task":"...","allowedDomains":["company.atlassian.net"],` +
+            `"startUrl":"https://company.atlassian.net/jira","verifyText":"Create issue",` +
+            `"highRiskKeywords":["delete","payment"],"auditorKeywords":["login","create","description"],` +
+            `"advancedJson":{"metadata":{"notes":"generated"},"steps":[]}}`
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenAI configuration generation failed (${response.status}): ${body}`);
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const content = payload.choices?.[0]?.message?.content || "";
+  const parsed = parseJsonObject(content);
+  return normalizeGeneratedDraft(prompt, parsed);
+}
+
 export function createApp() {
   const app = express();
 
@@ -184,7 +424,7 @@ export function createApp() {
         include: { steps: true }
       });
 
-      await agentQueue.add(
+      await enqueueAgentJob(
         "task",
         { jobId: job.id, input },
         { jobId: job.id }
@@ -261,7 +501,7 @@ export function createApp() {
         await appendQueuedSteps(jobId, appendSteps);
       }
 
-      const queueJob = await agentQueue.getJob(jobId);
+      const queueJob = await getAgentQueueJob(jobId);
       if (queueJob) {
         await queueJob.updateData({
           ...queueJob.data,
@@ -295,6 +535,20 @@ export function createApp() {
     try {
       const configurations = await readConfigurations();
       res.json({ success: true, configurations });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/configurations/generate", async (req, res, next) => {
+    try {
+      const prompt = String(req.body?.prompt || "").trim();
+      if (!prompt) {
+        return res.status(400).json({ success: false, error: "Prompt is required" });
+      }
+
+      const draft = await generateConfigurationDraft(prompt);
+      res.json({ success: true, draft });
     } catch (error) {
       next(error);
     }
@@ -416,7 +670,7 @@ export function createApp() {
         include: { steps: true }
       });
 
-      await agentQueue.add("task", { jobId: job.id, input }, { jobId: job.id });
+      await enqueueAgentJob("task", { jobId: job.id, input }, { jobId: job.id });
       emitPlatformEvent("job.created", job);
       res.status(202).json({ success: true, job, configuration });
     } catch (error) {
@@ -486,7 +740,7 @@ export function createApp() {
 
   app.post("/api/jobs/:jobId/cancel", async (req, res, next) => {
     try {
-      const queueJob = await agentQueue.getJob(req.params.jobId);
+      const queueJob = await getAgentQueueJob(req.params.jobId);
       if (queueJob) {
         await queueJob.remove().catch(() => undefined);
       }

@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentTrust - Dashboard Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&family=SF+Pro+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #FFFFFF;
+    --text: #1D1D1F;
+    --text-secondary: #86868B;
+    --text-tertiary: #AEAEB2;
+    --card-bg: #FFFFFF;
+    --card-border: rgba(0,0,0,0.06);
+    --card-shadow: 0 2px 12px rgba(0,0,0,0.04), 0 0.5px 2px rgba(0,0,0,0.06);
+    --card-shadow-hover: 0 8px 30px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.06);
+    --radius: 20px;
+    --radius-sm: 12px;
+    --radius-xs: 8px;
+
+    --dashboard: #2563EB;
+    --backend: #0071E3;
+    --socket: #0EA5A4;
+    --worker: #30D158;
+    --vault: #BF5AF2;
+    --aws: #FF9900;
+    --approval: #FF9F0A;
+    --danger: #FF453A;
+    --slate: #8E8E93;
+    --surface-blue: #EFF6FF;
+    --surface-green: #F0FDF4;
+    --surface-purple: #FAF5FF;
+    --surface-orange: #FFF7ED;
+    --surface-teal: #F0FDFA;
+    --surface-gray: #F5F5F7;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 80px 60px;
+    min-width: 1440px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1 {
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    text-align: center;
+    margin-bottom: 8px;
+  }
+
+  .subtitle {
+    text-align: center;
+    font-size: 21px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+    margin-bottom: 64px;
+  }
+
+  .section-label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--card-border), transparent);
+  }
+
+  .export-bar {
+    position: fixed;
+    top: 24px;
+    right: 24px;
+    display: flex;
+    gap: 10px;
+    z-index: 100;
+  }
+
+  .export-btn {
+    border: 0;
+    border-radius: 999px;
+    background: #111827;
+    color: #FFF;
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    box-shadow: var(--card-shadow);
+  }
+
+  .export-btn.secondary {
+    background: #E5E7EB;
+    color: #111827;
+  }
+
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 28px;
+    margin-bottom: 56px;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  .legend-line {
+    width: 28px;
+    height: 2px;
+    border-radius: 1px;
+    background: linear-gradient(90deg, var(--dashboard), var(--backend));
+  }
+
+  .zone {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    box-shadow: var(--card-shadow);
+    padding: 32px;
+    margin-bottom: 20px;
+    position: relative;
+  }
+
+  .zone-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+  }
+
+  .hero-strip {
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 18px;
+    margin-bottom: 22px;
+  }
+
+  .hero-card {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 24px;
+    background: linear-gradient(145deg, #FFFFFF, #FAFAFB);
+  }
+
+  .hero-title {
+    font-size: 21px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    margin-bottom: 8px;
+  }
+
+  .hero-desc {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+  }
+
+  .pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .pill {
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--card-border);
+    background: #FFF;
+    color: var(--text);
+  }
+
+  .tabs-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .tab-card, .mini-card, .flow-card, .control-card, .outcome-card {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+
+  .tab-card h3,
+  .mini-card h3,
+  .flow-card h3,
+  .control-card h3,
+  .outcome-card h3 {
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    margin-bottom: 10px;
+  }
+
+  .tab-card p,
+  .mini-card p,
+  .flow-card p,
+  .control-card p,
+  .outcome-card p {
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+  }
+
+  .tab-card ul,
+  .mini-card ul,
+  .flow-card ul,
+  .control-card ul,
+  .outcome-card ul {
+    list-style: none;
+    margin-top: 10px;
+  }
+
+  .tab-card li,
+  .mini-card li,
+  .flow-card li,
+  .control-card li,
+  .outcome-card li {
+    font-size: 11px;
+    line-height: 1.8;
+    color: var(--text-secondary);
+  }
+
+  .tab-card li::before,
+  .mini-card li::before,
+  .flow-card li::before,
+  .control-card li::before,
+  .outcome-card li::before {
+    content: '•';
+    color: var(--text-tertiary);
+    margin-right: 8px;
+  }
+
+  .bg-dashboard { background: linear-gradient(145deg, #EFF6FF, #F8FBFF); }
+  .bg-backend { background: linear-gradient(145deg, #F3F8FF, #FFFFFF); }
+  .bg-worker { background: linear-gradient(145deg, #F0FDF4, #FFFFFF); }
+  .bg-vault { background: linear-gradient(145deg, #FAF5FF, #FFFFFF); }
+  .bg-approval { background: linear-gradient(145deg, #FFF7ED, #FFFFFF); }
+  .bg-socket { background: linear-gradient(145deg, #F0FDFA, #FFFFFF); }
+
+  .connector-row {
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    height: 56px;
+    padding: 0 100px;
+  }
+
+  .connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .conn-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+
+  .conn-stem {
+    width: 2px;
+    height: 22px;
+    border-radius: 1px;
+  }
+
+  .conn-tip {
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+  }
+
+  .control-grid {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+
+  .service-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-top: 18px;
+  }
+
+  .service-card {
+    border-radius: var(--radius-sm);
+    padding: 18px;
+    color: #FFF;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .service-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(145deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 60%);
+    pointer-events: none;
+  }
+
+  .service-card h3 {
+    font-size: 16px;
+    font-weight: 650;
+    margin-bottom: 10px;
+  }
+
+  .service-card ul {
+    list-style: none;
+    font-size: 12px;
+    line-height: 1.75;
+    opacity: 0.94;
+  }
+
+  .bg-service-dashboard { background: linear-gradient(145deg, #2563EB, #1D4ED8); }
+  .bg-service-backend { background: linear-gradient(145deg, #0071E3, #0058B0); }
+  .bg-service-worker { background: linear-gradient(145deg, #16A34A, #15803D); }
+  .bg-service-aws { background: linear-gradient(145deg, #FF9900, #D97706); }
+
+  .flow-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .flow-card {
+    min-height: 210px;
+  }
+
+  .flow-num {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    color: #FFF;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    color: var(--text-tertiary);
+    font-weight: 300;
+  }
+
+  .mini-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .code {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+    font-size: 11px;
+    color: #374151;
+    background: rgba(255,255,255,0.78);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 2px 8px;
+    display: inline-block;
+    margin-top: 6px;
+  }
+
+  .outcome-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+
+  .ref-panel {
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 16px;
+  }
+
+  .ref-card {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 18px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    background: #FFF;
+  }
+
+  .ref-card h3 {
+    font-size: 14px;
+    font-weight: 650;
+    margin-bottom: 10px;
+  }
+
+  .ref-card p, .ref-card li {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.7;
+  }
+
+  .ref-card ul {
+    list-style: none;
+    margin-top: 8px;
+  }
+
+  .ref-card li::before {
+    content: '›';
+    margin-right: 8px;
+    color: var(--text-tertiary);
+  }
+</style>
+</head>
+<body>
+
+<div class="export-bar">
+  <button class="export-btn" onclick="exportSVG()">Export SVG (for Figma)</button>
+  <button class="export-btn secondary" onclick="exportPNG()">Export PNG</button>
+</div>
+
+<h1>AgentTrust Dashboard</h1>
+<p class="subtitle">Control Plane Architecture - Multi-Agent Operations, Human Approval, Replay, and Customer-Specific Sensitive Data</p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--dashboard)"></div>Dashboard UI</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--backend)"></div>Backend API</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--socket)"></div>Realtime Socket.IO</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--worker)"></div>Python Worker / LangGraph</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--vault)"></div>Sensitive Data / Vault</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--approval)"></div>Human Approval</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--aws)"></div>AWS Postgres</div>
+  <div class="legend-item"><div class="legend-line"></div>Dashboard Control Flow</div>
+</div>
+
+<div class="section-label" style="color:var(--dashboard)">User-Facing Control Surface</div>
+<div class="zone" style="border-color:#2563EB22;">
+  <div class="hero-strip">
+    <div class="hero-card">
+      <div class="hero-title">Dashboard App · :3001 · Next.js + React</div>
+      <div class="hero-desc">
+        The dashboard is the operator-facing control plane for the platform. It launches processes, watches live execution,
+        manages approvals, stores reusable configurations, uploads customer-specific sensitive JSON, and attaches approved
+        customer profiles to specific operations so the worker can only unlock the right data for the right run.
+      </div>
+      <div class="pill-row">
+        <span class="pill">Zustand process state</span>
+        <span class="pill">Socket.IO live updates</span>
+        <span class="pill">Replay screenshots</span>
+        <span class="pill">Correct + Resume</span>
+        <span class="pill">Vault ref copy/paste</span>
+      </div>
+    </div>
+    <div class="hero-card">
+      <div class="hero-title">Primary Operator Outcomes</div>
+      <ul style="list-style:none; margin-top:8px;">
+        <li style="font-size:13px; color:var(--text-secondary); line-height:1.85;">Launch a bot from a saved configuration</li>
+        <li style="font-size:13px; color:var(--text-secondary); line-height:1.85;">Audit live behavior, screenshots, and goal status</li>
+        <li style="font-size:13px; color:var(--text-secondary); line-height:1.85;">Approve or reject risky actions</li>
+        <li style="font-size:13px; color:var(--text-secondary); line-height:1.85;">Attach specific customer profiles to a single run</li>
+        <li style="font-size:13px; color:var(--text-secondary); line-height:1.85;">Inject corrective prompts and resume execution</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="tabs-grid">
+    <div class="tab-card bg-dashboard">
+      <h3>Monitor</h3>
+      <p>Live control center for active runs and selected-process detail.</p>
+      <ul>
+        <li>Selected process summary</li>
+        <li>Pause, resume, cancel actions</li>
+        <li>Replay cards with screenshots</li>
+        <li>Vertical goal timeline</li>
+      </ul>
+    </div>
+    <div class="tab-card bg-dashboard">
+      <h3>Jobs</h3>
+      <p>All worker-backed operations with current state and progress.</p>
+      <ul>
+        <li>Queued, running, failed, completed</li>
+        <li>Stable process ordering</li>
+        <li>Clickable process selection</li>
+        <li>Operator prompt history</li>
+      </ul>
+    </div>
+    <div class="tab-card bg-approval">
+      <h3>Approvals</h3>
+      <p>Human-in-the-loop inbox for risky browser and data actions.</p>
+      <ul>
+        <li>Approve / reject decisions</li>
+        <li>Risk reasoning and policy context</li>
+        <li>Realtime approval updates</li>
+        <li>Supports step-up gates</li>
+      </ul>
+    </div>
+    <div class="tab-card bg-socket">
+      <h3>Metrics</h3>
+      <p>Operational health for many agents across the platform.</p>
+      <ul>
+        <li>Success / failure rates</li>
+        <li>Average retries and duration</li>
+        <li>Waiting approval counts</li>
+        <li>Failure breakdowns</li>
+      </ul>
+    </div>
+    <div class="tab-card bg-backend">
+      <h3>Configurations</h3>
+      <p>Reusable launch definitions for non-technical operators.</p>
+      <ul>
+        <li>AI-generated configuration drafts</li>
+        <li>Task, start URL, verify text</li>
+        <li>High-risk and auditor keywords</li>
+        <li>Launch from saved profile</li>
+      </ul>
+    </div>
+    <div class="tab-card bg-vault">
+      <h3>Sensitive Data</h3>
+      <p>Encrypted customer JSON upload and vault reference management.</p>
+      <ul>
+        <li>Paste or upload JSON</li>
+        <li>Generate <span class="code">vault://...</span> refs</li>
+        <li>Domain scoping and tags</li>
+        <li>Per-operation customer profile grants</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="connector-row">
+  <div class="connector">
+    <div class="conn-label" style="color:var(--dashboard)">HTTPS fetch + JSON</div>
+    <div class="conn-stem" style="background:var(--dashboard)"></div>
+    <div class="conn-tip" style="border-top:6px solid var(--dashboard)"></div>
+  </div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--socket)">WebSocket / Socket.IO</div>
+    <div class="conn-stem" style="background:var(--socket)"></div>
+    <div class="conn-tip" style="border-top:6px solid var(--socket)"></div>
+  </div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--vault)">User JWT for vault routes</div>
+    <div class="conn-stem" style="background:var(--vault)"></div>
+    <div class="conn-tip" style="border-top:6px solid var(--vault)"></div>
+  </div>
+</div>
+
+<div class="section-label" style="color:var(--backend)">Backend Dashboard Control Plane</div>
+<div class="zone" style="border-color:#0071E322;">
+  <div class="zone-title">Backend API · :3000 · Express + Worker Manager + Platform Socket</div>
+
+  <div class="control-grid">
+    <div class="control-card bg-backend">
+      <h3>Dashboard-Facing Routes</h3>
+      <ul>
+        <li><span class="code">GET /api/jobs</span> and <span class="code">GET /api/jobs/:id</span> for process state</li>
+        <li><span class="code">POST /api/configurations/:id/launch</span> to create a worker-backed operation</li>
+        <li><span class="code">POST /api/jobs/:id/context</span> to inject runtime guidance</li>
+        <li><span class="code">POST /api/jobs/:id/correct</span> for corrective prompt + resume</li>
+        <li><span class="code">POST /api/jobs/:id/pause|resume|cancel</span> for operator control</li>
+        <li><span class="code">GET /api/replays/:jobId</span> and <span class="code">GET /api/metrics/summary</span></li>
+      </ul>
+    </div>
+    <div class="control-card bg-vault">
+      <h3>User-Scoped Sensitive Data Routes</h3>
+      <ul>
+        <li><span class="code">POST /api/users/login</span> issues dashboard user JWT</li>
+        <li><span class="code">CRUD /api/sensitive-data</span> stores encrypted customer JSON</li>
+        <li><span class="code">GET /api/sensitive-data/lookup/by-reference</span> resolves refs for workers</li>
+        <li>Resolution checks operation-level <span class="code">sensitiveDataGrants</span> before revealing data</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="control-grid">
+    <div class="control-card bg-socket">
+      <h3>Realtime Event Fan-Out</h3>
+      <ul>
+        <li><span class="code">job.created</span></li>
+        <li><span class="code">job.updated</span></li>
+        <li><span class="code">job.context_added</span></li>
+        <li><span class="code">approval.created</span> and <span class="code">approval.updated</span></li>
+        <li><span class="code">replay.updated</span></li>
+      </ul>
+    </div>
+    <div class="control-card bg-approval">
+      <h3>Approval and Policy Path</h3>
+      <ul>
+        <li>High-risk browser actions request approval</li>
+        <li>Credential and sensitive-record access can step up</li>
+        <li>Dashboard approval inbox becomes the operator gate</li>
+        <li>Approved action or data request is retried with approval id</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="service-grid">
+    <div class="service-card bg-service-dashboard">
+      <h3>Dashboard State</h3>
+      <ul>
+        <li>Zustand job store</li>
+        <li>Selected process state</li>
+        <li>Config form state</li>
+        <li>Current user token</li>
+      </ul>
+    </div>
+    <div class="service-card bg-service-backend">
+      <h3>Backend Services</h3>
+      <ul>
+        <li>Agent platform routes</li>
+        <li>Persistent replay storage</li>
+        <li>Approval service</li>
+        <li>Worker manager</li>
+      </ul>
+    </div>
+    <div class="service-card bg-service-worker">
+      <h3>Execution Services</h3>
+      <ul>
+        <li>Python worker bridge</li>
+        <li>LangGraph planner / verifier</li>
+        <li>Browser automation</li>
+        <li>Replay screenshot emission</li>
+      </ul>
+    </div>
+    <div class="service-card bg-service-aws">
+      <h3>Persistent State</h3>
+      <ul>
+        <li>agent_jobs</li>
+        <li>agent_steps</li>
+        <li>replay_chunks</li>
+        <li>sensitive_records</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="connector-row">
+  <div class="connector">
+    <div class="conn-label" style="color:var(--backend)">spawnWorkerForJob()</div>
+    <div class="conn-stem" style="background:var(--backend)"></div>
+    <div class="conn-tip" style="border-top:6px solid var(--backend)"></div>
+  </div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--worker)">progress, replay, step status</div>
+    <div class="conn-stem" style="background:var(--worker)"></div>
+    <div class="conn-tip" style="border-top:6px solid var(--worker)"></div>
+  </div>
+  <div class="connector">
+    <div class="conn-label" style="color:var(--aws)">metadata + grants persisted</div>
+    <div class="conn-stem" style="background:var(--aws)"></div>
+    <div class="conn-tip" style="border-top:6px solid var(--aws)"></div>
+  </div>
+</div>
+
+<div class="section-label" style="color:var(--worker)">Execution and Customer Profile Permissioning</div>
+<div class="zone" style="border-color:#30D15822;">
+  <div class="flow-grid">
+    <div class="flow-card bg-vault">
+      <div class="flow-num" style="background:linear-gradient(145deg, var(--vault), #9333EA)">1</div>
+      <h3>Store Customer Profile</h3>
+      <p>The operator uploads customer JSON in the Sensitive Data tab. Backend encrypts the payload, stores it in <span class="code">sensitive_records</span>, and returns copyable <span class="code">vault://profile/field</span> references.</p>
+    </div>
+    <div class="flow-arrow">&#8594;</div>
+    <div class="flow-card bg-dashboard">
+      <div class="flow-num" style="background:linear-gradient(145deg, var(--dashboard), #1D4ED8)">2</div>
+      <h3>Attach to This Operation</h3>
+      <p>During launch or corrective prompting, the operator checks the specific customer profiles this run may use. The dashboard sends those selections as <span class="code">sensitiveDataGrants</span> in runtime metadata.</p>
+    </div>
+    <div class="flow-arrow">&#8594;</div>
+    <div class="flow-card bg-backend">
+      <div class="flow-num" style="background:linear-gradient(145deg, var(--backend), #0058B0)">3</div>
+      <h3>Persist Operation Grants</h3>
+      <p>The backend merges grants into <span class="code">agent_jobs.metadata</span>. This binds customer-profile permission to the job itself instead of globally unlocking vault access.</p>
+    </div>
+  </div>
+
+  <div class="flow-grid" style="margin-top:12px;">
+    <div class="flow-card bg-worker">
+      <div class="flow-num" style="background:linear-gradient(145deg, var(--worker), #15803D)">4</div>
+      <h3>Worker Uses Vault Ref</h3>
+      <p>The Python worker sees attached profiles in the user message context. When the browser needs PII for a form field, the executor resolves the <span class="code">vault://...</span> reference at runtime.</p>
+    </div>
+    <div class="flow-arrow">&#8594;</div>
+    <div class="flow-card bg-approval">
+      <div class="flow-num" style="background:linear-gradient(145deg, var(--approval), #D97706)">5</div>
+      <h3>Approval + Grant Check</h3>
+      <p>The backend verifies that the requested record is attached to the current job, that requested fields are allowed, and that the operator approves the reveal when step-up is required.</p>
+    </div>
+    <div class="flow-arrow">&#8594;</div>
+    <div class="flow-card bg-service-aws" style="color:#FFF;">
+      <div class="flow-num" style="background:linear-gradient(145deg, var(--aws), #B45309)">6</div>
+      <h3>Reveal Only the Needed Field</h3>
+      <p style="color:rgba(255,255,255,0.92)">Only the approved field value is decrypted for that execution step. Logs stay redacted, and ungranted customer references remain blocked even if a prompt mentions them.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section-label" style="color:var(--slate)">Dashboard-Specific Data and Control Loops</div>
+<div class="mini-grid">
+  <div class="mini-card bg-dashboard">
+    <h3>Launch Loop</h3>
+    <ul>
+      <li>Pick configuration</li>
+      <li>Add runtime notes</li>
+      <li>Attach customer profiles</li>
+      <li>Create backend-managed job</li>
+      <li>Auto-select new process</li>
+    </ul>
+  </div>
+  <div class="mini-card bg-worker">
+    <h3>Live Audit Loop</h3>
+    <ul>
+      <li>Socket.IO updates selected process</li>
+      <li>Replay thumbnails show mutating actions</li>
+      <li>Goal timeline surfaces failures clearly</li>
+      <li>Metrics summarize fleet health</li>
+    </ul>
+  </div>
+  <div class="mini-card bg-approval">
+    <h3>Correction Loop</h3>
+    <ul>
+      <li>Operator sends context or correction</li>
+      <li>Optional new profile grants attached</li>
+      <li>Backend appends metadata + steps</li>
+      <li>Worker resumes with updated state</li>
+    </ul>
+  </div>
+</div>
+
+<div class="section-label" style="color:var(--dashboard); margin-top:20px;">Why This Dashboard Matters</div>
+<div class="outcome-grid">
+  <div class="outcome-card bg-dashboard">
+    <h3>Centralized Ops</h3>
+    <p>Operators can launch, observe, pause, resume, cancel, and correct many worker-backed jobs from one place.</p>
+  </div>
+  <div class="outcome-card bg-approval">
+    <h3>Human Trust Layer</h3>
+    <p>The dashboard is the live approval and exception-handling surface for risky browser actions and sensitive data access.</p>
+  </div>
+  <div class="outcome-card bg-vault">
+    <h3>Customer Isolation</h3>
+    <p>Each run only receives the customer profiles explicitly attached to it, which is critical when replacing high-volume RPA bots.</p>
+  </div>
+  <div class="outcome-card bg-worker">
+    <h3>Auditable Execution</h3>
+    <p>Replay, screenshots, goal state, operator prompts, and grants all stay tied to the operation record for review and recovery.</p>
+  </div>
+</div>
+
+<div class="ref-panel">
+  <div class="ref-card">
+    <h3>Recommended Reading Order</h3>
+    <ul>
+      <li>Use this page for the dashboard control plane and operator mental model.</li>
+      <li>Use <span class="code">architecture-diagram.html</span> for full system topology.</li>
+      <li>Use <span class="code">end-to-end-flow.html</span> for the execution lifecycle from prompt to browser action.</li>
+    </ul>
+  </div>
+  <div class="ref-card">
+    <h3>Key Terms</h3>
+    <ul>
+      <li><span class="code">sensitiveDataGrants</span>: customer profiles attached to a job</li>
+      <li><span class="code">vault://...</span>: runtime PII reference, not raw prompt data</li>
+      <li><span class="code">job.updated</span>: primary dashboard refresh event</li>
+      <li><span class="code">Correct + Resume</span>: operator recovery loop</li>
+    </ul>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script>
+async function capture() {
+  const btns = document.querySelector('.export-bar');
+  btns.style.display = 'none';
+
+  const canvas = await html2canvas(document.body, {
+    scale: 3,
+    useCORS: true,
+    backgroundColor: '#FFFFFF',
+    logging: false,
+    windowWidth: document.body.scrollWidth,
+    windowHeight: document.body.scrollHeight,
+  });
+
+  btns.style.display = 'flex';
+  return canvas;
+}
+
+async function exportPNG() {
+  const canvas = await capture();
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = 'agenttrust-dashboard-architecture.png';
+  a.click();
+}
+
+async function exportSVG() {
+  const canvas = await capture();
+  const w = canvas.width / 3;
+  const h = canvas.height / 3;
+  const dataUrl = canvas.toDataURL('image/png');
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <image width="${w}" height="${h}" xlink:href="${dataUrl}" />
+</svg>`;
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'agenttrust-dashboard-architecture.svg';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+
+</body>
+</html>
