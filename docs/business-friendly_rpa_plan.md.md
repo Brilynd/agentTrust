@@ -1,20 +1,3 @@
----
-name: Business-Friendly RPA Plan
-overview: Create an architect-facing document for using Claude Cowork to generate business-friendly browser automation actions through Playwright MCP, with a simple user experience and controlled execution model.
-todos:
-  - id: define-action-model
-    content: Define the canonical Business Action model and how it maps to Playwright MCP tasks.
-    status: pending
-  - id: map-integration-architecture
-    content: Outline the Claude Cowork, action catalog, policy, and Playwright MCP integration components.
-    status: pending
-  - id: document-governance
-    content: Specify approval, security, audit, and lifecycle controls for business-safe browser automation.
-    status: pending
-  - id: phase-rollout
-    content: Break the solution into phased delivery from pilot actions to broader business automation coverage.
-    status: pending
----
 
 # Claude Cowork Business-Friendly Automation Architecture
 
