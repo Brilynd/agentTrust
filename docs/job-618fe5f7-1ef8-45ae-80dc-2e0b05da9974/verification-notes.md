@@ -1,0 +1,88 @@
+# Verification Notes
+
+- Starting goal 'Reach the relevant working page'.
+- Opened file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html.
+- Dismissed common overlays for 'Dismiss initial overlays'.
+- Clicked 'Open relevant page section'.
+- Clicked 'Open editable view'.
+- Verified goal rule 'Visible page label: Create'.
+- Verified goal rule 'Visible page label: New'.
+- Verified goal rule 'Page remained within the target application'.
+- Verified goal rule 'Reached a form-like page'.
+- Starting goal 'Fill mapped fields'.
+- Filled Email from spreadsheet column 'Email'.
+- Filled Phone from spreadsheet column 'Phone'.
+- Filled Status from spreadsheet column 'Status'.
+- Filled Notes from spreadsheet column 'Notes'.
+- Filled Customer ID from spreadsheet column 'Customer ID'.
+- Filled First Name from spreadsheet column 'First Name'.
+- Filled Last Name from spreadsheet column 'Last Name'.
+- Filled Date of Birth from spreadsheet column 'Date of Birth'.
+- Filled Driver License Number from spreadsheet column 'Driver License Number'.
+- Filled Driver License State from spreadsheet column 'Driver License State'.
+- Filled Preferred Contact Method from spreadsheet column 'Preferred Contact Method'.
+- Filled Address from spreadsheet column 'Address'.
+- Filled City from spreadsheet column 'City'.
+- Filled State from spreadsheet column 'State'.
+- Filled Postal Code from spreadsheet column 'Postal Code'.
+- Filled Vehicle Year from spreadsheet column 'Vehicle Year'.
+- Filled Vehicle Make from spreadsheet column 'Vehicle Make'.
+- Filled Vehicle Model from spreadsheet column 'Vehicle Model'.
+- Filled Vehicle VIN from spreadsheet column 'Vehicle VIN'.
+- Filled Annual Mileage from spreadsheet column 'Annual Mileage'.
+- Filled Current Carrier from spreadsheet column 'Current Carrier'.
+- Filled Coverage Tier from spreadsheet column 'Coverage Tier'.
+- Filled Liability Limit from spreadsheet column 'Liability Limit'.
+- Filled Collision Deductible from spreadsheet column 'Collision Deductible'.
+- Filled Comprehensive Deductible from spreadsheet column 'Comprehensive Deductible'.
+- Filled Policy Effective Date from spreadsheet column 'Policy Effective Date'.
+- Filled Payment Plan from spreadsheet column 'Payment Plan'.
+- Starting goal 'Submit or advance the workflow'.
+- Dismissed common overlays for 'Dismiss overlays before submit'.
+- Clicked 'Click submit button'.
+- Verified goal rule 'Submit advanced to success state'.
+- Verified goal rule 'Post-submit text visible: created'.
+- Verified goal rule 'Post-submit text visible: saved'.
+- Starting goal 'Verify success state'.
+- Verified goal rule 'Success text visible: created'.
+- Verified goal rule 'Success text visible: saved'.
+- Verified goal rule 'Success text visible: success'.
+- Verified goal rule 'Success text visible: application saved successfully'.
+- Verified goal rule 'Success-like page mode detected'.
+
+# Action Timeline
+
+- Action 'Open target URL' succeeded on attempt 1. Opened file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html.
+- Action 'Dismiss initial overlays' succeeded on attempt 1. Dismissed common overlays for 'Dismiss initial overlays'.
+- Action 'Open relevant page section' succeeded on attempt 1. Clicked 'Open relevant page section'.
+- Action 'Open editable view' succeeded on attempt 1. Clicked 'Open editable view'.
+- Action 'Open editable view' did not visibly change the page.
+- Filled mapped field 'Email' with spreadsheet value 'jordan.reyes@email.com'.
+- Filled mapped field 'Phone' with spreadsheet value '512-555-0441'.
+- Filled mapped field 'Status' with spreadsheet value 'New Intake'.
+- Filled mapped field 'Notes' with spreadsheet value 'New customer relocated from Dallas. Works hybrid schedule and parks in secured apartment garage.'.
+- Filled mapped field 'Customer ID' with spreadsheet value 'AUTO-31001'.
+- Filled mapped field 'First Name' with spreadsheet value 'Jordan'.
+- Filled mapped field 'Last Name' with spreadsheet value 'Reyes'.
+- Filled mapped field 'Date of Birth' with spreadsheet value '1990-08-13'.
+- Filled mapped field 'Driver License Number' with spreadsheet value 'R7654321'.
+- Filled mapped field 'Driver License State' with spreadsheet value 'TX'.
+- Filled mapped field 'Preferred Contact Method' with spreadsheet value 'Email'.
+- Filled mapped field 'Address' with spreadsheet value '4108 Barton Hills Drive'.
+- Filled mapped field 'City' with spreadsheet value 'Austin'.
+- Filled mapped field 'State' with spreadsheet value 'TX'.
+- Filled mapped field 'Postal Code' with spreadsheet value '78704'.
+- Filled mapped field 'Vehicle Year' with spreadsheet value '2023'.
+- Filled mapped field 'Vehicle Make' with spreadsheet value 'Toyota'.
+- Filled mapped field 'Vehicle Model' with spreadsheet value 'Camry XSE'.
+- Filled mapped field 'Vehicle VIN' with spreadsheet value '4T1K61AK2PU781204'.
+- Filled mapped field 'Annual Mileage' with spreadsheet value '12000'.
+- Filled mapped field 'Current Carrier' with spreadsheet value 'Progressive'.
+- Filled mapped field 'Coverage Tier' with spreadsheet value 'Preferred'.
+- Filled mapped field 'Liability Limit' with spreadsheet value '100/300/100'.
+- Filled mapped field 'Collision Deductible' with spreadsheet value '$500'.
+- Filled mapped field 'Comprehensive Deductible' with spreadsheet value '$250'.
+- Filled mapped field 'Policy Effective Date' with spreadsheet value '2026-04-14'.
+- Filled mapped field 'Payment Plan' with spreadsheet value 'Monthly EFT'.
+- Action 'Dismiss overlays before submit' succeeded on attempt 1. Dismissed common overlays for 'Dismiss overlays before submit'.
+- Action 'Click submit button' succeeded on attempt 1. Clicked 'Click submit button'.

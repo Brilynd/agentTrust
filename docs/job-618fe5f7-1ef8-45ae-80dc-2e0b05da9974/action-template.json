@@ -1,0 +1,1110 @@
+{
+  "templateId": "create_record",
+  "taskType": "create",
+  "templateConfidence": 30,
+  "routeHint": "hybrid",
+  "routeReasoning": "Routing hint is 'hybrid' because the task type is 'create', confidence is 30, and the selected template is 'create_record'.",
+  "reasoning": "Inferred task type 'create' with confidence 30. Selected template 'create_record' after comparing prompt intent, action type, URL hints, and spreadsheet columns.",
+  "targetUrl": "file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html",
+  "fieldMappings": [
+    {
+      "templateFieldKey": "email",
+      "templateFieldLabel": "Email",
+      "columnName": "Email",
+      "value": "jordan.reyes@email.com",
+      "rawValue": "jordan.reyes@email.com",
+      "valueCandidates": [
+        "jordan.reyes@email.com"
+      ],
+      "normalizedType": "email",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "phone",
+      "templateFieldLabel": "Phone",
+      "columnName": "Phone",
+      "value": "512-555-0441",
+      "rawValue": "512-555-0441",
+      "valueCandidates": [
+        "512-555-0441",
+        "(512) 555-0441",
+        "5125550441"
+      ],
+      "normalizedType": "phone",
+      "normalizationNotes": [
+        "Generated phone number formatting variants."
+      ]
+    },
+    {
+      "templateFieldKey": "status",
+      "templateFieldLabel": "Status",
+      "columnName": "Status",
+      "value": "New Intake",
+      "rawValue": "New Intake",
+      "valueCandidates": [
+        "New Intake"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "notes",
+      "templateFieldLabel": "Notes",
+      "columnName": "Notes",
+      "value": "New customer relocated from Dallas. Works hybrid schedule and parks in secured apartment garage.",
+      "rawValue": "New customer relocated from Dallas. Works hybrid schedule and parks in secured apartment garage.",
+      "valueCandidates": [
+        "New customer relocated from Dallas. Works hybrid schedule and parks in secured apartment garage."
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "customer_id",
+      "templateFieldLabel": "Customer ID",
+      "columnName": "Customer ID",
+      "value": "AUTO-31001",
+      "rawValue": "AUTO-31001",
+      "valueCandidates": [
+        "AUTO-31001"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "first_name",
+      "templateFieldLabel": "First Name",
+      "columnName": "First Name",
+      "value": "Jordan",
+      "rawValue": "Jordan",
+      "valueCandidates": [
+        "Jordan"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "last_name",
+      "templateFieldLabel": "Last Name",
+      "columnName": "Last Name",
+      "value": "Reyes",
+      "rawValue": "Reyes",
+      "valueCandidates": [
+        "Reyes"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "date_of_birth",
+      "templateFieldLabel": "Date of Birth",
+      "columnName": "Date of Birth",
+      "value": "1990-08-13",
+      "rawValue": "1990-08-13",
+      "valueCandidates": [
+        "1990-08-13",
+        "8/13/1990"
+      ],
+      "normalizedType": "date",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "driver_license_number",
+      "templateFieldLabel": "Driver License Number",
+      "columnName": "Driver License Number",
+      "value": "R7654321",
+      "rawValue": "R7654321",
+      "valueCandidates": [
+        "R7654321"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "driver_license_state",
+      "templateFieldLabel": "Driver License State",
+      "columnName": "Driver License State",
+      "value": "TX",
+      "rawValue": "TX",
+      "valueCandidates": [
+        "TX"
+      ],
+      "normalizedType": "state",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "preferred_contact_method",
+      "templateFieldLabel": "Preferred Contact Method",
+      "columnName": "Preferred Contact Method",
+      "value": "Email",
+      "rawValue": "Email",
+      "valueCandidates": [
+        "Email"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "address",
+      "templateFieldLabel": "Address",
+      "columnName": "Address",
+      "value": "4108 Barton Hills Drive",
+      "rawValue": "4108 Barton Hills Drive",
+      "valueCandidates": [
+        "4108 Barton Hills Drive"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "city",
+      "templateFieldLabel": "City",
+      "columnName": "City",
+      "value": "Austin",
+      "rawValue": "Austin",
+      "valueCandidates": [
+        "Austin"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "state",
+      "templateFieldLabel": "State",
+      "columnName": "State",
+      "value": "TX",
+      "rawValue": "TX",
+      "valueCandidates": [
+        "TX"
+      ],
+      "normalizedType": "state",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "postal_code",
+      "templateFieldLabel": "Postal Code",
+      "columnName": "Postal Code",
+      "value": "78704",
+      "rawValue": "78704",
+      "valueCandidates": [
+        "78704"
+      ],
+      "normalizedType": "number",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "vehicle_year",
+      "templateFieldLabel": "Vehicle Year",
+      "columnName": "Vehicle Year",
+      "value": "2023",
+      "rawValue": "2023",
+      "valueCandidates": [
+        "2023"
+      ],
+      "normalizedType": "number",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "vehicle_make",
+      "templateFieldLabel": "Vehicle Make",
+      "columnName": "Vehicle Make",
+      "value": "Toyota",
+      "rawValue": "Toyota",
+      "valueCandidates": [
+        "Toyota"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "vehicle_model",
+      "templateFieldLabel": "Vehicle Model",
+      "columnName": "Vehicle Model",
+      "value": "Camry XSE",
+      "rawValue": "Camry XSE",
+      "valueCandidates": [
+        "Camry XSE"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "vehicle_vin",
+      "templateFieldLabel": "Vehicle VIN",
+      "columnName": "Vehicle VIN",
+      "value": "4T1K61AK2PU781204",
+      "rawValue": "4T1K61AK2PU781204",
+      "valueCandidates": [
+        "4T1K61AK2PU781204"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "annual_mileage",
+      "templateFieldLabel": "Annual Mileage",
+      "columnName": "Annual Mileage",
+      "value": "12000",
+      "rawValue": "12000",
+      "valueCandidates": [
+        "12000"
+      ],
+      "normalizedType": "number",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "current_carrier",
+      "templateFieldLabel": "Current Carrier",
+      "columnName": "Current Carrier",
+      "value": "Progressive",
+      "rawValue": "Progressive",
+      "valueCandidates": [
+        "Progressive"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "coverage_tier",
+      "templateFieldLabel": "Coverage Tier",
+      "columnName": "Coverage Tier",
+      "value": "Preferred",
+      "rawValue": "Preferred",
+      "valueCandidates": [
+        "Preferred"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "liability_limit",
+      "templateFieldLabel": "Liability Limit",
+      "columnName": "Liability Limit",
+      "value": "100/300/100",
+      "rawValue": "100/300/100",
+      "valueCandidates": [
+        "100/300/100"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "collision_deductible",
+      "templateFieldLabel": "Collision Deductible",
+      "columnName": "Collision Deductible",
+      "value": "$500",
+      "rawValue": "$500",
+      "valueCandidates": [
+        "$500"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "comprehensive_deductible",
+      "templateFieldLabel": "Comprehensive Deductible",
+      "columnName": "Comprehensive Deductible",
+      "value": "$250",
+      "rawValue": "$250",
+      "valueCandidates": [
+        "$250"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "policy_effective_date",
+      "templateFieldLabel": "Policy Effective Date",
+      "columnName": "Policy Effective Date",
+      "value": "2026-04-14",
+      "rawValue": "2026-04-14",
+      "valueCandidates": [
+        "2026-04-14",
+        "4/14/2026"
+      ],
+      "normalizedType": "date",
+      "normalizationNotes": []
+    },
+    {
+      "templateFieldKey": "payment_plan",
+      "templateFieldLabel": "Payment Plan",
+      "columnName": "Payment Plan",
+      "value": "Monthly EFT",
+      "rawValue": "Monthly EFT",
+      "valueCandidates": [
+        "Monthly EFT"
+      ],
+      "normalizedType": "text",
+      "normalizationNotes": []
+    }
+  ],
+  "executionPlan": {
+    "goals": [
+      {
+        "id": "reach_relevant_page",
+        "name": "Reach the relevant working page",
+        "kind": "reach_page",
+        "description": "Open the target application and navigate to the section where this business task can be completed.",
+        "actions": [
+          {
+            "id": "goto_target_url",
+            "name": "Open target URL",
+            "action": "goto",
+            "url": "file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html",
+            "description": "Open the starting page for this business action."
+          },
+          {
+            "id": "dismiss_initial_overlays",
+            "name": "Dismiss initial overlays",
+            "action": "dismiss",
+            "description": "Close common popups, cookie banners, or modal obstacles before navigating.",
+            "optional": true
+          },
+          {
+            "id": "open_relevant_page",
+            "name": "Open relevant page section",
+            "action": "click",
+            "description": "Open the section, tab, or page where the task can be completed.",
+            "target": {
+              "label": "Create"
+            },
+            "targetFallbacks": [
+              {
+                "placeholder": "Create"
+              },
+              {
+                "text": "Create"
+              },
+              {
+                "name": "Create"
+              },
+              {
+                "role": "link",
+                "name": "Create"
+              },
+              {
+                "role": "button",
+                "name": "Create"
+              },
+              {
+                "role": "tab",
+                "name": "Create"
+              },
+              {
+                "label": "New"
+              },
+              {
+                "placeholder": "New"
+              },
+              {
+                "text": "New"
+              },
+              {
+                "name": "New"
+              },
+              {
+                "role": "link",
+                "name": "New"
+              },
+              {
+                "role": "button",
+                "name": "New"
+              },
+              {
+                "role": "tab",
+                "name": "New"
+              },
+              {
+                "label": "Add"
+              },
+              {
+                "placeholder": "Add"
+              },
+              {
+                "text": "Add"
+              },
+              {
+                "name": "Add"
+              },
+              {
+                "role": "link",
+                "name": "Add"
+              },
+              {
+                "role": "button",
+                "name": "Add"
+              },
+              {
+                "role": "tab",
+                "name": "Add"
+              },
+              {
+                "label": "New Record"
+              },
+              {
+                "placeholder": "New Record"
+              },
+              {
+                "text": "New Record"
+              },
+              {
+                "name": "New Record"
+              },
+              {
+                "role": "link",
+                "name": "New Record"
+              },
+              {
+                "role": "button",
+                "name": "New Record"
+              },
+              {
+                "role": "tab",
+                "name": "New Record"
+              },
+              {
+                "label": "New Policyholder"
+              },
+              {
+                "placeholder": "New Policyholder"
+              },
+              {
+                "text": "New Policyholder"
+              },
+              {
+                "name": "New Policyholder"
+              },
+              {
+                "role": "link",
+                "name": "New Policyholder"
+              },
+              {
+                "role": "button",
+                "name": "New Policyholder"
+              },
+              {
+                "role": "tab",
+                "name": "New Policyholder"
+              },
+              {
+                "label": "Policyholders"
+              },
+              {
+                "placeholder": "Policyholders"
+              },
+              {
+                "text": "Policyholders"
+              },
+              {
+                "name": "Policyholders"
+              },
+              {
+                "role": "link",
+                "name": "Policyholders"
+              },
+              {
+                "role": "button",
+                "name": "Policyholders"
+              },
+              {
+                "role": "tab",
+                "name": "Policyholders"
+              },
+              {
+                "label": "You"
+              },
+              {
+                "placeholder": "You"
+              },
+              {
+                "text": "You"
+              },
+              {
+                "name": "You"
+              },
+              {
+                "role": "link",
+                "name": "You"
+              },
+              {
+                "role": "button",
+                "name": "You"
+              },
+              {
+                "role": "tab",
+                "name": "You"
+              },
+              {
+                "label": "Navigate"
+              },
+              {
+                "placeholder": "Navigate"
+              },
+              {
+                "text": "Navigate"
+              },
+              {
+                "name": "Navigate"
+              },
+              {
+                "role": "link",
+                "name": "Navigate"
+              },
+              {
+                "role": "button",
+                "name": "Navigate"
+              },
+              {
+                "role": "tab",
+                "name": "Navigate"
+              },
+              {
+                "label": "Jordan Reyes"
+              },
+              {
+                "placeholder": "Jordan Reyes"
+              },
+              {
+                "text": "Jordan Reyes"
+              },
+              {
+                "name": "Jordan Reyes"
+              },
+              {
+                "role": "link",
+                "name": "Jordan Reyes"
+              },
+              {
+                "role": "button",
+                "name": "Jordan Reyes"
+              },
+              {
+                "role": "tab",
+                "name": "Jordan Reyes"
+              },
+              {
+                "label": "Submit"
+              },
+              {
+                "placeholder": "Submit"
+              },
+              {
+                "text": "Submit"
+              },
+              {
+                "name": "Submit"
+              },
+              {
+                "role": "link",
+                "name": "Submit"
+              },
+              {
+                "role": "button",
+                "name": "Submit"
+              },
+              {
+                "role": "tab",
+                "name": "Submit"
+              }
+            ],
+            "optional": true
+          },
+          {
+            "id": "open_editable_view",
+            "name": "Open editable view",
+            "action": "click",
+            "description": "Open an edit, create, or next-step surface if the page starts in a dashboard or read-only state.",
+            "target": {
+              "label": "Create"
+            },
+            "targetFallbacks": [
+              {
+                "placeholder": "Create"
+              },
+              {
+                "text": "Create"
+              },
+              {
+                "name": "Create"
+              },
+              {
+                "role": "link",
+                "name": "Create"
+              },
+              {
+                "role": "button",
+                "name": "Create"
+              },
+              {
+                "label": "Create New Policyholder"
+              },
+              {
+                "placeholder": "Create New Policyholder"
+              },
+              {
+                "text": "Create New Policyholder"
+              },
+              {
+                "name": "Create New Policyholder"
+              },
+              {
+                "role": "link",
+                "name": "Create New Policyholder"
+              },
+              {
+                "role": "button",
+                "name": "Create New Policyholder"
+              },
+              {
+                "label": "New"
+              },
+              {
+                "placeholder": "New"
+              },
+              {
+                "text": "New"
+              },
+              {
+                "name": "New"
+              },
+              {
+                "role": "link",
+                "name": "New"
+              },
+              {
+                "role": "button",
+                "name": "New"
+              },
+              {
+                "label": "Add"
+              },
+              {
+                "placeholder": "Add"
+              },
+              {
+                "text": "Add"
+              },
+              {
+                "name": "Add"
+              },
+              {
+                "role": "link",
+                "name": "Add"
+              },
+              {
+                "role": "button",
+                "name": "Add"
+              },
+              {
+                "label": "Open Form"
+              },
+              {
+                "placeholder": "Open Form"
+              },
+              {
+                "text": "Open Form"
+              },
+              {
+                "name": "Open Form"
+              },
+              {
+                "role": "link",
+                "name": "Open Form"
+              },
+              {
+                "role": "button",
+                "name": "Open Form"
+              },
+              {
+                "label": "Start Application"
+              },
+              {
+                "placeholder": "Start Application"
+              },
+              {
+                "text": "Start Application"
+              },
+              {
+                "name": "Start Application"
+              },
+              {
+                "role": "link",
+                "name": "Start Application"
+              },
+              {
+                "role": "button",
+                "name": "Start Application"
+              }
+            ],
+            "optional": true
+          }
+        ],
+        "verificationRules": [
+          {
+            "name": "Visible page label: Create",
+            "strict": false,
+            "textVisible": "Create"
+          },
+          {
+            "name": "Visible page label: New",
+            "strict": false,
+            "textVisible": "New"
+          },
+          {
+            "name": "Visible page label: Add",
+            "strict": false,
+            "textVisible": "Add"
+          },
+          {
+            "name": "Page remained within the target application",
+            "strict": false,
+            "urlIncludes": "file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html"
+          },
+          {
+            "name": "Reached a form-like page",
+            "strict": false,
+            "pageModeIs": "form"
+          }
+        ]
+      },
+      {
+        "id": "fill_fields",
+        "name": "Fill mapped fields",
+        "kind": "fill_form",
+        "description": "Use the spreadsheet-driven field mappings to populate the fields that are present on the page, including multi-step forms.",
+        "actions": [],
+        "verificationRules": [
+          {
+            "name": "Field visible: Email",
+            "strict": false,
+            "textVisible": "Email"
+          },
+          {
+            "name": "Field visible: Phone",
+            "strict": false,
+            "textVisible": "Phone"
+          },
+          {
+            "name": "Field visible: Status",
+            "strict": false,
+            "textVisible": "Status"
+          },
+          {
+            "name": "Field visible: Notes",
+            "strict": false,
+            "textVisible": "Notes"
+          },
+          {
+            "name": "Field visible: Customer ID",
+            "strict": false,
+            "textVisible": "Customer ID"
+          },
+          {
+            "name": "Reached a fillable page",
+            "strict": false,
+            "pageModeIs": "form"
+          }
+        ]
+      },
+      {
+        "id": "submit_form",
+        "name": "Submit or advance the workflow",
+        "kind": "submit_form",
+        "description": "Advance or submit the form until the workflow reaches either a success state or a clear next-step state.",
+        "actions": [
+          {
+            "id": "dismiss_pre_submit_overlays",
+            "name": "Dismiss overlays before submit",
+            "action": "dismiss",
+            "description": "Clear obstructive overlays before continuing or submitting.",
+            "optional": true
+          },
+          {
+            "id": "click_submit",
+            "name": "Click submit button",
+            "action": "click",
+            "description": "Use a visible continue, review, save, or submit control to advance the workflow.",
+            "target": {
+              "selector": "form button[type=submit], form input[type=submit], button[type=submit], input[type=submit]"
+            },
+            "targetFallbacks": [
+              {
+                "label": "Save Application"
+              },
+              {
+                "placeholder": "Save Application"
+              },
+              {
+                "text": "Save Application"
+              },
+              {
+                "name": "Save Application"
+              },
+              {
+                "role": "button",
+                "name": "Save Application"
+              },
+              {
+                "role": "link",
+                "name": "Save Application"
+              },
+              {
+                "role": "tab",
+                "name": "Save Application"
+              },
+              {
+                "label": "Submit"
+              },
+              {
+                "placeholder": "Submit"
+              },
+              {
+                "text": "Submit"
+              },
+              {
+                "name": "Submit"
+              },
+              {
+                "role": "button",
+                "name": "Submit"
+              },
+              {
+                "role": "link",
+                "name": "Submit"
+              },
+              {
+                "role": "tab",
+                "name": "Submit"
+              },
+              {
+                "label": "Save"
+              },
+              {
+                "placeholder": "Save"
+              },
+              {
+                "text": "Save"
+              },
+              {
+                "name": "Save"
+              },
+              {
+                "role": "button",
+                "name": "Save"
+              },
+              {
+                "role": "link",
+                "name": "Save"
+              },
+              {
+                "role": "tab",
+                "name": "Save"
+              },
+              {
+                "label": "Create"
+              },
+              {
+                "placeholder": "Create"
+              },
+              {
+                "text": "Create"
+              },
+              {
+                "name": "Create"
+              },
+              {
+                "role": "button",
+                "name": "Create"
+              },
+              {
+                "role": "link",
+                "name": "Create"
+              },
+              {
+                "role": "tab",
+                "name": "Create"
+              },
+              {
+                "label": "Create New Policyholder"
+              },
+              {
+                "placeholder": "Create New Policyholder"
+              },
+              {
+                "text": "Create New Policyholder"
+              },
+              {
+                "name": "Create New Policyholder"
+              },
+              {
+                "role": "button",
+                "name": "Create New Policyholder"
+              },
+              {
+                "role": "link",
+                "name": "Create New Policyholder"
+              },
+              {
+                "role": "tab",
+                "name": "Create New Policyholder"
+              },
+              {
+                "label": "Continue"
+              },
+              {
+                "placeholder": "Continue"
+              },
+              {
+                "text": "Continue"
+              },
+              {
+                "name": "Continue"
+              },
+              {
+                "role": "button",
+                "name": "Continue"
+              },
+              {
+                "role": "link",
+                "name": "Continue"
+              },
+              {
+                "role": "tab",
+                "name": "Continue"
+              },
+              {
+                "label": "Review"
+              },
+              {
+                "placeholder": "Review"
+              },
+              {
+                "text": "Review"
+              },
+              {
+                "name": "Review"
+              },
+              {
+                "role": "button",
+                "name": "Review"
+              },
+              {
+                "role": "link",
+                "name": "Review"
+              },
+              {
+                "role": "tab",
+                "name": "Review"
+              },
+              {
+                "label": "Finish"
+              },
+              {
+                "placeholder": "Finish"
+              },
+              {
+                "text": "Finish"
+              },
+              {
+                "name": "Finish"
+              },
+              {
+                "role": "button",
+                "name": "Finish"
+              },
+              {
+                "role": "link",
+                "name": "Finish"
+              },
+              {
+                "role": "tab",
+                "name": "Finish"
+              }
+            ],
+            "optional": false
+          }
+        ],
+        "verificationRules": [
+          {
+            "name": "Submit advanced to success state",
+            "strict": false,
+            "pageModeIs": "success"
+          },
+          {
+            "name": "Submit advanced to a wizard step",
+            "strict": false,
+            "pageModeIs": "wizard"
+          },
+          {
+            "name": "Submit advanced to a list or summary page",
+            "strict": false,
+            "pageModeIs": "list"
+          },
+          {
+            "name": "Post-submit text visible: created",
+            "strict": false,
+            "textVisible": "created"
+          },
+          {
+            "name": "Post-submit text visible: saved",
+            "strict": false,
+            "textVisible": "saved"
+          },
+          {
+            "name": "Post-submit text visible: submitted",
+            "strict": false,
+            "textVisible": "submitted"
+          }
+        ]
+      },
+      {
+        "id": "verify_success",
+        "name": "Verify success state",
+        "kind": "verify_success",
+        "description": "Confirm that the browser reached a visible success state, a new wizard step, or a persisted outcome before finishing the run.",
+        "actions": [],
+        "verificationRules": [
+          {
+            "name": "Success text visible: created",
+            "strict": false,
+            "textVisible": "created"
+          },
+          {
+            "name": "Success text visible: saved",
+            "strict": false,
+            "textVisible": "saved"
+          },
+          {
+            "name": "Success text visible: submitted",
+            "strict": false,
+            "textVisible": "submitted"
+          },
+          {
+            "name": "Success text visible: success",
+            "strict": false,
+            "textVisible": "success"
+          },
+          {
+            "name": "Success text visible: application saved successfully",
+            "strict": false,
+            "textVisible": "application saved successfully"
+          },
+          {
+            "name": "Success-like page mode detected",
+            "strict": false,
+            "pageModeIs": "success"
+          },
+          {
+            "name": "Workflow advanced to a wizard step",
+            "strict": false,
+            "pageModeIs": "wizard"
+          }
+        ]
+      }
+    ]
+  },
+  "warnings": [
+    "Missing required field 'Name' in spreadsheet row."
+  ],
+  "executionPrompt": "Business action: Create Record\nBusiness intent: You are on a car insurance portal. Navigate to the new policyholder form and add Jordan Reyes using all data from the spreadsheet row. Submit when done.\nTarget URL: file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html\nInferred task type: create\nTemplate confidence: 30\nPreferred runtime strategy: hybrid\nRouting rationale: Routing hint is 'hybrid' because the task type is 'create', confidence is 30, and the selected template is 'create_record'.\n\nUse the spreadsheet row values below as the source of truth:\n- Email: jordan.reyes@email.com\n- Phone: 512-555-0441\n- Status: New Intake\n- Notes: New customer relocated from Dallas. Works hybrid schedule and parks in secured apartment garage.\n- Customer ID: AUTO-31001\n- First Name: Jordan\n- Last Name: Reyes\n- Date of Birth: 1990-08-13\n- Driver License Number: R7654321\n- Driver License State: TX\n- Preferred Contact Method: Email\n- Address: 4108 Barton Hills Drive\n- City: Austin\n- State: TX\n- Postal Code: 78704\n- Vehicle Year: 2023\n- Vehicle Make: Toyota\n- Vehicle Model: Camry XSE\n- Vehicle VIN: 4T1K61AK2PU781204\n- Annual Mileage: 12000\n- Current Carrier: Progressive\n- Coverage Tier: Preferred\n- Liability Limit: 100/300/100\n- Collision Deductible: $500\n- Comprehensive Deductible: $250\n- Policy Effective Date: 2026-04-14\n- Payment Plan: Monthly EFT\n\nExecution goals:\n1. Reach the relevant working page: Open the target application and navigate to the section where this business task can be completed.\n2. Fill mapped fields: Use the spreadsheet-driven field mappings to populate the fields that are present on the page, including multi-step forms.\n3. Submit or advance the workflow: Advance or submit the form until the workflow reaches either a success state or a clear next-step state.\n4. Verify success state: Confirm that the browser reached a visible success state, a new wizard step, or a persisted outcome before finishing the run.\n\nExecution guidance:\n- Open the target URL and inspect the visible page state before taking irreversible actions.\n- Use labels, placeholders, nearby section text, tables, dialogs, tabs, and wizard controls to choose the next action.\n- Prefer deterministic filling when fields are clearly matched, then switch to broader recovery if the page does not behave as expected.\n- Treat multi-step forms as valid progress even before the final success message appears.\n- Only update fields that are present in the spreadsheet row unless the site requires a mandatory workflow field.\n- Prefer buttons labeled: Save Application, Submit, Save, Create, Create New Policyholder.\n- Verify success using text or states such as: created, saved, submitted, success, application saved successfully."
+}

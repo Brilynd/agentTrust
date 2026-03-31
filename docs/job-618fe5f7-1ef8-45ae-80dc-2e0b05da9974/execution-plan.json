@@ -1,0 +1,765 @@
+{
+  "goals": [
+    {
+      "id": "reach_relevant_page",
+      "name": "Reach the relevant working page",
+      "kind": "reach_page",
+      "description": "Open the target application and navigate to the section where this business task can be completed.",
+      "actions": [
+        {
+          "id": "goto_target_url",
+          "name": "Open target URL",
+          "action": "goto",
+          "url": "file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html",
+          "description": "Open the starting page for this business action."
+        },
+        {
+          "id": "dismiss_initial_overlays",
+          "name": "Dismiss initial overlays",
+          "action": "dismiss",
+          "description": "Close common popups, cookie banners, or modal obstacles before navigating.",
+          "optional": true
+        },
+        {
+          "id": "open_relevant_page",
+          "name": "Open relevant page section",
+          "action": "click",
+          "description": "Open the section, tab, or page where the task can be completed.",
+          "target": {
+            "label": "Create"
+          },
+          "targetFallbacks": [
+            {
+              "placeholder": "Create"
+            },
+            {
+              "text": "Create"
+            },
+            {
+              "name": "Create"
+            },
+            {
+              "role": "link",
+              "name": "Create"
+            },
+            {
+              "role": "button",
+              "name": "Create"
+            },
+            {
+              "role": "tab",
+              "name": "Create"
+            },
+            {
+              "label": "New"
+            },
+            {
+              "placeholder": "New"
+            },
+            {
+              "text": "New"
+            },
+            {
+              "name": "New"
+            },
+            {
+              "role": "link",
+              "name": "New"
+            },
+            {
+              "role": "button",
+              "name": "New"
+            },
+            {
+              "role": "tab",
+              "name": "New"
+            },
+            {
+              "label": "Add"
+            },
+            {
+              "placeholder": "Add"
+            },
+            {
+              "text": "Add"
+            },
+            {
+              "name": "Add"
+            },
+            {
+              "role": "link",
+              "name": "Add"
+            },
+            {
+              "role": "button",
+              "name": "Add"
+            },
+            {
+              "role": "tab",
+              "name": "Add"
+            },
+            {
+              "label": "New Record"
+            },
+            {
+              "placeholder": "New Record"
+            },
+            {
+              "text": "New Record"
+            },
+            {
+              "name": "New Record"
+            },
+            {
+              "role": "link",
+              "name": "New Record"
+            },
+            {
+              "role": "button",
+              "name": "New Record"
+            },
+            {
+              "role": "tab",
+              "name": "New Record"
+            },
+            {
+              "label": "New Policyholder"
+            },
+            {
+              "placeholder": "New Policyholder"
+            },
+            {
+              "text": "New Policyholder"
+            },
+            {
+              "name": "New Policyholder"
+            },
+            {
+              "role": "link",
+              "name": "New Policyholder"
+            },
+            {
+              "role": "button",
+              "name": "New Policyholder"
+            },
+            {
+              "role": "tab",
+              "name": "New Policyholder"
+            },
+            {
+              "label": "Policyholders"
+            },
+            {
+              "placeholder": "Policyholders"
+            },
+            {
+              "text": "Policyholders"
+            },
+            {
+              "name": "Policyholders"
+            },
+            {
+              "role": "link",
+              "name": "Policyholders"
+            },
+            {
+              "role": "button",
+              "name": "Policyholders"
+            },
+            {
+              "role": "tab",
+              "name": "Policyholders"
+            },
+            {
+              "label": "You"
+            },
+            {
+              "placeholder": "You"
+            },
+            {
+              "text": "You"
+            },
+            {
+              "name": "You"
+            },
+            {
+              "role": "link",
+              "name": "You"
+            },
+            {
+              "role": "button",
+              "name": "You"
+            },
+            {
+              "role": "tab",
+              "name": "You"
+            },
+            {
+              "label": "Navigate"
+            },
+            {
+              "placeholder": "Navigate"
+            },
+            {
+              "text": "Navigate"
+            },
+            {
+              "name": "Navigate"
+            },
+            {
+              "role": "link",
+              "name": "Navigate"
+            },
+            {
+              "role": "button",
+              "name": "Navigate"
+            },
+            {
+              "role": "tab",
+              "name": "Navigate"
+            },
+            {
+              "label": "Jordan Reyes"
+            },
+            {
+              "placeholder": "Jordan Reyes"
+            },
+            {
+              "text": "Jordan Reyes"
+            },
+            {
+              "name": "Jordan Reyes"
+            },
+            {
+              "role": "link",
+              "name": "Jordan Reyes"
+            },
+            {
+              "role": "button",
+              "name": "Jordan Reyes"
+            },
+            {
+              "role": "tab",
+              "name": "Jordan Reyes"
+            },
+            {
+              "label": "Submit"
+            },
+            {
+              "placeholder": "Submit"
+            },
+            {
+              "text": "Submit"
+            },
+            {
+              "name": "Submit"
+            },
+            {
+              "role": "link",
+              "name": "Submit"
+            },
+            {
+              "role": "button",
+              "name": "Submit"
+            },
+            {
+              "role": "tab",
+              "name": "Submit"
+            }
+          ],
+          "optional": true
+        },
+        {
+          "id": "open_editable_view",
+          "name": "Open editable view",
+          "action": "click",
+          "description": "Open an edit, create, or next-step surface if the page starts in a dashboard or read-only state.",
+          "target": {
+            "label": "Create"
+          },
+          "targetFallbacks": [
+            {
+              "placeholder": "Create"
+            },
+            {
+              "text": "Create"
+            },
+            {
+              "name": "Create"
+            },
+            {
+              "role": "link",
+              "name": "Create"
+            },
+            {
+              "role": "button",
+              "name": "Create"
+            },
+            {
+              "label": "Create New Policyholder"
+            },
+            {
+              "placeholder": "Create New Policyholder"
+            },
+            {
+              "text": "Create New Policyholder"
+            },
+            {
+              "name": "Create New Policyholder"
+            },
+            {
+              "role": "link",
+              "name": "Create New Policyholder"
+            },
+            {
+              "role": "button",
+              "name": "Create New Policyholder"
+            },
+            {
+              "label": "New"
+            },
+            {
+              "placeholder": "New"
+            },
+            {
+              "text": "New"
+            },
+            {
+              "name": "New"
+            },
+            {
+              "role": "link",
+              "name": "New"
+            },
+            {
+              "role": "button",
+              "name": "New"
+            },
+            {
+              "label": "Add"
+            },
+            {
+              "placeholder": "Add"
+            },
+            {
+              "text": "Add"
+            },
+            {
+              "name": "Add"
+            },
+            {
+              "role": "link",
+              "name": "Add"
+            },
+            {
+              "role": "button",
+              "name": "Add"
+            },
+            {
+              "label": "Open Form"
+            },
+            {
+              "placeholder": "Open Form"
+            },
+            {
+              "text": "Open Form"
+            },
+            {
+              "name": "Open Form"
+            },
+            {
+              "role": "link",
+              "name": "Open Form"
+            },
+            {
+              "role": "button",
+              "name": "Open Form"
+            },
+            {
+              "label": "Start Application"
+            },
+            {
+              "placeholder": "Start Application"
+            },
+            {
+              "text": "Start Application"
+            },
+            {
+              "name": "Start Application"
+            },
+            {
+              "role": "link",
+              "name": "Start Application"
+            },
+            {
+              "role": "button",
+              "name": "Start Application"
+            }
+          ],
+          "optional": true
+        }
+      ],
+      "verificationRules": [
+        {
+          "name": "Visible page label: Create",
+          "strict": false,
+          "textVisible": "Create"
+        },
+        {
+          "name": "Visible page label: New",
+          "strict": false,
+          "textVisible": "New"
+        },
+        {
+          "name": "Visible page label: Add",
+          "strict": false,
+          "textVisible": "Add"
+        },
+        {
+          "name": "Page remained within the target application",
+          "strict": false,
+          "urlIncludes": "file:///C:/Users/madey/OneDrive/Desktop/newagenttrust/business-rpa-assistant/mock-apps/car-insurance-portal/index.html"
+        },
+        {
+          "name": "Reached a form-like page",
+          "strict": false,
+          "pageModeIs": "form"
+        }
+      ]
+    },
+    {
+      "id": "fill_fields",
+      "name": "Fill mapped fields",
+      "kind": "fill_form",
+      "description": "Use the spreadsheet-driven field mappings to populate the fields that are present on the page, including multi-step forms.",
+      "actions": [],
+      "verificationRules": [
+        {
+          "name": "Field visible: Email",
+          "strict": false,
+          "textVisible": "Email"
+        },
+        {
+          "name": "Field visible: Phone",
+          "strict": false,
+          "textVisible": "Phone"
+        },
+        {
+          "name": "Field visible: Status",
+          "strict": false,
+          "textVisible": "Status"
+        },
+        {
+          "name": "Field visible: Notes",
+          "strict": false,
+          "textVisible": "Notes"
+        },
+        {
+          "name": "Field visible: Customer ID",
+          "strict": false,
+          "textVisible": "Customer ID"
+        },
+        {
+          "name": "Reached a fillable page",
+          "strict": false,
+          "pageModeIs": "form"
+        }
+      ]
+    },
+    {
+      "id": "submit_form",
+      "name": "Submit or advance the workflow",
+      "kind": "submit_form",
+      "description": "Advance or submit the form until the workflow reaches either a success state or a clear next-step state.",
+      "actions": [
+        {
+          "id": "dismiss_pre_submit_overlays",
+          "name": "Dismiss overlays before submit",
+          "action": "dismiss",
+          "description": "Clear obstructive overlays before continuing or submitting.",
+          "optional": true
+        },
+        {
+          "id": "click_submit",
+          "name": "Click submit button",
+          "action": "click",
+          "description": "Use a visible continue, review, save, or submit control to advance the workflow.",
+          "target": {
+            "selector": "form button[type=submit], form input[type=submit], button[type=submit], input[type=submit]"
+          },
+          "targetFallbacks": [
+            {
+              "label": "Save Application"
+            },
+            {
+              "placeholder": "Save Application"
+            },
+            {
+              "text": "Save Application"
+            },
+            {
+              "name": "Save Application"
+            },
+            {
+              "role": "button",
+              "name": "Save Application"
+            },
+            {
+              "role": "link",
+              "name": "Save Application"
+            },
+            {
+              "role": "tab",
+              "name": "Save Application"
+            },
+            {
+              "label": "Submit"
+            },
+            {
+              "placeholder": "Submit"
+            },
+            {
+              "text": "Submit"
+            },
+            {
+              "name": "Submit"
+            },
+            {
+              "role": "button",
+              "name": "Submit"
+            },
+            {
+              "role": "link",
+              "name": "Submit"
+            },
+            {
+              "role": "tab",
+              "name": "Submit"
+            },
+            {
+              "label": "Save"
+            },
+            {
+              "placeholder": "Save"
+            },
+            {
+              "text": "Save"
+            },
+            {
+              "name": "Save"
+            },
+            {
+              "role": "button",
+              "name": "Save"
+            },
+            {
+              "role": "link",
+              "name": "Save"
+            },
+            {
+              "role": "tab",
+              "name": "Save"
+            },
+            {
+              "label": "Create"
+            },
+            {
+              "placeholder": "Create"
+            },
+            {
+              "text": "Create"
+            },
+            {
+              "name": "Create"
+            },
+            {
+              "role": "button",
+              "name": "Create"
+            },
+            {
+              "role": "link",
+              "name": "Create"
+            },
+            {
+              "role": "tab",
+              "name": "Create"
+            },
+            {
+              "label": "Create New Policyholder"
+            },
+            {
+              "placeholder": "Create New Policyholder"
+            },
+            {
+              "text": "Create New Policyholder"
+            },
+            {
+              "name": "Create New Policyholder"
+            },
+            {
+              "role": "button",
+              "name": "Create New Policyholder"
+            },
+            {
+              "role": "link",
+              "name": "Create New Policyholder"
+            },
+            {
+              "role": "tab",
+              "name": "Create New Policyholder"
+            },
+            {
+              "label": "Continue"
+            },
+            {
+              "placeholder": "Continue"
+            },
+            {
+              "text": "Continue"
+            },
+            {
+              "name": "Continue"
+            },
+            {
+              "role": "button",
+              "name": "Continue"
+            },
+            {
+              "role": "link",
+              "name": "Continue"
+            },
+            {
+              "role": "tab",
+              "name": "Continue"
+            },
+            {
+              "label": "Review"
+            },
+            {
+              "placeholder": "Review"
+            },
+            {
+              "text": "Review"
+            },
+            {
+              "name": "Review"
+            },
+            {
+              "role": "button",
+              "name": "Review"
+            },
+            {
+              "role": "link",
+              "name": "Review"
+            },
+            {
+              "role": "tab",
+              "name": "Review"
+            },
+            {
+              "label": "Finish"
+            },
+            {
+              "placeholder": "Finish"
+            },
+            {
+              "text": "Finish"
+            },
+            {
+              "name": "Finish"
+            },
+            {
+              "role": "button",
+              "name": "Finish"
+            },
+            {
+              "role": "link",
+              "name": "Finish"
+            },
+            {
+              "role": "tab",
+              "name": "Finish"
+            }
+          ],
+          "optional": false
+        }
+      ],
+      "verificationRules": [
+        {
+          "name": "Submit advanced to success state",
+          "strict": false,
+          "pageModeIs": "success"
+        },
+        {
+          "name": "Submit advanced to a wizard step",
+          "strict": false,
+          "pageModeIs": "wizard"
+        },
+        {
+          "name": "Submit advanced to a list or summary page",
+          "strict": false,
+          "pageModeIs": "list"
+        },
+        {
+          "name": "Post-submit text visible: created",
+          "strict": false,
+          "textVisible": "created"
+        },
+        {
+          "name": "Post-submit text visible: saved",
+          "strict": false,
+          "textVisible": "saved"
+        },
+        {
+          "name": "Post-submit text visible: submitted",
+          "strict": false,
+          "textVisible": "submitted"
+        }
+      ]
+    },
+    {
+      "id": "verify_success",
+      "name": "Verify success state",
+      "kind": "verify_success",
+      "description": "Confirm that the browser reached a visible success state, a new wizard step, or a persisted outcome before finishing the run.",
+      "actions": [],
+      "verificationRules": [
+        {
+          "name": "Success text visible: created",
+          "strict": false,
+          "textVisible": "created"
+        },
+        {
+          "name": "Success text visible: saved",
+          "strict": false,
+          "textVisible": "saved"
+        },
+        {
+          "name": "Success text visible: submitted",
+          "strict": false,
+          "textVisible": "submitted"
+        },
+        {
+          "name": "Success text visible: success",
+          "strict": false,
+          "textVisible": "success"
+        },
+        {
+          "name": "Success text visible: application saved successfully",
+          "strict": false,
+          "textVisible": "application saved successfully"
+        },
+        {
+          "name": "Success-like page mode detected",
+          "strict": false,
+          "pageModeIs": "success"
+        },
+        {
+          "name": "Workflow advanced to a wizard step",
+          "strict": false,
+          "pageModeIs": "wizard"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+# Normalized Field Mappings
+
+- Email <- Email: jordan.reyes@email.com | Candidates: jordan.reyes@email.com
+- Phone <- Phone: 512-555-0441 | Candidates: 512-555-0441, (512) 555-0441, 5125550441 | Notes: Generated phone number formatting variants.
+- Status <- Status: New Intake | Candidates: New Intake
+- Notes <- Notes: New customer relocated from Dallas. Works hybrid schedule and parks in secured apartment garage. | Candidates: New customer relocated from Dallas. Works hybrid schedule and parks in secured apartment garage.
+- Customer ID <- Customer ID: AUTO-31001 | Candidates: AUTO-31001
+- First Name <- First Name: Jordan | Candidates: Jordan
+- Last Name <- Last Name: Reyes | Candidates: Reyes
+- Date of Birth <- Date of Birth: 1990-08-13 | Candidates: 1990-08-13, 8/13/1990
+- Driver License Number <- Driver License Number: R7654321 | Candidates: R7654321
+- Driver License State <- Driver License State: TX | Candidates: TX
+- Preferred Contact Method <- Preferred Contact Method: Email | Candidates: Email
+- Address <- Address: 4108 Barton Hills Drive | Candidates: 4108 Barton Hills Drive
+- City <- City: Austin | Candidates: Austin
+- State <- State: TX | Candidates: TX
+- Postal Code <- Postal Code: 78704 | Candidates: 78704
+- Vehicle Year <- Vehicle Year: 2023 | Candidates: 2023
+- Vehicle Make <- Vehicle Make: Toyota | Candidates: Toyota
+- Vehicle Model <- Vehicle Model: Camry XSE | Candidates: Camry XSE
+- Vehicle VIN <- Vehicle VIN: 4T1K61AK2PU781204 | Candidates: 4T1K61AK2PU781204
+- Annual Mileage <- Annual Mileage: 12000 | Candidates: 12000
+- Current Carrier <- Current Carrier: Progressive | Candidates: Progressive
+- Coverage Tier <- Coverage Tier: Preferred | Candidates: Preferred
+- Liability Limit <- Liability Limit: 100/300/100 | Candidates: 100/300/100
+- Collision Deductible <- Collision Deductible: $500 | Candidates: $500
+- Comprehensive Deductible <- Comprehensive Deductible: $250 | Candidates: $250
+- Policy Effective Date <- Policy Effective Date: 2026-04-14 | Candidates: 2026-04-14, 4/14/2026
+- Payment Plan <- Payment Plan: Monthly EFT | Candidates: Monthly EFT
