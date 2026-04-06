@@ -1,0 +1,31 @@
+# Normalized Field Mappings
+
+- Employee ID <- Employee ID: EMP-2042 | Candidates: EMP-2042
+- Status <- Status: Active | Candidates: Active
+- First Name <- First Name: Victor | Candidates: Victor
+- Last Name <- Last Name: Ramos | Candidates: Ramos
+- Email <- Email: victor.ramos@oakridge.co | Candidates: victor.ramos@oakridge.co
+- Phone <- Phone: 602-555-0146 | Candidates: 602-555-0146, (602) 555-0146, 6025550146 | Notes: Generated phone number formatting variants.
+- Manager <- Manager: Diego Alvarez | Candidates: Diego Alvarez
+- Employment Type <- Employment Type: Part Time | Candidates: Part Time
+- Work Mode <- Work Mode: Onsite | Candidates: Onsite
+- Start Date <- Start Date: 2026-05-11 | Candidates: 2026-05-11, 5/11/2026
+- Location <- Location: Phoenix Distribution Support | Candidates: Phoenix Distribution Support
+- Department <- Department: Operations | Candidates: Operations
+- Role <- Role: Operations Specialist | Candidates: Operations Specialist
+- Weekly Hours <- Weekly Hours: 36 | Candidates: 36
+- Schedule <- Schedule: Tue-Sat 10:00-6:00 | Candidates: Tue-Sat 10:00-6:00
+- Background Check Complete <- Background Check Complete: Yes | Candidates: Yes, True, true, yes, 1 | Notes: Normalized 'Yes' as a boolean.
+- I-9 Complete <- I-9 Complete: Yes | Candidates: Yes, True, true, yes, 1 | Notes: Normalized 'Yes' as a boolean.
+- Manager Approval Received <- Manager Approval Received: Yes | Candidates: Yes, True, true, yes, 1 | Notes: Normalized 'Yes' as a boolean.
+- Needs Relocation Support <- Needs Relocation Support: No | Candidates: No, False, false, no, 0 | Notes: Normalized 'No' as a boolean.
+- Pay Type <- Pay Type: Hourly | Candidates: Hourly
+- Pay Rate <- Pay Rate: 29.75 | Candidates: 29.75
+- Payroll Frequency <- Payroll Frequency: Biweekly | Candidates: Biweekly
+- Bonus Eligible <- Bonus Eligible: No | Candidates: No, False, false, no, 0 | Notes: Normalized 'No' as a boolean.
+- Overtime Eligible <- Overtime Eligible: Yes | Candidates: Yes, True, true, yes, 1 | Notes: Normalized 'Yes' as a boolean.
+- Direct Deposit Setup <- Direct Deposit Setup: Yes | Candidates: Yes, True, true, yes, 1 | Notes: Normalized 'Yes' as a boolean.
+- Laptop Required <- Laptop Required: No | Candidates: No, False, false, no, 0 | Notes: Normalized 'No' as a boolean.
+- VPN Access Required <- VPN Access Required: No | Candidates: No, False, false, no, 0 | Notes: Normalized 'No' as a boolean.
+- Badge Access Required <- Badge Access Required: Yes | Candidates: Yes, True, true, yes, 1 | Notes: Normalized 'Yes' as a boolean.
+- Admin Access Level <- Admin Access Level: None | Candidates: None

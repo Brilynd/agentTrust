@@ -1,0 +1,2654 @@
+{
+  "goals": [
+    {
+      "id": "reach_relevant_page",
+      "name": "Reach the relevant working page",
+      "kind": "reach_page",
+      "description": "Open the target application and navigate to the section where this business task can be completed.",
+      "actions": [
+        {
+          "id": "goto_target_url",
+          "name": "Open target URL",
+          "action": "goto",
+          "url": "http://127.0.0.1:4321/#onboarding-personal",
+          "description": "Open the starting page for this business action."
+        },
+        {
+          "id": "dismiss_initial_overlays",
+          "name": "Dismiss initial overlays",
+          "action": "dismiss",
+          "description": "Close common popups, cookie banners, or modal obstacles before navigating.",
+          "optional": true
+        },
+        {
+          "id": "open_relevant_page",
+          "name": "Open relevant page section",
+          "action": "click",
+          "description": "Open the section, tab, or page where the task can be completed.",
+          "target": {
+            "label": "Form"
+          },
+          "targetFallbacks": [
+            {
+              "placeholder": "Form"
+            },
+            {
+              "text": "Form"
+            },
+            {
+              "name": "Form"
+            },
+            {
+              "role": "link",
+              "name": "Form"
+            },
+            {
+              "role": "button",
+              "name": "Form"
+            },
+            {
+              "role": "tab",
+              "name": "Form"
+            },
+            {
+              "label": "Application"
+            },
+            {
+              "placeholder": "Application"
+            },
+            {
+              "text": "Application"
+            },
+            {
+              "name": "Application"
+            },
+            {
+              "role": "link",
+              "name": "Application"
+            },
+            {
+              "role": "button",
+              "name": "Application"
+            },
+            {
+              "role": "tab",
+              "name": "Application"
+            },
+            {
+              "label": "Create"
+            },
+            {
+              "placeholder": "Create"
+            },
+            {
+              "text": "Create"
+            },
+            {
+              "name": "Create"
+            },
+            {
+              "role": "link",
+              "name": "Create"
+            },
+            {
+              "role": "button",
+              "name": "Create"
+            },
+            {
+              "role": "tab",
+              "name": "Create"
+            },
+            {
+              "label": "New"
+            },
+            {
+              "placeholder": "New"
+            },
+            {
+              "text": "New"
+            },
+            {
+              "name": "New"
+            },
+            {
+              "role": "link",
+              "name": "New"
+            },
+            {
+              "role": "button",
+              "name": "New"
+            },
+            {
+              "role": "tab",
+              "name": "New"
+            },
+            {
+              "label": "Details"
+            },
+            {
+              "placeholder": "Details"
+            },
+            {
+              "text": "Details"
+            },
+            {
+              "name": "Details"
+            },
+            {
+              "role": "link",
+              "name": "Details"
+            },
+            {
+              "role": "button",
+              "name": "Details"
+            },
+            {
+              "role": "tab",
+              "name": "Details"
+            },
+            {
+              "label": "Profile"
+            },
+            {
+              "placeholder": "Profile"
+            },
+            {
+              "text": "Profile"
+            },
+            {
+              "name": "Profile"
+            },
+            {
+              "role": "link",
+              "name": "Profile"
+            },
+            {
+              "role": "button",
+              "name": "Profile"
+            },
+            {
+              "role": "tab",
+              "name": "Profile"
+            },
+            {
+              "label": "Manage"
+            },
+            {
+              "placeholder": "Manage"
+            },
+            {
+              "text": "Manage"
+            },
+            {
+              "name": "Manage"
+            },
+            {
+              "role": "link",
+              "name": "Manage"
+            },
+            {
+              "role": "button",
+              "name": "Manage"
+            },
+            {
+              "role": "tab",
+              "name": "Manage"
+            },
+            {
+              "label": "You"
+            },
+            {
+              "placeholder": "You"
+            },
+            {
+              "text": "You"
+            },
+            {
+              "name": "You"
+            },
+            {
+              "role": "link",
+              "name": "You"
+            },
+            {
+              "role": "button",
+              "name": "You"
+            },
+            {
+              "role": "tab",
+              "name": "You"
+            },
+            {
+              "label": "Oakridge Workforce"
+            },
+            {
+              "placeholder": "Oakridge Workforce"
+            },
+            {
+              "text": "Oakridge Workforce"
+            },
+            {
+              "name": "Oakridge Workforce"
+            },
+            {
+              "role": "link",
+              "name": "Oakridge Workforce"
+            },
+            {
+              "role": "button",
+              "name": "Oakridge Workforce"
+            },
+            {
+              "role": "tab",
+              "name": "Oakridge Workforce"
+            },
+            {
+              "label": "The"
+            },
+            {
+              "placeholder": "The"
+            },
+            {
+              "text": "The"
+            },
+            {
+              "name": "The"
+            },
+            {
+              "role": "link",
+              "name": "The"
+            },
+            {
+              "role": "button",
+              "name": "The"
+            },
+            {
+              "role": "tab",
+              "name": "The"
+            },
+            {
+              "label": "Victor Ramos"
+            },
+            {
+              "placeholder": "Victor Ramos"
+            },
+            {
+              "text": "Victor Ramos"
+            },
+            {
+              "name": "Victor Ramos"
+            },
+            {
+              "role": "link",
+              "name": "Victor Ramos"
+            },
+            {
+              "role": "button",
+              "name": "Victor Ramos"
+            },
+            {
+              "role": "tab",
+              "name": "Victor Ramos"
+            },
+            {
+              "label": "Complete"
+            },
+            {
+              "placeholder": "Complete"
+            },
+            {
+              "text": "Complete"
+            },
+            {
+              "name": "Complete"
+            },
+            {
+              "role": "link",
+              "name": "Complete"
+            },
+            {
+              "role": "button",
+              "name": "Complete"
+            },
+            {
+              "role": "tab",
+              "name": "Complete"
+            },
+            {
+              "label": "First Name"
+            },
+            {
+              "placeholder": "First Name"
+            },
+            {
+              "text": "First Name"
+            },
+            {
+              "name": "First Name"
+            },
+            {
+              "role": "link",
+              "name": "First Name"
+            },
+            {
+              "role": "button",
+              "name": "First Name"
+            },
+            {
+              "role": "tab",
+              "name": "First Name"
+            },
+            {
+              "label": "Victor"
+            },
+            {
+              "placeholder": "Victor"
+            },
+            {
+              "text": "Victor"
+            },
+            {
+              "name": "Victor"
+            },
+            {
+              "role": "link",
+              "name": "Victor"
+            },
+            {
+              "role": "button",
+              "name": "Victor"
+            },
+            {
+              "role": "tab",
+              "name": "Victor"
+            },
+            {
+              "label": "Last Name"
+            },
+            {
+              "placeholder": "Last Name"
+            },
+            {
+              "text": "Last Name"
+            },
+            {
+              "name": "Last Name"
+            },
+            {
+              "role": "link",
+              "name": "Last Name"
+            },
+            {
+              "role": "button",
+              "name": "Last Name"
+            },
+            {
+              "role": "tab",
+              "name": "Last Name"
+            },
+            {
+              "label": "Ramos"
+            },
+            {
+              "placeholder": "Ramos"
+            },
+            {
+              "text": "Ramos"
+            },
+            {
+              "name": "Ramos"
+            },
+            {
+              "role": "link",
+              "name": "Ramos"
+            },
+            {
+              "role": "button",
+              "name": "Ramos"
+            },
+            {
+              "role": "tab",
+              "name": "Ramos"
+            },
+            {
+              "label": "Preferred Name"
+            },
+            {
+              "placeholder": "Preferred Name"
+            },
+            {
+              "text": "Preferred Name"
+            },
+            {
+              "name": "Preferred Name"
+            },
+            {
+              "role": "link",
+              "name": "Preferred Name"
+            },
+            {
+              "role": "button",
+              "name": "Preferred Name"
+            },
+            {
+              "role": "tab",
+              "name": "Preferred Name"
+            },
+            {
+              "label": "Email"
+            },
+            {
+              "placeholder": "Email"
+            },
+            {
+              "text": "Email"
+            },
+            {
+              "name": "Email"
+            },
+            {
+              "role": "link",
+              "name": "Email"
+            },
+            {
+              "role": "button",
+              "name": "Email"
+            },
+            {
+              "role": "tab",
+              "name": "Email"
+            },
+            {
+              "label": "Phone"
+            },
+            {
+              "placeholder": "Phone"
+            },
+            {
+              "text": "Phone"
+            },
+            {
+              "name": "Phone"
+            },
+            {
+              "role": "link",
+              "name": "Phone"
+            },
+            {
+              "role": "button",
+              "name": "Phone"
+            },
+            {
+              "role": "tab",
+              "name": "Phone"
+            },
+            {
+              "label": "Work Mode"
+            },
+            {
+              "placeholder": "Work Mode"
+            },
+            {
+              "text": "Work Mode"
+            },
+            {
+              "name": "Work Mode"
+            },
+            {
+              "role": "link",
+              "name": "Work Mode"
+            },
+            {
+              "role": "button",
+              "name": "Work Mode"
+            },
+            {
+              "role": "tab",
+              "name": "Work Mode"
+            },
+            {
+              "label": "Onsite"
+            },
+            {
+              "placeholder": "Onsite"
+            },
+            {
+              "text": "Onsite"
+            },
+            {
+              "name": "Onsite"
+            },
+            {
+              "role": "link",
+              "name": "Onsite"
+            },
+            {
+              "role": "button",
+              "name": "Onsite"
+            },
+            {
+              "role": "tab",
+              "name": "Onsite"
+            },
+            {
+              "label": "Location"
+            },
+            {
+              "placeholder": "Location"
+            },
+            {
+              "text": "Location"
+            },
+            {
+              "name": "Location"
+            },
+            {
+              "role": "link",
+              "name": "Location"
+            },
+            {
+              "role": "button",
+              "name": "Location"
+            },
+            {
+              "role": "tab",
+              "name": "Location"
+            },
+            {
+              "label": "Phoenix Distribution Support"
+            },
+            {
+              "placeholder": "Phoenix Distribution Support"
+            },
+            {
+              "text": "Phoenix Distribution Support"
+            },
+            {
+              "name": "Phoenix Distribution Support"
+            },
+            {
+              "role": "link",
+              "name": "Phoenix Distribution Support"
+            },
+            {
+              "role": "button",
+              "name": "Phoenix Distribution Support"
+            },
+            {
+              "role": "tab",
+              "name": "Phoenix Distribution Support"
+            },
+            {
+              "label": "Start Date"
+            },
+            {
+              "placeholder": "Start Date"
+            },
+            {
+              "text": "Start Date"
+            },
+            {
+              "name": "Start Date"
+            },
+            {
+              "role": "link",
+              "name": "Start Date"
+            },
+            {
+              "role": "button",
+              "name": "Start Date"
+            },
+            {
+              "role": "tab",
+              "name": "Start Date"
+            },
+            {
+              "label": "Manager"
+            },
+            {
+              "placeholder": "Manager"
+            },
+            {
+              "text": "Manager"
+            },
+            {
+              "name": "Manager"
+            },
+            {
+              "role": "link",
+              "name": "Manager"
+            },
+            {
+              "role": "button",
+              "name": "Manager"
+            },
+            {
+              "role": "tab",
+              "name": "Manager"
+            },
+            {
+              "label": "Diego Alvarez"
+            },
+            {
+              "placeholder": "Diego Alvarez"
+            },
+            {
+              "text": "Diego Alvarez"
+            },
+            {
+              "name": "Diego Alvarez"
+            },
+            {
+              "role": "link",
+              "name": "Diego Alvarez"
+            },
+            {
+              "role": "button",
+              "name": "Diego Alvarez"
+            },
+            {
+              "role": "tab",
+              "name": "Diego Alvarez"
+            },
+            {
+              "label": "Employment Type"
+            },
+            {
+              "placeholder": "Employment Type"
+            },
+            {
+              "text": "Employment Type"
+            },
+            {
+              "name": "Employment Type"
+            },
+            {
+              "role": "link",
+              "name": "Employment Type"
+            },
+            {
+              "role": "button",
+              "name": "Employment Type"
+            },
+            {
+              "role": "tab",
+              "name": "Employment Type"
+            },
+            {
+              "label": "Part Time"
+            },
+            {
+              "placeholder": "Part Time"
+            },
+            {
+              "text": "Part Time"
+            },
+            {
+              "name": "Part Time"
+            },
+            {
+              "role": "link",
+              "name": "Part Time"
+            },
+            {
+              "role": "button",
+              "name": "Part Time"
+            },
+            {
+              "role": "tab",
+              "name": "Part Time"
+            },
+            {
+              "label": "Department"
+            },
+            {
+              "placeholder": "Department"
+            },
+            {
+              "text": "Department"
+            },
+            {
+              "name": "Department"
+            },
+            {
+              "role": "link",
+              "name": "Department"
+            },
+            {
+              "role": "button",
+              "name": "Department"
+            },
+            {
+              "role": "tab",
+              "name": "Department"
+            },
+            {
+              "label": "Operations"
+            },
+            {
+              "placeholder": "Operations"
+            },
+            {
+              "text": "Operations"
+            },
+            {
+              "name": "Operations"
+            },
+            {
+              "role": "link",
+              "name": "Operations"
+            },
+            {
+              "role": "button",
+              "name": "Operations"
+            },
+            {
+              "role": "tab",
+              "name": "Operations"
+            },
+            {
+              "label": "Role"
+            },
+            {
+              "placeholder": "Role"
+            },
+            {
+              "text": "Role"
+            },
+            {
+              "name": "Role"
+            },
+            {
+              "role": "link",
+              "name": "Role"
+            },
+            {
+              "role": "button",
+              "name": "Role"
+            },
+            {
+              "role": "tab",
+              "name": "Role"
+            },
+            {
+              "label": "Operations Specialist"
+            },
+            {
+              "placeholder": "Operations Specialist"
+            },
+            {
+              "text": "Operations Specialist"
+            },
+            {
+              "name": "Operations Specialist"
+            },
+            {
+              "role": "link",
+              "name": "Operations Specialist"
+            },
+            {
+              "role": "button",
+              "name": "Operations Specialist"
+            },
+            {
+              "role": "tab",
+              "name": "Operations Specialist"
+            },
+            {
+              "label": "Weekly Hours"
+            },
+            {
+              "placeholder": "Weekly Hours"
+            },
+            {
+              "text": "Weekly Hours"
+            },
+            {
+              "name": "Weekly Hours"
+            },
+            {
+              "role": "link",
+              "name": "Weekly Hours"
+            },
+            {
+              "role": "button",
+              "name": "Weekly Hours"
+            },
+            {
+              "role": "tab",
+              "name": "Weekly Hours"
+            },
+            {
+              "label": "Schedule"
+            },
+            {
+              "placeholder": "Schedule"
+            },
+            {
+              "text": "Schedule"
+            },
+            {
+              "name": "Schedule"
+            },
+            {
+              "role": "link",
+              "name": "Schedule"
+            },
+            {
+              "role": "button",
+              "name": "Schedule"
+            },
+            {
+              "role": "tab",
+              "name": "Schedule"
+            },
+            {
+              "label": "Tue"
+            },
+            {
+              "placeholder": "Tue"
+            },
+            {
+              "text": "Tue"
+            },
+            {
+              "name": "Tue"
+            },
+            {
+              "role": "link",
+              "name": "Tue"
+            },
+            {
+              "role": "button",
+              "name": "Tue"
+            },
+            {
+              "role": "tab",
+              "name": "Tue"
+            },
+            {
+              "label": "Sat"
+            },
+            {
+              "placeholder": "Sat"
+            },
+            {
+              "text": "Sat"
+            },
+            {
+              "name": "Sat"
+            },
+            {
+              "role": "link",
+              "name": "Sat"
+            },
+            {
+              "role": "button",
+              "name": "Sat"
+            },
+            {
+              "role": "tab",
+              "name": "Sat"
+            },
+            {
+              "label": "Background Check Complete"
+            },
+            {
+              "placeholder": "Background Check Complete"
+            },
+            {
+              "text": "Background Check Complete"
+            },
+            {
+              "name": "Background Check Complete"
+            },
+            {
+              "role": "link",
+              "name": "Background Check Complete"
+            },
+            {
+              "role": "button",
+              "name": "Background Check Complete"
+            },
+            {
+              "role": "tab",
+              "name": "Background Check Complete"
+            },
+            {
+              "label": "Yes"
+            },
+            {
+              "placeholder": "Yes"
+            },
+            {
+              "text": "Yes"
+            },
+            {
+              "name": "Yes"
+            },
+            {
+              "role": "link",
+              "name": "Yes"
+            },
+            {
+              "role": "button",
+              "name": "Yes"
+            },
+            {
+              "role": "tab",
+              "name": "Yes"
+            },
+            {
+              "label": "Manager Approval Received"
+            },
+            {
+              "placeholder": "Manager Approval Received"
+            },
+            {
+              "text": "Manager Approval Received"
+            },
+            {
+              "name": "Manager Approval Received"
+            },
+            {
+              "role": "link",
+              "name": "Manager Approval Received"
+            },
+            {
+              "role": "button",
+              "name": "Manager Approval Received"
+            },
+            {
+              "role": "tab",
+              "name": "Manager Approval Received"
+            },
+            {
+              "label": "Needs Relocation Support"
+            },
+            {
+              "placeholder": "Needs Relocation Support"
+            },
+            {
+              "text": "Needs Relocation Support"
+            },
+            {
+              "name": "Needs Relocation Support"
+            },
+            {
+              "role": "link",
+              "name": "Needs Relocation Support"
+            },
+            {
+              "role": "button",
+              "name": "Needs Relocation Support"
+            },
+            {
+              "role": "tab",
+              "name": "Needs Relocation Support"
+            },
+            {
+              "label": "Pay Type"
+            },
+            {
+              "placeholder": "Pay Type"
+            },
+            {
+              "text": "Pay Type"
+            },
+            {
+              "name": "Pay Type"
+            },
+            {
+              "role": "link",
+              "name": "Pay Type"
+            },
+            {
+              "role": "button",
+              "name": "Pay Type"
+            },
+            {
+              "role": "tab",
+              "name": "Pay Type"
+            },
+            {
+              "label": "Hourly"
+            },
+            {
+              "placeholder": "Hourly"
+            },
+            {
+              "text": "Hourly"
+            },
+            {
+              "name": "Hourly"
+            },
+            {
+              "role": "link",
+              "name": "Hourly"
+            },
+            {
+              "role": "button",
+              "name": "Hourly"
+            },
+            {
+              "role": "tab",
+              "name": "Hourly"
+            },
+            {
+              "label": "Pay Rate"
+            },
+            {
+              "placeholder": "Pay Rate"
+            },
+            {
+              "text": "Pay Rate"
+            },
+            {
+              "name": "Pay Rate"
+            },
+            {
+              "role": "link",
+              "name": "Pay Rate"
+            },
+            {
+              "role": "button",
+              "name": "Pay Rate"
+            },
+            {
+              "role": "tab",
+              "name": "Pay Rate"
+            },
+            {
+              "label": "Payroll Frequency"
+            },
+            {
+              "placeholder": "Payroll Frequency"
+            },
+            {
+              "text": "Payroll Frequency"
+            },
+            {
+              "name": "Payroll Frequency"
+            },
+            {
+              "role": "link",
+              "name": "Payroll Frequency"
+            },
+            {
+              "role": "button",
+              "name": "Payroll Frequency"
+            },
+            {
+              "role": "tab",
+              "name": "Payroll Frequency"
+            },
+            {
+              "label": "Biweekly"
+            },
+            {
+              "placeholder": "Biweekly"
+            },
+            {
+              "text": "Biweekly"
+            },
+            {
+              "name": "Biweekly"
+            },
+            {
+              "role": "link",
+              "name": "Biweekly"
+            },
+            {
+              "role": "button",
+              "name": "Biweekly"
+            },
+            {
+              "role": "tab",
+              "name": "Biweekly"
+            },
+            {
+              "label": "Bonus Eligible"
+            },
+            {
+              "placeholder": "Bonus Eligible"
+            },
+            {
+              "text": "Bonus Eligible"
+            },
+            {
+              "name": "Bonus Eligible"
+            },
+            {
+              "role": "link",
+              "name": "Bonus Eligible"
+            },
+            {
+              "role": "button",
+              "name": "Bonus Eligible"
+            },
+            {
+              "role": "tab",
+              "name": "Bonus Eligible"
+            },
+            {
+              "label": "Overtime Eligible"
+            },
+            {
+              "placeholder": "Overtime Eligible"
+            },
+            {
+              "text": "Overtime Eligible"
+            },
+            {
+              "name": "Overtime Eligible"
+            },
+            {
+              "role": "link",
+              "name": "Overtime Eligible"
+            },
+            {
+              "role": "button",
+              "name": "Overtime Eligible"
+            },
+            {
+              "role": "tab",
+              "name": "Overtime Eligible"
+            },
+            {
+              "label": "Direct Deposit Setup"
+            },
+            {
+              "placeholder": "Direct Deposit Setup"
+            },
+            {
+              "text": "Direct Deposit Setup"
+            },
+            {
+              "name": "Direct Deposit Setup"
+            },
+            {
+              "role": "link",
+              "name": "Direct Deposit Setup"
+            },
+            {
+              "role": "button",
+              "name": "Direct Deposit Setup"
+            },
+            {
+              "role": "tab",
+              "name": "Direct Deposit Setup"
+            },
+            {
+              "label": "Laptop Required"
+            },
+            {
+              "placeholder": "Laptop Required"
+            },
+            {
+              "text": "Laptop Required"
+            },
+            {
+              "name": "Laptop Required"
+            },
+            {
+              "role": "link",
+              "name": "Laptop Required"
+            },
+            {
+              "role": "button",
+              "name": "Laptop Required"
+            },
+            {
+              "role": "tab",
+              "name": "Laptop Required"
+            },
+            {
+              "label": "Access Required"
+            },
+            {
+              "placeholder": "Access Required"
+            },
+            {
+              "text": "Access Required"
+            },
+            {
+              "name": "Access Required"
+            },
+            {
+              "role": "link",
+              "name": "Access Required"
+            },
+            {
+              "role": "button",
+              "name": "Access Required"
+            },
+            {
+              "role": "tab",
+              "name": "Access Required"
+            },
+            {
+              "label": "Badge Access Required"
+            },
+            {
+              "placeholder": "Badge Access Required"
+            },
+            {
+              "text": "Badge Access Required"
+            },
+            {
+              "name": "Badge Access Required"
+            },
+            {
+              "role": "link",
+              "name": "Badge Access Required"
+            },
+            {
+              "role": "button",
+              "name": "Badge Access Required"
+            },
+            {
+              "role": "tab",
+              "name": "Badge Access Required"
+            },
+            {
+              "label": "Admin Access Level"
+            },
+            {
+              "placeholder": "Admin Access Level"
+            },
+            {
+              "text": "Admin Access Level"
+            },
+            {
+              "name": "Admin Access Level"
+            },
+            {
+              "role": "link",
+              "name": "Admin Access Level"
+            },
+            {
+              "role": "button",
+              "name": "Admin Access Level"
+            },
+            {
+              "role": "tab",
+              "name": "Admin Access Level"
+            },
+            {
+              "label": "None\n\nClick Continue"
+            },
+            {
+              "placeholder": "None\n\nClick Continue"
+            },
+            {
+              "text": "None\n\nClick Continue"
+            },
+            {
+              "name": "None\n\nClick Continue"
+            },
+            {
+              "role": "link",
+              "name": "None\n\nClick Continue"
+            },
+            {
+              "role": "button",
+              "name": "None\n\nClick Continue"
+            },
+            {
+              "role": "tab",
+              "name": "None\n\nClick Continue"
+            },
+            {
+              "label": "Next"
+            },
+            {
+              "placeholder": "Next"
+            },
+            {
+              "text": "Next"
+            },
+            {
+              "name": "Next"
+            },
+            {
+              "role": "link",
+              "name": "Next"
+            },
+            {
+              "role": "button",
+              "name": "Next"
+            },
+            {
+              "role": "tab",
+              "name": "Next"
+            },
+            {
+              "label": "Review"
+            },
+            {
+              "placeholder": "Review"
+            },
+            {
+              "text": "Review"
+            },
+            {
+              "name": "Review"
+            },
+            {
+              "role": "link",
+              "name": "Review"
+            },
+            {
+              "role": "button",
+              "name": "Review"
+            },
+            {
+              "role": "tab",
+              "name": "Review"
+            },
+            {
+              "label": "Submit"
+            },
+            {
+              "placeholder": "Submit"
+            },
+            {
+              "text": "Submit"
+            },
+            {
+              "name": "Submit"
+            },
+            {
+              "role": "link",
+              "name": "Submit"
+            },
+            {
+              "role": "button",
+              "name": "Submit"
+            },
+            {
+              "role": "tab",
+              "name": "Submit"
+            },
+            {
+              "label": "After"
+            },
+            {
+              "placeholder": "After"
+            },
+            {
+              "text": "After"
+            },
+            {
+              "name": "After"
+            },
+            {
+              "role": "link",
+              "name": "After"
+            },
+            {
+              "role": "button",
+              "name": "After"
+            },
+            {
+              "role": "tab",
+              "name": "After"
+            },
+            {
+              "label": "Employees"
+            },
+            {
+              "placeholder": "Employees"
+            },
+            {
+              "text": "Employees"
+            },
+            {
+              "name": "Employees"
+            },
+            {
+              "role": "link",
+              "name": "Employees"
+            },
+            {
+              "role": "button",
+              "name": "Employees"
+            },
+            {
+              "role": "tab",
+              "name": "Employees"
+            },
+            {
+              "label": "Pay"
+            },
+            {
+              "placeholder": "Pay"
+            },
+            {
+              "text": "Pay"
+            },
+            {
+              "name": "Pay"
+            },
+            {
+              "role": "link",
+              "name": "Pay"
+            },
+            {
+              "role": "button",
+              "name": "Pay"
+            },
+            {
+              "role": "tab",
+              "name": "Pay"
+            },
+            {
+              "label": "Then"
+            },
+            {
+              "placeholder": "Then"
+            },
+            {
+              "text": "Then"
+            },
+            {
+              "name": "Then"
+            },
+            {
+              "role": "link",
+              "name": "Then"
+            },
+            {
+              "role": "button",
+              "name": "Then"
+            },
+            {
+              "role": "tab",
+              "name": "Then"
+            },
+            {
+              "label": "Background Check"
+            },
+            {
+              "placeholder": "Background Check"
+            },
+            {
+              "text": "Background Check"
+            },
+            {
+              "name": "Background Check"
+            },
+            {
+              "role": "link",
+              "name": "Background Check"
+            },
+            {
+              "role": "button",
+              "name": "Background Check"
+            },
+            {
+              "role": "tab",
+              "name": "Background Check"
+            },
+            {
+              "label": "Status"
+            },
+            {
+              "placeholder": "Status"
+            },
+            {
+              "text": "Status"
+            },
+            {
+              "name": "Status"
+            },
+            {
+              "role": "link",
+              "name": "Status"
+            },
+            {
+              "role": "button",
+              "name": "Status"
+            },
+            {
+              "role": "tab",
+              "name": "Status"
+            },
+            {
+              "label": "Access"
+            },
+            {
+              "placeholder": "Access"
+            },
+            {
+              "text": "Access"
+            },
+            {
+              "name": "Access"
+            },
+            {
+              "role": "link",
+              "name": "Access"
+            },
+            {
+              "role": "button",
+              "name": "Access"
+            },
+            {
+              "role": "tab",
+              "name": "Access"
+            },
+            {
+              "label": "Badge Access"
+            },
+            {
+              "placeholder": "Badge Access"
+            },
+            {
+              "text": "Badge Access"
+            },
+            {
+              "name": "Badge Access"
+            },
+            {
+              "role": "link",
+              "name": "Badge Access"
+            },
+            {
+              "role": "button",
+              "name": "Badge Access"
+            },
+            {
+              "role": "tab",
+              "name": "Badge Access"
+            },
+            {
+              "label": "None\n\nReport"
+            },
+            {
+              "placeholder": "None\n\nReport"
+            },
+            {
+              "text": "None\n\nReport"
+            },
+            {
+              "name": "None\n\nReport"
+            },
+            {
+              "role": "link",
+              "name": "None\n\nReport"
+            },
+            {
+              "role": "button",
+              "name": "None\n\nReport"
+            },
+            {
+              "role": "tab",
+              "name": "None\n\nReport"
+            },
+            {
+              "label": "Add"
+            },
+            {
+              "placeholder": "Add"
+            },
+            {
+              "text": "Add"
+            },
+            {
+              "name": "Add"
+            },
+            {
+              "role": "link",
+              "name": "Add"
+            },
+            {
+              "role": "button",
+              "name": "Add"
+            },
+            {
+              "role": "tab",
+              "name": "Add"
+            }
+          ],
+          "optional": true
+        },
+        {
+          "id": "open_editable_view",
+          "name": "Open editable view",
+          "action": "click",
+          "description": "Open an edit, create, or next-step surface if the page starts in a dashboard or read-only state.",
+          "target": {
+            "label": "Open"
+          },
+          "targetFallbacks": [
+            {
+              "placeholder": "Open"
+            },
+            {
+              "text": "Open"
+            },
+            {
+              "name": "Open"
+            },
+            {
+              "role": "link",
+              "name": "Open"
+            },
+            {
+              "role": "button",
+              "name": "Open"
+            },
+            {
+              "label": "Edit"
+            },
+            {
+              "placeholder": "Edit"
+            },
+            {
+              "text": "Edit"
+            },
+            {
+              "name": "Edit"
+            },
+            {
+              "role": "link",
+              "name": "Edit"
+            },
+            {
+              "role": "button",
+              "name": "Edit"
+            },
+            {
+              "label": "Create"
+            },
+            {
+              "placeholder": "Create"
+            },
+            {
+              "text": "Create"
+            },
+            {
+              "name": "Create"
+            },
+            {
+              "role": "link",
+              "name": "Create"
+            },
+            {
+              "role": "button",
+              "name": "Create"
+            },
+            {
+              "label": "New"
+            },
+            {
+              "placeholder": "New"
+            },
+            {
+              "text": "New"
+            },
+            {
+              "name": "New"
+            },
+            {
+              "role": "link",
+              "name": "New"
+            },
+            {
+              "role": "button",
+              "name": "New"
+            },
+            {
+              "label": "Start"
+            },
+            {
+              "placeholder": "Start"
+            },
+            {
+              "text": "Start"
+            },
+            {
+              "name": "Start"
+            },
+            {
+              "role": "link",
+              "name": "Start"
+            },
+            {
+              "role": "button",
+              "name": "Start"
+            }
+          ],
+          "optional": true
+        }
+      ],
+      "verificationRules": [
+        {
+          "name": "Visible page label: Form",
+          "strict": false,
+          "textVisible": "Form"
+        },
+        {
+          "name": "Visible page label: Application",
+          "strict": false,
+          "textVisible": "Application"
+        },
+        {
+          "name": "Visible page label: Create",
+          "strict": false,
+          "textVisible": "Create"
+        },
+        {
+          "name": "Page remained within the target application",
+          "strict": false,
+          "urlIncludes": "http://127.0.0.1:4321/"
+        },
+        {
+          "name": "Reached a form-like page",
+          "strict": false,
+          "pageModeIs": "form"
+        },
+        {
+          "name": "Reached a wizard-like page",
+          "strict": false,
+          "pageModeIs": "wizard"
+        }
+      ]
+    },
+    {
+      "id": "fill_fields",
+      "name": "Fill mapped fields",
+      "kind": "fill_form",
+      "description": "Use the spreadsheet-driven field mappings to populate the fields that are present on the page, including multi-step forms.",
+      "actions": [],
+      "verificationRules": [
+        {
+          "name": "Field visible: Employee ID",
+          "strict": false,
+          "textVisible": "Employee ID"
+        },
+        {
+          "name": "Field visible: Status",
+          "strict": false,
+          "textVisible": "Status"
+        },
+        {
+          "name": "Field visible: First Name",
+          "strict": false,
+          "textVisible": "First Name"
+        },
+        {
+          "name": "Field visible: Last Name",
+          "strict": false,
+          "textVisible": "Last Name"
+        },
+        {
+          "name": "Field visible: Email",
+          "strict": false,
+          "textVisible": "Email"
+        },
+        {
+          "name": "Reached a fillable page",
+          "strict": false,
+          "pageModeIs": "form"
+        }
+      ]
+    },
+    {
+      "id": "submit_form",
+      "name": "Submit or advance the workflow",
+      "kind": "submit_form",
+      "description": "Advance or submit the form until the workflow reaches either a success state or a clear next-step state.",
+      "actions": [
+        {
+          "id": "dismiss_pre_submit_overlays",
+          "name": "Dismiss overlays before submit",
+          "action": "dismiss",
+          "description": "Clear obstructive overlays before continuing or submitting.",
+          "optional": true
+        },
+        {
+          "id": "click_submit",
+          "name": "Click submit button",
+          "action": "click",
+          "description": "Use a visible continue, review, save, or submit control to advance the workflow.",
+          "target": {
+            "selector": "form button[type=submit], form input[type=submit], button[type=submit], input[type=submit]"
+          },
+          "targetFallbacks": [
+            {
+              "label": "Submit"
+            },
+            {
+              "placeholder": "Submit"
+            },
+            {
+              "text": "Submit"
+            },
+            {
+              "name": "Submit"
+            },
+            {
+              "role": "button",
+              "name": "Submit"
+            },
+            {
+              "role": "link",
+              "name": "Submit"
+            },
+            {
+              "role": "tab",
+              "name": "Submit"
+            },
+            {
+              "label": "Save"
+            },
+            {
+              "placeholder": "Save"
+            },
+            {
+              "text": "Save"
+            },
+            {
+              "name": "Save"
+            },
+            {
+              "role": "button",
+              "name": "Save"
+            },
+            {
+              "role": "link",
+              "name": "Save"
+            },
+            {
+              "role": "tab",
+              "name": "Save"
+            },
+            {
+              "label": "Finish"
+            },
+            {
+              "placeholder": "Finish"
+            },
+            {
+              "text": "Finish"
+            },
+            {
+              "name": "Finish"
+            },
+            {
+              "role": "button",
+              "name": "Finish"
+            },
+            {
+              "role": "link",
+              "name": "Finish"
+            },
+            {
+              "role": "tab",
+              "name": "Finish"
+            },
+            {
+              "label": "Continue"
+            },
+            {
+              "placeholder": "Continue"
+            },
+            {
+              "text": "Continue"
+            },
+            {
+              "name": "Continue"
+            },
+            {
+              "role": "button",
+              "name": "Continue"
+            },
+            {
+              "role": "link",
+              "name": "Continue"
+            },
+            {
+              "role": "tab",
+              "name": "Continue"
+            },
+            {
+              "label": "Review"
+            },
+            {
+              "placeholder": "Review"
+            },
+            {
+              "text": "Review"
+            },
+            {
+              "name": "Review"
+            },
+            {
+              "role": "button",
+              "name": "Review"
+            },
+            {
+              "role": "link",
+              "name": "Review"
+            },
+            {
+              "role": "tab",
+              "name": "Review"
+            },
+            {
+              "label": "Next"
+            },
+            {
+              "placeholder": "Next"
+            },
+            {
+              "text": "Next"
+            },
+            {
+              "name": "Next"
+            },
+            {
+              "role": "button",
+              "name": "Next"
+            },
+            {
+              "role": "link",
+              "name": "Next"
+            },
+            {
+              "role": "tab",
+              "name": "Next"
+            },
+            {
+              "label": "Create"
+            },
+            {
+              "placeholder": "Create"
+            },
+            {
+              "text": "Create"
+            },
+            {
+              "name": "Create"
+            },
+            {
+              "role": "button",
+              "name": "Create"
+            },
+            {
+              "role": "link",
+              "name": "Create"
+            },
+            {
+              "role": "tab",
+              "name": "Create"
+            }
+          ],
+          "optional": false
+        },
+        {
+          "id": "wait_for_post_submit_state",
+          "name": "Wait for a post-submit state",
+          "action": "wait",
+          "description": "Wait for a visible confirmation or next-step page to appear.",
+          "target": {
+            "text": "saved"
+          },
+          "optional": true
+        }
+      ],
+      "verificationRules": [
+        {
+          "name": "Submit advanced to success state",
+          "strict": false,
+          "pageModeIs": "success"
+        },
+        {
+          "name": "Submit advanced to a wizard step",
+          "strict": false,
+          "pageModeIs": "wizard"
+        },
+        {
+          "name": "Submit advanced to a list or summary page",
+          "strict": false,
+          "pageModeIs": "list"
+        },
+        {
+          "name": "Post-submit text visible: saved",
+          "strict": false,
+          "textVisible": "saved"
+        },
+        {
+          "name": "Post-submit text visible: submitted",
+          "strict": false,
+          "textVisible": "submitted"
+        },
+        {
+          "name": "Post-submit text visible: created",
+          "strict": false,
+          "textVisible": "created"
+        }
+      ]
+    },
+    {
+      "id": "verify_created_record_in_list",
+      "name": "Verify created record in list",
+      "kind": "lookup_record",
+      "description": "Navigate to the post-submit list and confirm the created record appears with expected identifying details.",
+      "actions": [
+        {
+          "id": "dismiss_pre_list_overlays",
+          "name": "Dismiss overlays before list verification",
+          "action": "dismiss",
+          "description": "Clear obstructive overlays before verifying the created record in a list.",
+          "optional": true
+        },
+        {
+          "id": "open_post_submit_list",
+          "name": "Open post-submit list",
+          "action": "click",
+          "description": "Navigate to the list or roster where the created record should appear.",
+          "target": {
+            "label": "Employees"
+          },
+          "targetFallbacks": [
+            {
+              "placeholder": "Employees"
+            },
+            {
+              "text": "Employees"
+            },
+            {
+              "name": "Employees"
+            },
+            {
+              "role": "link",
+              "name": "Employees"
+            },
+            {
+              "role": "button",
+              "name": "Employees"
+            },
+            {
+              "role": "tab",
+              "name": "Employees"
+            },
+            {
+              "label": "Records"
+            },
+            {
+              "placeholder": "Records"
+            },
+            {
+              "text": "Records"
+            },
+            {
+              "name": "Records"
+            },
+            {
+              "role": "link",
+              "name": "Records"
+            },
+            {
+              "role": "button",
+              "name": "Records"
+            },
+            {
+              "role": "tab",
+              "name": "Records"
+            }
+          ],
+          "optional": true
+        },
+        {
+          "id": "search_for_created_record",
+          "name": "Search for created record",
+          "action": "type",
+          "description": "Search the list for the created record using the best available identifier.",
+          "target": {
+            "label": "Search"
+          },
+          "targetFallbacks": [
+            {
+              "placeholder": "Search"
+            },
+            {
+              "text": "Search"
+            },
+            {
+              "name": "Search"
+            },
+            {
+              "role": "textbox",
+              "name": "Search"
+            },
+            {
+              "role": "searchbox",
+              "name": "Search"
+            },
+            {
+              "role": "combobox",
+              "name": "Search"
+            },
+            {
+              "label": "Lookup"
+            },
+            {
+              "placeholder": "Lookup"
+            },
+            {
+              "text": "Lookup"
+            },
+            {
+              "name": "Lookup"
+            },
+            {
+              "role": "textbox",
+              "name": "Lookup"
+            },
+            {
+              "role": "searchbox",
+              "name": "Lookup"
+            },
+            {
+              "role": "combobox",
+              "name": "Lookup"
+            },
+            {
+              "label": "Find"
+            },
+            {
+              "placeholder": "Find"
+            },
+            {
+              "text": "Find"
+            },
+            {
+              "name": "Find"
+            },
+            {
+              "role": "textbox",
+              "name": "Find"
+            },
+            {
+              "role": "searchbox",
+              "name": "Find"
+            },
+            {
+              "role": "combobox",
+              "name": "Find"
+            },
+            {
+              "label": "Name"
+            },
+            {
+              "placeholder": "Name"
+            },
+            {
+              "text": "Name"
+            },
+            {
+              "name": "Name"
+            },
+            {
+              "role": "textbox",
+              "name": "Name"
+            },
+            {
+              "role": "searchbox",
+              "name": "Name"
+            },
+            {
+              "role": "combobox",
+              "name": "Name"
+            },
+            {
+              "label": "Email"
+            },
+            {
+              "placeholder": "Email"
+            },
+            {
+              "text": "Email"
+            },
+            {
+              "name": "Email"
+            },
+            {
+              "role": "textbox",
+              "name": "Email"
+            },
+            {
+              "role": "searchbox",
+              "name": "Email"
+            },
+            {
+              "role": "combobox",
+              "name": "Email"
+            },
+            {
+              "label": "ID"
+            },
+            {
+              "placeholder": "ID"
+            },
+            {
+              "text": "ID"
+            },
+            {
+              "name": "ID"
+            },
+            {
+              "role": "textbox",
+              "name": "ID"
+            },
+            {
+              "role": "searchbox",
+              "name": "ID"
+            },
+            {
+              "role": "combobox",
+              "name": "ID"
+            },
+            {
+              "label": "Record"
+            },
+            {
+              "placeholder": "Record"
+            },
+            {
+              "text": "Record"
+            },
+            {
+              "name": "Record"
+            },
+            {
+              "role": "textbox",
+              "name": "Record"
+            },
+            {
+              "role": "searchbox",
+              "name": "Record"
+            },
+            {
+              "role": "combobox",
+              "name": "Record"
+            },
+            {
+              "label": "Employee ID"
+            },
+            {
+              "placeholder": "Employee ID"
+            },
+            {
+              "text": "Employee ID"
+            },
+            {
+              "name": "Employee ID"
+            },
+            {
+              "role": "textbox",
+              "name": "Employee ID"
+            },
+            {
+              "role": "searchbox",
+              "name": "Employee ID"
+            },
+            {
+              "role": "combobox",
+              "name": "Employee ID"
+            },
+            {
+              "label": "Record ID"
+            },
+            {
+              "placeholder": "Record ID"
+            },
+            {
+              "text": "Record ID"
+            },
+            {
+              "name": "Record ID"
+            },
+            {
+              "role": "textbox",
+              "name": "Record ID"
+            },
+            {
+              "role": "searchbox",
+              "name": "Record ID"
+            },
+            {
+              "role": "combobox",
+              "name": "Record ID"
+            }
+          ],
+          "value": "EMP-2042",
+          "optional": true
+        },
+        {
+          "id": "submit_created_record_search",
+          "name": "Submit created record search",
+          "action": "press",
+          "value": "Enter",
+          "description": "Apply the list search when the page supports Enter-driven lookup.",
+          "optional": true
+        }
+      ],
+      "verificationRules": [
+        {
+          "name": "Reached a post-submit list page",
+          "strict": false,
+          "pageModeIs": "list"
+        },
+        {
+          "name": "Created record detail visible: Victor Ramos",
+          "strict": false,
+          "textVisible": "Victor Ramos"
+        },
+        {
+          "name": "Created record detail visible: EMP-2042",
+          "strict": false,
+          "textVisible": "EMP-2042"
+        },
+        {
+          "name": "Created record detail visible: Operations",
+          "strict": false,
+          "textVisible": "Operations"
+        },
+        {
+          "name": "Created record detail visible: Operations Specialist",
+          "strict": false,
+          "textVisible": "Operations Specialist"
+        },
+        {
+          "name": "Created record detail visible: 29.75",
+          "strict": false,
+          "textVisible": "29.75"
+        },
+        {
+          "name": "Created record detail visible: 36",
+          "strict": false,
+          "textVisible": "36"
+        }
+      ]
+    },
+    {
+      "id": "verify_saved_record_details",
+      "name": "Verify saved record details",
+      "kind": "lookup_record",
+      "description": "Open the saved record and confirm key persisted details are visible.",
+      "actions": [
+        {
+          "id": "dismiss_pre_detail_overlays",
+          "name": "Dismiss overlays before detail verification",
+          "action": "dismiss",
+          "description": "Clear obstructive overlays before opening the saved record.",
+          "optional": true
+        },
+        {
+          "id": "open_saved_record",
+          "name": "Open saved record",
+          "action": "click",
+          "description": "Open the newly created record from the results or list view.",
+          "target": {
+            "label": "Open Victor Ramos"
+          },
+          "targetFallbacks": [
+            {
+              "placeholder": "Open Victor Ramos"
+            },
+            {
+              "text": "Open Victor Ramos"
+            },
+            {
+              "name": "Open Victor Ramos"
+            },
+            {
+              "role": "link",
+              "name": "Open Victor Ramos"
+            },
+            {
+              "role": "button",
+              "name": "Open Victor Ramos"
+            },
+            {
+              "label": "Victor Ramos"
+            },
+            {
+              "placeholder": "Victor Ramos"
+            },
+            {
+              "text": "Victor Ramos"
+            },
+            {
+              "name": "Victor Ramos"
+            },
+            {
+              "role": "link",
+              "name": "Victor Ramos"
+            },
+            {
+              "role": "button",
+              "name": "Victor Ramos"
+            },
+            {
+              "label": "Open"
+            },
+            {
+              "placeholder": "Open"
+            },
+            {
+              "text": "Open"
+            },
+            {
+              "name": "Open"
+            },
+            {
+              "role": "link",
+              "name": "Open"
+            },
+            {
+              "role": "button",
+              "name": "Open"
+            },
+            {
+              "label": "Edit"
+            },
+            {
+              "placeholder": "Edit"
+            },
+            {
+              "text": "Edit"
+            },
+            {
+              "name": "Edit"
+            },
+            {
+              "role": "link",
+              "name": "Edit"
+            },
+            {
+              "role": "button",
+              "name": "Edit"
+            },
+            {
+              "label": "View"
+            },
+            {
+              "placeholder": "View"
+            },
+            {
+              "text": "View"
+            },
+            {
+              "name": "View"
+            },
+            {
+              "role": "link",
+              "name": "View"
+            },
+            {
+              "role": "button",
+              "name": "View"
+            },
+            {
+              "label": "Manage"
+            },
+            {
+              "placeholder": "Manage"
+            },
+            {
+              "text": "Manage"
+            },
+            {
+              "name": "Manage"
+            },
+            {
+              "role": "link",
+              "name": "Manage"
+            },
+            {
+              "role": "button",
+              "name": "Manage"
+            },
+            {
+              "label": "Continue"
+            },
+            {
+              "placeholder": "Continue"
+            },
+            {
+              "text": "Continue"
+            },
+            {
+              "name": "Continue"
+            },
+            {
+              "role": "link",
+              "name": "Continue"
+            },
+            {
+              "role": "button",
+              "name": "Continue"
+            },
+            {
+              "label": "Details"
+            },
+            {
+              "placeholder": "Details"
+            },
+            {
+              "text": "Details"
+            },
+            {
+              "name": "Details"
+            },
+            {
+              "role": "link",
+              "name": "Details"
+            },
+            {
+              "role": "button",
+              "name": "Details"
+            }
+          ],
+          "optional": true
+        }
+      ],
+      "verificationRules": [
+        {
+          "name": "Reached a saved record detail page",
+          "strict": false,
+          "pageModeIs": "detail"
+        },
+        {
+          "name": "Reached a saved record form page",
+          "strict": false,
+          "pageModeIs": "form"
+        },
+        {
+          "name": "Saved record detail visible: Victor Ramos",
+          "strict": false,
+          "textVisible": "Victor Ramos"
+        },
+        {
+          "name": "Saved record detail visible: EMP-2042",
+          "strict": false,
+          "textVisible": "EMP-2042"
+        },
+        {
+          "name": "Saved record detail visible: Onsite",
+          "strict": false,
+          "textVisible": "Onsite"
+        },
+        {
+          "name": "Saved record detail visible: Biweekly",
+          "strict": false,
+          "textVisible": "Biweekly"
+        },
+        {
+          "name": "Saved record detail visible: Yes",
+          "strict": false,
+          "textVisible": "Yes"
+        },
+        {
+          "name": "Saved record detail visible: No",
+          "strict": false,
+          "textVisible": "No"
+        },
+        {
+          "name": "Saved record detail visible: None",
+          "strict": false,
+          "textVisible": "None"
+        }
+      ]
+    },
+    {
+      "id": "verify_success",
+      "name": "Verify success state",
+      "kind": "verify_success",
+      "description": "Confirm that the browser reached a visible success state, a new wizard step, or a persisted outcome before finishing the run.",
+      "actions": [],
+      "verificationRules": [
+        {
+          "name": "Success text visible: saved",
+          "strict": false,
+          "textVisible": "saved"
+        },
+        {
+          "name": "Success text visible: submitted",
+          "strict": false,
+          "textVisible": "submitted"
+        },
+        {
+          "name": "Success text visible: created",
+          "strict": false,
+          "textVisible": "created"
+        },
+        {
+          "name": "Success text visible: completed",
+          "strict": false,
+          "textVisible": "completed"
+        },
+        {
+          "name": "Success text visible: confirmation",
+          "strict": false,
+          "textVisible": "confirmation"
+        },
+        {
+          "name": "Success-like page mode detected",
+          "strict": false,
+          "pageModeIs": "success"
+        },
+        {
+          "name": "Workflow advanced to a wizard step",
+          "strict": false,
+          "pageModeIs": "wizard"
+        }
+      ]
+    }
+  ]
+}

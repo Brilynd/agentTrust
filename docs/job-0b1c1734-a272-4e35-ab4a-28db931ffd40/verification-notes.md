@@ -1,0 +1,111 @@
+# Verification Notes
+
+- Starting goal 'Reach the relevant working page'.
+- Opened http://127.0.0.1:4321/#onboarding-personal.
+- Dismissed common overlays for 'Dismiss initial overlays'.
+- Clicked 'Open relevant page section'.
+- Clicked 'Open editable view'.
+- Verified goal rule 'Page remained within the target application'.
+- Starting goal 'Fill mapped fields'.
+- Filled Employee ID from spreadsheet column 'Employee ID'.
+- Filled Status from spreadsheet column 'Status'.
+- Filled First Name from spreadsheet column 'First Name'.
+- Filled Last Name from spreadsheet column 'Last Name'.
+- Filled Email from spreadsheet column 'Email'.
+- Filled Phone from spreadsheet column 'Phone'.
+- Filled Manager from spreadsheet column 'Manager'.
+- Filled Employment Type from spreadsheet column 'Employment Type'.
+- Filled Work Mode from spreadsheet column 'Work Mode'.
+- Filled Start Date from spreadsheet column 'Start Date'.
+- Filled Location from spreadsheet column 'Location'.
+- Filled Department from spreadsheet column 'Department'.
+- Filled Role from spreadsheet column 'Role'.
+- Filled Weekly Hours from spreadsheet column 'Weekly Hours'.
+- Filled Schedule from spreadsheet column 'Schedule'.
+- Filled Background Check Complete from spreadsheet column 'Background Check Complete'.
+- Filled I-9 Complete from spreadsheet column 'I-9 Complete'.
+- Filled Manager Approval Received from spreadsheet column 'Manager Approval Received'.
+- Filled Needs Relocation Support from spreadsheet column 'Needs Relocation Support'.
+- Filled Pay Type from spreadsheet column 'Pay Type'.
+- Filled Pay Rate from spreadsheet column 'Pay Rate'.
+- Filled Payroll Frequency from spreadsheet column 'Payroll Frequency'.
+- Filled Bonus Eligible from spreadsheet column 'Bonus Eligible'.
+- Filled Overtime Eligible from spreadsheet column 'Overtime Eligible'.
+- Filled Direct Deposit Setup from spreadsheet column 'Direct Deposit Setup'.
+- Filled Laptop Required from spreadsheet column 'Laptop Required'.
+- Filled VPN Access Required from spreadsheet column 'VPN Access Required'.
+- Filled Badge Access Required from spreadsheet column 'Badge Access Required'.
+- Filled Admin Access Level from spreadsheet column 'Admin Access Level'.
+- Starting goal 'Submit or advance the workflow'.
+- Dismissed common overlays for 'Dismiss overlays before submit'.
+- Clicked Review Submission -> Submit Onboarding Request.
+- Skipped optional wait 'Wait for a post-submit state'.
+- Verified goal rule 'Submit advanced to success state'.
+- Starting goal 'Verify created record in list'.
+- Dismissed common overlays for 'Dismiss overlays before list verification'.
+- Clicked 'Open post-submit list'.
+- Entered 'EMP-2042' for 'Search for created record'.
+- Pressed 'Enter'.
+- Verified goal rule 'Created record detail visible: EMP-2042'.
+- Verified goal rule 'Created record detail visible: Operations'.
+- Verified goal rule 'Created record detail visible: 29.75'.
+- Verified goal rule 'Created record detail visible: 36'.
+- Starting goal 'Verify saved record details'.
+- Dismissed common overlays for 'Dismiss overlays before detail verification'.
+- Clicked 'Open saved record'.
+- Verified goal rule 'Saved record detail visible: EMP-2042'.
+- Starting goal 'Verify success state'.
+- Verified goal rule 'Success-like page mode detected'.
+
+# Action Timeline
+
+- Action 'Open target URL' succeeded on attempt 1. Opened http://127.0.0.1:4321/#onboarding-personal.
+- Action 'Dismiss initial overlays' succeeded on attempt 1. Dismissed common overlays for 'Dismiss initial overlays'.
+- Action 'Open relevant page section' succeeded on attempt 1. Clicked 'Open relevant page section'.
+- Action 'Open relevant page section' did not visibly change the page.
+- Action 'Open editable view' succeeded on attempt 1. Clicked 'Open editable view'.
+- Action 'Open editable view' did not visibly change the page.
+- Filled mapped field 'Employee ID' with spreadsheet value 'EMP-2042'.
+- Filled mapped field 'Status' with spreadsheet value 'Active'.
+- Filled mapped field 'First Name' with spreadsheet value 'Victor'.
+- Filled mapped field 'Last Name' with spreadsheet value 'Ramos'.
+- Filled mapped field 'Email' with spreadsheet value 'victor.ramos@oakridge.co'.
+- Filled mapped field 'Phone' with spreadsheet value '602-555-0146'.
+- Filled mapped field 'Manager' with spreadsheet value 'Diego Alvarez'.
+- Filled mapped field 'Employment Type' with spreadsheet value 'Part Time'.
+- Filled mapped field 'Work Mode' with spreadsheet value 'Onsite'.
+- Filled mapped field 'Start Date' with spreadsheet value '2026-05-11'.
+- Filled mapped field 'Location' with spreadsheet value 'Phoenix Distribution Support'.
+- Advanced workflow with 'Continue' to continue filling remaining fields.
+- Filled mapped field 'Department' with spreadsheet value 'Operations'.
+- Filled mapped field 'Role' with spreadsheet value 'Operations Specialist'.
+- Filled mapped field 'Weekly Hours' with spreadsheet value '36'.
+- Filled mapped field 'Schedule' with spreadsheet value 'Tue-Sat 10:00-6:00'.
+- Filled mapped field 'Background Check Complete' with spreadsheet value 'Yes'.
+- Filled mapped field 'I-9 Complete' with spreadsheet value 'Yes'.
+- Filled mapped field 'Manager Approval Received' with spreadsheet value 'Yes'.
+- Filled mapped field 'Needs Relocation Support' with spreadsheet value 'No'.
+- Advanced workflow with 'Continue' to continue filling remaining fields.
+- Filled mapped field 'Pay Type' with spreadsheet value 'Hourly'.
+- Filled mapped field 'Pay Rate' with spreadsheet value '29.75'.
+- Filled mapped field 'Payroll Frequency' with spreadsheet value 'Biweekly'.
+- Filled mapped field 'Bonus Eligible' with spreadsheet value 'No'.
+- Filled mapped field 'Overtime Eligible' with spreadsheet value 'Yes'.
+- Filled mapped field 'Direct Deposit Setup' with spreadsheet value 'Yes'.
+- Advanced workflow with 'Continue' to continue filling remaining fields.
+- Filled mapped field 'Laptop Required' with spreadsheet value 'No'.
+- Filled mapped field 'VPN Access Required' with spreadsheet value 'No'.
+- Filled mapped field 'Badge Access Required' with spreadsheet value 'Yes'.
+- Filled mapped field 'Admin Access Level' with spreadsheet value 'None'.
+- Action 'Dismiss overlays before submit' succeeded on attempt 1. Dismissed common overlays for 'Dismiss overlays before submit'.
+- Action 'Click submit button' succeeded on attempt 1. Clicked Review Submission -> Submit Onboarding Request.
+- Action 'Wait for a post-submit state' succeeded on attempt 1. Skipped optional wait 'Wait for a post-submit state'.
+- Action 'Dismiss overlays before list verification' succeeded on attempt 1. Dismissed common overlays for 'Dismiss overlays before list verification'.
+- Action 'Open post-submit list' succeeded on attempt 1. Clicked 'Open post-submit list'.
+- Action 'Open post-submit list' did not visibly change the page.
+- Action 'Search for created record' succeeded on attempt 1. Entered 'EMP-2042' for 'Search for created record'.
+- Action 'Submit created record search' succeeded on attempt 1. Pressed 'Enter'.
+- Action 'Submit created record search' did not visibly change the page.
+- Action 'Dismiss overlays before detail verification' succeeded on attempt 1. Dismissed common overlays for 'Dismiss overlays before detail verification'.
+- Action 'Open saved record' succeeded on attempt 1. Clicked 'Open saved record'.
+- Action 'Open saved record' did not visibly change the page.
