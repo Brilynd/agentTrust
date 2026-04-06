@@ -1,0 +1,5 @@
+Employee ID,Department,Role,Pay Type,Pay Rate,Weekly Hours,Schedule,Manager,Location
+EMP-1042,Finance,Senior Financial Analyst,Salary,97500,40,Mon-Fri 8:30-5:00,Melissa Grant,Austin Shared Services Center
+EMP-1056,Operations,Operations Specialist,Hourly,33.25,40,Tue-Sat 9:00-5:30,Diego Alvarez,Phoenix Distribution Support
+EMP-1083,People Operations,HR Business Partner,Salary,110500,40,Mon-Thu 7:00-5:00,Karen Liu,Chicago Shared Services Hub
+EMP-1115,Enterprise Technology,Systems Administrator,Salary,119500,40,Mon-Fri 8:00-4:30,Noah Bennett,Dallas Technology Campus
